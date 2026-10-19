@@ -1,0 +1,13 @@
+[package]
+name = "sim"
+version = "0.1.0"
+edition = "2024"
+description = "Headless, deterministic, bit-exact Balatro (v1.0.1o) game simulator"
+
+[dev-dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
+[features]
+# Record the per-action timeline of RNG calls, card draws and removals (and
+# optionally completed events) for the oracle differential tests.
+trace-keys = []

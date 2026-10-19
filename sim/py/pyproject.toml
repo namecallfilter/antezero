@@ -1,0 +1,14 @@
+[project]
+name = "antezero-sim"
+version = "0.1.0"
+description = "Python bindings for the antezero Balatro simulator (Rust, PyO3)"
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.0"]
+
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "antezero_sim"
+features = ["pyo3/extension-module"]

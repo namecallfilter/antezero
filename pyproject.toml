@@ -1,0 +1,23 @@
+[project]
+name = "antezero"
+version = "0.1.0"
+description = "Bit-exact Balatro simulator, its ground-truth oracle and a reinforcement-learning agent (uv workspace)"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "antezero-bridge",
+    "antezero-sim",
+    "antezero-agent",
+]
+
+[tool.uv.workspace]
+members = [
+    "agent",
+    "agent/bridge",
+    "sim/py",
+]
+
+[tool.uv.sources]
+antezero-bridge = { workspace = true }
+antezero-sim = { workspace = true }
+antezero-agent = { workspace = true }

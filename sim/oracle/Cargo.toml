@@ -1,0 +1,9 @@
+[package]
+name = "oracle"
+version = "0.1.0"
+edition = "2024"
+description = "Runs the real Balatro Lua code headlessly (via the game's own lua51.dll) as a ground-truth oracle for the sim"
+publish = false
+
+[dependencies]
+sim = { path = "..", features = ["trace-keys"] }

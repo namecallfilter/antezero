@@ -1,0 +1,25 @@
+[project]
+name = "antezero-bridge"
+version = "0.1.0"
+description = "Real-game (BalatroBot) and sim backends behind one environment interface for antezero"
+authors = [
+    { name = "namecallfilter", email = "namecallfilter@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "balatrobot==1.5.2",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+az-replay = "antezero_bridge.replay:main"
+az-game = "antezero_bridge.launch:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

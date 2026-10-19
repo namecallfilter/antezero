@@ -1,0 +1,17 @@
+[package]
+name = "antezero-sim"
+version = "0.1.0"
+edition = "2024"
+description = "Python bindings for the antezero Balatro simulator"
+publish = false
+
+[lib]
+name = "antezero_sim"
+crate-type = ["cdylib"]
+
+[dependencies]
+sim = { path = ".." }
+pyo3 = { version = "0.30", features = ["abi3-py310"] }
+numpy = "0.30"
+rayon = "1.12"
+mimalloc = { version = "0.1", default-features = false }

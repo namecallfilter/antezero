@@ -1,0 +1,29 @@
+[project]
+name = "antezero-agent"
+version = "0.1.0"
+description = "Transformer policy/value agent for Balatro trained on the antezero Rust simulator"
+requires-python = ">=3.12"
+dependencies = [
+    "antezero-sim",
+    "numpy>=2.0",
+    "torch>=2.9",
+]
+
+[project.optional-dependencies]
+# Playing the real game (`antezero_agent.play_real`); needs Python >= 3.14.
+game = ["antezero-bridge"]
+
+[project.scripts]
+az-train = "antezero_agent.train:main"
+az-eval = "antezero_agent.eval:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest>=9.0"]
+
+[tool.uv.sources]
+antezero-sim = { workspace = true }
+antezero-bridge = { workspace = true }

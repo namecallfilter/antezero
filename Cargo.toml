@@ -1,0 +1,20 @@
+# The Rust workspace: the simulator (`sim`), the ground-truth oracle that
+# runs the game's own Lua (`sim/oracle`) and the Python bindings (`sim/py`).
+[workspace]
+members = ["sim", "sim/oracle", "sim/py"]
+# The Python extension needs a Python toolchain; build it with maturin
+# (`uv sync`).
+default-members = ["sim", "sim/oracle"]
+resolver = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
+
+# Tests exercise long random games; keep them reasonably fast.
+[profile.test]
+opt-level = 2
