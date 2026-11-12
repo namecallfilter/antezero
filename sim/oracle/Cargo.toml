@@ -7,3 +7,6 @@ publish = false
 
 [dependencies]
 sim = { path = "..", features = ["trace-keys"] }
+
+[lints]
+workspace = true

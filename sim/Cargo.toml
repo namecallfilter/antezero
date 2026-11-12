@@ -11,3 +11,6 @@ mimalloc = { version = "0.1", default-features = false }
 # Record the per-action timeline of RNG calls, card draws and removals (and
 # optionally completed events) for the oracle differential tests.
 trace-keys = []
+
+[lints]
+workspace = true

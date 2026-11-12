@@ -5,13 +5,16 @@ held-out seeds.
     uv run python -m antezero_agent.eval CKPT --backs b_red,b_blue --stakes 1,8
     uv run python -m antezero_agent.eval CKPT --endless --max-ante 20
     uv run python -m antezero_agent.eval CKPT --episodes 200 --search   # ablation
+    uv run python -m antezero_agent.eval CKPT --episodes 512 --round-search --device cuda
+    uv run python -m antezero_agent.eval CKPT --episodes 512 --round-search --endgame-search --device cuda
 
 The episodes are played in batches of at most ``--batch`` parallel games
-(batch ``k`` uses seed ``--seed + k``, so plain and ``--search`` evaluation
-play the same games). Every env slot counts exactly one episode (finished
-slots keep running but are ignored), so short losing games do not bias the
-statistics. Seeds come from a range disjoint from training. The policy only
-sees player-visible information (see ``sim/src/obs``).
+(batch ``k`` uses seed ``--seed + k``, so plain, ``--search`` and
+``--round-search`` evaluation play the same games). Every env slot counts
+exactly one episode (finished slots keep running but are ignored), so short
+losing games do not bias the statistics. Seeds come from a range disjoint
+from training. The policy only sees player-visible information (see
+``sim/src/obs``).
 
 ``win_rate`` counts runs cut off by the step limit (``unresolved``) as not
 won: it is the rate of runs won within the limit, a lower bound on the
@@ -23,6 +26,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+from collections import Counter
 from collections.abc import Iterator
 
 import antezero_sim as az
@@ -161,6 +165,40 @@ def evaluate_search(
     return summarize(eps)
 
 
+@torch.no_grad()
+def evaluate_round_search(
+    model: Net,
+    cfg: Config,
+    episodes: int = 512,
+    device="cpu",
+    seed: int = EVAL_SEED,
+    backs: list[str] | None = None,
+    stakes: list[int] | None = None,
+    max_ante: int | None = None,
+    endless: bool | None = None,
+    batch: int = BATCH,
+    **search_kw,
+) -> dict:
+    """The games of :func:`evaluate`, played with the risk-gated round search
+    (``round_search``: batched across games, ~100x the policy forwards;
+    ``endgame=True`` adds the ante-8 shop / pack search)."""
+    from .round_search import RoundSearch
+
+    rs = RoundSearch(model, cfg, device, **search_kw)
+    cap = max_ante or cfg.env.max_ante
+    eps, st = [], Counter()
+    keys = ("gated", "risky", "overrides", "illegal") + (("eg_gated", "eg_risky", "eg_overrides") if rs.endgame else ())
+    for k, env in enumerate(_envs(cfg, episodes, seed, backs, stakes, max_ante, endless, batch)):
+        games = [env.game(i) for i in range(env.num_envs)]
+        for r in rs.run([rs.play(g, k * batch + i, max_ante=cap) for i, g in enumerate(games)]):
+            g = games[r["slot"] - k * batch]
+            eps.append((r["slot"], g.seed, g.back, g.stake, g.ante, g.run_won, g.blinds_cleared, r["steps"], 0.0, r["truncated"], False))
+            st.update({x: r[x] for x in keys})
+    res = summarize(sorted(eps))
+    res["search"] = {**{f"{k}_per_game": v / max(1, len(eps)) for k, v in st.items()}, "rows_per_game": sum(rs.rows.values()) / max(1, len(eps))}
+    return res
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint")
@@ -173,11 +211,24 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=EVAL_SEED)
     ap.add_argument("--sample", action="store_true", help="sample instead of argmax")
     ap.add_argument("--search", action="store_true", help="determinized lookahead (slow)")
+    ap.add_argument("--round-search", action="store_true", help="risk-gated within-round search (round_search; use a GPU)")
+    ap.add_argument("--endgame-search", action="store_true", help="with --round-search: also search ante-8 shop and pack decisions")
+    ap.add_argument("--endgame-ante", type=int, default=8, help="with --endgame-search: the first ante whose shops and packs are searched (7: about +2 pts, 3x the cost)")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
     if a.episodes <= 0 or a.batch <= 0:
         ap.error("--episodes and --batch must be positive")
+    if a.search and a.round_search:
+        ap.error("--search and --round-search are exclusive")
+    if a.endgame_search and not a.round_search:
+        ap.error("--endgame-search needs --round-search")
+    if not 1 <= a.endgame_ante <= 8:
+        ap.error("--endgame-ante must be 1..8")
+    if a.endgame_ante != 8 and not a.endgame_search:
+        ap.error("--endgame-ante needs --endgame-search")
+    if a.sample and "+" in a.checkpoint:
+        ap.error("--sample would play an ensemble's first member alone (it only samples from member 0)")
     model, cfg, _ = load_model(a.checkpoint, a.device)
     kw = dict(
         episodes=a.episodes,
@@ -189,7 +240,10 @@ def main(argv=None):
         endless=a.endless,
         batch=a.batch,
     )
-    res = evaluate_search(model, cfg, **kw) if a.search else evaluate(model, cfg, deterministic=not a.sample, **kw)
+    if a.round_search:
+        res = evaluate_round_search(model, cfg, endgame=a.endgame_search, eg_min_ante=a.endgame_ante, **kw)
+    else:
+        res = evaluate_search(model, cfg, **kw) if a.search else evaluate(model, cfg, deterministic=not a.sample, **kw)
     print(json.dumps(res, indent=2))
     if a.out:
         with open(a.out, "w") as f:

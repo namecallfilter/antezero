@@ -1,0 +1,15 @@
+# Uses nightly-only options: format with `cargo +nightly fmt`.
+style_edition = "2024" # same result from `rustfmt` and `cargo fmt`
+hard_tabs = true
+use_field_init_shorthand = true
+use_try_shorthand = true
+condense_wildcard_suffixes = true
+fn_params_layout = "Compressed"
+format_code_in_doc_comments = true
+format_macro_matchers = true # Google's guide
+hex_literal_case = "Lower" # Google's guide
+imports_granularity = "Module" # Google's guide: a `use` imports from one module
+normalize_comments = true
+overflow_delimited_expr = true
+reorder_impl_items = true
+group_imports = "StdExternalCrate"

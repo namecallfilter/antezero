@@ -7,6 +7,17 @@ members = ["sim", "sim/oracle", "sim/py"]
 default-members = ["sim", "sim/oracle"]
 resolver = "3"
 
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+clone_on_ref_ptr = "warn" # write Rc::clone(&x), so `.clone()` always means a real copy
+doc_paragraphs_missing_punctuation = "warn" # doc comments use full sentences
+multiple_inherent_impl = "warn" # one inherent impl block per type, not one per ported class
+needless_collect = "warn" # nursery, may false-positive
+redundant_clone = "warn" # nursery, may false-positive
+tabs_in_doc_comments = "allow" # hard_tabs makes rustfmt indent doc examples with tabs
+undocumented_unsafe_blocks = "warn" # every unsafe block needs a `// SAFETY:` comment
+unwrap_used = "warn" # use expect("why this can't fail") instead
+
 [profile.release]
 opt-level = 3
 lto = "fat"

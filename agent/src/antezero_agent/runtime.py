@@ -58,6 +58,9 @@ def make_env(cfg: Config, seed: int | None = None, num_envs: int | None = None, 
         deck_tokens=e.deck_tokens,
         snapshot_prob=e.snapshot_prob,
         snapshot_min_ante=e.snapshot_min_ante,
+        allow_skip=e.allow_skip,
+        build_previews=e.build_previews,
+        terminal_phi=e.terminal_phi,
     )
     kw.update(over)
     return az.VecEnv(num_envs or e.num_envs, **kw)
@@ -98,7 +101,16 @@ def read_checkpoint(path: str | Path) -> dict:
 
 def load_model(path: str | Path, device="cpu") -> tuple[Net, Config, dict]:
     """The network of a checkpoint (in eval mode, on ``device``), its config
-    and its metadata (update, steps)."""
+    and its metadata (update, steps). ``a.pt+b.pt+...``: their greedy
+    :class:`~.ensemble.Ens`, with the first one's config and metadata."""
+    if "+" in str(path):
+        from .ensemble import Ens
+
+        loaded = [load_model(p, device) for p in str(path).split("+")]
+        obs = lambda c: (c.env.play_candidates, c.env.deck_tokens, c.env.build_previews, c.env.allow_skip)  # noqa: E731
+        if any(obs(c) != obs(loaded[0][1]) for _, c, _ in loaded):
+            raise ValueError(f"{path}: the ensemble's members were trained on different observations")
+        return Ens([m for m, _, _ in loaded]).eval(), loaded[0][1], loaded[0][2]
     ck = read_checkpoint(path)
     cfg = Config.from_dict(ck["config"])
     model = Net(cfg.model)

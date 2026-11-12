@@ -27,6 +27,14 @@ class ModelConfig:
     # Must stay 0 for PPO (the behaviour and the updated policy would see
     # different dropout masks); kept for other uses of the network.
     dropout: float = 0.0
+    # Run the encoder (three quarters of the weights) in bfloat16 on CUDA;
+    # embeddings, norms, heads and the loss stay float32. The op logits that
+    # reach ~2,000 (where bfloat16 rounds in steps of 16, which ruled out
+    # ppo.amp) are made after the encoder, from activations of norm ~7. On
+    # run28_B: gradient cosine to float32 0.9997, acting and evaluating agree
+    # exactly, the learning step 1.3-1.8x faster. Part of the model: a policy
+    # trained this way is also run this way.
+    bf16_encoder: bool = False
 
 
 @dataclass
@@ -41,15 +49,18 @@ class EnvConfig:
     max_ante: int = 16
     step_limit: int = 5000
     # True reward: winning the run, each blind cleared after the win (endless
-    # objective), losing. Progress shaping is potential-based (policy
-    # invariant): Phi = w_blind * blinds cleared + w_score * round progress,
-    # F = gamma * Phi(s') - Phi(s), Phi(terminal) = 0. With w_blind ~ r_win /
-    # 24 the potential is a rough prior on the value (the win is 24 blinds).
+    # objective), losing. Progress shaping: Phi = w_blind * blinds cleared +
+    # w_score * round progress, F = gamma * Phi(s') - Phi(s), Phi kept at the
+    # end of a game so a loss keeps its progress (else no signal before the
+    # first win). With w_blind ~ r_win / 24 a win is worth ~2x a last-boss loss.
     r_win: float = 1.0
     r_endless: float = 0.0
     r_loss: float = 0.0
     w_blind: float = 0.04
     w_score: float = 0.02
+    # False: Phi(terminal) = 0 (classic potential-based shaping; the objective
+    # is then exactly P(win), for a policy that already wins).
+    terminal_phi: bool = True
     threads: int = 0  # 0 = all cores
     # Offer the K best plays (sim score on chance scenarios that are shared
     # by all plays, face-up cards only) as extra ops with score statistics.
@@ -57,12 +68,21 @@ class EnvConfig:
     # Tokenize the remaining deck / discard pile card by card (otherwise
     # only histograms in the global features; ~3x fewer tokens).
     deck_tokens: bool = False
+    # Build previews in shops, packs and blind select: the build's scoring
+    # capacity against the coming blinds (globals) and what each buy / pick /
+    # use / redeem / sell would add (item token columns). Off: those inputs
+    # stay zero (the pre-preview observation), for A/B controls.
+    build_previews: bool = True
     seed: int = 1
     # Restart a fraction of episodes from ante-start snapshots of recent
     # episodes (hidden state resampled) so late antes get trained more.
     # Such episodes are excluded from the win-rate statistics.
     snapshot_prob: float = 0.0
     snapshot_min_ante: int = 2
+    # Offer skipping blinds. A policy that collapsed onto skipping (it was
+    # rewarded like beating the blind) never samples "select" again; turning
+    # skips off for a while makes it play every blind.
+    allow_skip: bool = True
     # Stake curriculum: the next stake is added once the 95% Wilson lower
     # bound of the win rate over the latest `curriculum_min_episodes` fresh
     # episodes on the top stake (since the last change) reaches the target.
@@ -81,19 +101,45 @@ class PPOConfig:
     # `num_envs * rollout_len` must split into this many equal minibatches
     # of at least 2 samples.
     minibatches: int = 8
+    # Sum each minibatch's gradient over this many equal chunks: the same
+    # step in less GPU memory (e.g. 2 on 24 GB with 2048-sample minibatches).
+    grad_accum: int = 1
+    # Train each minibatch on this share of its samples only: the states the
+    # policy was least sure in (by its likeliest op without a card or
+    # destination choice, so a state is kept or skipped whatever was sampled
+    # there: choosing by the sampled action's own probability leaves the
+    # baseline's error uncancelled on rare actions). The others move nothing:
+    # with swa_B 58% of the samples have p > 0.999 and carry 0.06% of the
+    # policy gradient (.scratch/panel_r9/gaps/gradmass.py). Skipped samples
+    # count as zero in the loss and in the logged kl, clipfrac and entropy,
+    # so the step keeps its size; the value head learns from the kept ones.
+    learn_frac: float = 1.0
     clip: float = 0.2
     value_clip: float = 0.0  # 0 = plain value MSE
     vf_coef: float = 0.5
     ent_coef: float = 0.01
     ent_coef_final: float = 0.002
+    # Entropy weight of shop and booster-pack decisions (where the build is
+    # chosen) relative to the others: >1 keeps trying other builds longer.
+    shop_ent_mult: float = 1.0
+    # Exploration of REDEEM, which the policy stopped sampling (p ~ 1e-12:
+    # PPO never sees its value): in training rollouts a sampled shop exit
+    # with a legal voucher redeems it instead with this probability. Those
+    # steps train without an importance weight, at `explore_weight`, inside
+    # the clip band only. Greedy play stays the policy's own argmax.
+    explore_redeem: float = 0.0
+    explore_weight: float = 0.25
     lr: float = 3e-4
     lr_final: float = 3e-5
     warmup_updates: int = 20
     weight_decay: float = 0.01
     max_grad_norm: float = 0.5
+    # An update stops after the epoch whose mean KL exceeds 1.5x this.
     target_kl: float = 0.03
     # bf16 autocast (CUDA devices that support bf16, and CPU when amp_cpu).
-    amp: bool = True
+    # Off: trained op logits reach ~2e3, where bf16 rounding (steps of 16)
+    # flips near-tied plays between batches, giving PPO ratios of e^15.
+    amp: bool = False
     amp_cpu: bool = True
     compile: bool = False
     # Recompute the behaviour log-probs / values after each rollout with the
@@ -103,6 +149,23 @@ class PPOConfig:
     # composition still differs, so the first ratio is close to, not exactly,
     # 1 (`logp_drift` in the log is the largest change).
     recompute_logp: bool = True
+    # Rollout collection on CUDA (see collect.py): 0 = the plain loop; 1 = the
+    # policy replayed from CUDA graphs and pinned, trimmed uploads (the same
+    # samples, bitwise); 2 = also two half-size VecEnvs, one simulating while
+    # the GPU picks for the other (the same math, other games); a frozen
+    # critic (ppo.critic) then values each state as it is acted on, while the
+    # simulator steps, instead of in a pass after the rollout.
+    fast_rollout: int = 0
+    # Keep the rollout's tokens and ops (33 of its 34 KB per state) in host
+    # memory, gathered there per minibatch (CUDA only): 4,096 envs x 128 then
+    # take 16 GiB of RAM instead of GPU memory. The same update, bitwise.
+    rollout_obs_on_cpu: bool = False
+    # Decoupled critic (critic.py), frozen: its value replaces the policy's value
+    # head in the advantages (GAE and the truncation bootstrap); the head still
+    # trains, on the resulting returns. "" = off (today's update); otherwise the
+    # checkpoint it is read from (a critic's, or a training checkpoint that
+    # holds one). A resumed run keeps its own.
+    critic: str = ""
 
 
 @dataclass
@@ -152,11 +215,17 @@ class Config:
                 (e.num_envs * p.rollout_len) % max(1, p.minibatches) == 0 and e.num_envs * p.rollout_len // max(1, p.minibatches) >= 2,
                 f"num_envs * rollout_len ({e.num_envs * p.rollout_len}) must split into {p.minibatches} minibatches of >= 2 samples",
             ),
+            (
+                p.grad_accum > 0 and e.num_envs * p.rollout_len // max(1, p.minibatches) % p.grad_accum == 0,
+                f"ppo.grad_accum ({p.grad_accum}) must split each minibatch into equal chunks",
+            ),
+            (0.0 < p.learn_frac <= 1.0, "ppo.learn_frac must be in (0, 1]"),
             (0.0 < p.gamma <= 1.0 and 0.0 <= p.gae_lambda <= 1.0, "ppo.gamma must be in (0, 1] and ppo.gae_lambda in [0, 1]"),
             (self.model.dropout == 0.0, "model.dropout must be 0 for PPO"),
             (0 <= e.play_candidates <= az.MAX_CANDIDATES, f"env.play_candidates must be in 0..={az.MAX_CANDIDATES}"),
             (bool(e.backs) and bool(e.stakes), "env.backs and env.stakes must not be empty"),
             (not e.curriculum or e.curriculum_min_episodes > 0, "env.curriculum_min_episodes must be positive"),
+            (p.fast_rollout in (0, 1, 2) and (p.fast_rollout < 2 or e.num_envs % 2 == 0), "ppo.fast_rollout must be 0, 1 or 2 (2: with an even env.num_envs)"),
         ]
         for ok, msg in checks:
             if not ok:

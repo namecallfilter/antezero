@@ -41,6 +41,7 @@ MAX_CARDS = 5  # a card set has at most five cards
 MAX_HAND = az.MAX_HAND
 MAX_DEST = 32
 NEG = -1e9
+OP_REDEEM, OP_END_SHOP = 10, 13  # sim/src/obs/mod.rs op:: (not exported by the bindings)
 
 # Categorical vocabularies (columns of tok_i / glob_i): see sim/src/obs.
 TOK_VOCAB = list(az.TOK_VOCAB)
@@ -109,6 +110,26 @@ def mlp(i: int, h: int, o: int) -> nn.Sequential:
     return nn.Sequential(nn.Linear(i, h), nn.GELU(), nn.Linear(h, o))
 
 
+def sample(logits: torch.Tensor, q: torch.Tensor | None = None) -> torch.Tensor:
+    """``Categorical(logits=logits).sample()``, bitwise, without its two host syncs per call
+    (``multinomial`` validates its input on the host, then draws ``argmax(p / Exp(1))``).
+    ``q``: that Exp(1) noise, drawn here when None (CUDA graphs pass noise drawn before replay)."""
+    p = F.softmax(logits - logits.logsumexp(-1, keepdim=True), -1)
+    if q is None:
+        q = torch.empty_like(p).exponential_(1)
+    return (p / q).argmax(-1)
+
+
+def noise_shapes(batch: int, *explore: float) -> list[tuple[tuple[int, ...], bool]]:
+    """(shape, uniform) of :meth:`Net.act`'s random draws when sampling, in draw order: Exp(1)
+    noise for the op, a U(0, 1) pair per exploration that is on (``explore``), then Exp(1)
+    for the five card pointer steps and the destination."""
+    s = [((batch, az.MAX_OPS), False)]
+    for x in explore:
+        s += [((batch,), True), ((batch, az.MAX_OPS), True)] if x else []
+    return s + [((batch, MAX_HAND + 1), False)] * MAX_CARDS + [((batch, MAX_DEST), False)]
+
+
 class Net(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
@@ -145,9 +166,12 @@ class Net(nn.Module):
         self.scale = 1.0 / math.sqrt(d)
 
     # ------------------------------------------------------------------ encode
-    def encode(self, o: Obs):
-        """-> (cls [B,d], tokens [B,T,d], op embeddings [B,O,d], op logits [B,O])."""
-        T = max(int(o.n_tokens.max().item()), MAX_HAND, 1)
+    def encode(self, o: Obs, T: int | None = None, O: int | None = None):
+        """-> (cls [B,d], tokens [B,max(T,32),d], op embeddings [B,O,d], op logits [B,O]). T, O:
+        the token and op slots to run (training passes each chunk's longest lists). The default,
+        the longest token list but at least 32 and every op slot, keeps acting bitwise as before."""
+        T = T or max(int(o.n_tokens.max().item()), MAX_HAND, 1)
+        O = O or o.ops.shape[1]
         ti, tf = o.tok_i[:, :T], o.tok_f[:, :T]
         x = self.tok_lin(tf)
         for k, emb in enumerate(self.tok_emb):
@@ -158,10 +182,14 @@ class Net(nn.Module):
         h = self.in_norm(torch.cat([g.unsqueeze(1), x], 1))
         ar = torch.arange(T, device=ti.device)
         pad = torch.cat([torch.zeros_like(o.n_tokens[:, None], dtype=torch.bool), ar[None] >= o.n_tokens[:, None]], 1)
-        h = self.out_norm(self.encoder(h, src_key_padding_mask=pad))
-        cls, tok = h[:, 0], h[:, 1:]
+        with torch.autocast(h.device.type, dtype=torch.bfloat16, enabled=self.cfg.bf16_encoder and h.is_cuda):
+            h = self.encoder(h, src_key_padding_mask=pad)
+        h = self.out_norm(h.float())
+        # The pointers read 32 hand slots: zeros past T (slots past n_tokens are masked wherever read).
+        cls, tok = h[:, 0], F.pad(h[:, 1:], (0, 0, 0, max(0, MAX_HAND - T)))
+        T = tok.shape[1]
         # ops
-        ops = o.ops
+        ops = o.ops[:, :O]
         kind = ops[..., 0].clamp(0, az.N_OPS_KINDS - 1)
         tgt = ops[..., 1]
         tgt_h = torch.gather(tok, 1, tgt.clamp(0, T - 1).unsqueeze(-1).expand(-1, -1, tok.shape[-1]))
@@ -176,13 +204,12 @@ class Net(nn.Module):
             ],
             -1,
         )
-        feats = torch.cat([feats, o.ops_f], -1)
+        feats = torch.cat([feats, o.ops_f[:, :O]], -1)
         # Cards an op is fixed to (scored play candidates, forced cards):
         # mean of their hand-token embeddings.
         req = bits(ops[..., 5], MAX_HAND).to(tok.dtype)  # [B,O,32]
         cards_h = torch.einsum("boj,bjd->bod", req, tok[:, :MAX_HAND]) / req.sum(-1, keepdim=True).clamp(min=1)
         op_e = self.op_kind(kind) + self.op_tgt(tgt_h) + self.op_feat(feats) + self.op_cards(cards_h)
-        O = ops.shape[1]
         logits = self.op_score(torch.cat([op_e, cls.unsqueeze(1).expand(-1, O, -1)], -1)).squeeze(-1)
         valid = torch.arange(O, device=ops.device)[None] < o.n_ops[:, None]
         logits = logits.masked_fill(~valid, NEG)
@@ -272,14 +299,35 @@ class Net(nn.Module):
 
     # ----------------------------------------------------------------- public
     @torch.no_grad()
-    def act(self, o: Obs, deterministic: bool = False):
-        """Sample (or argmax) a full action for each state."""
-        cls, tok, op_e, logits = self.encode(o)
+    def act(self, o: Obs, deterministic: bool = False, explore: float = 0.0, T: int | None = None, noise=None):
+        """Sample (or argmax) a full action for each state. ``explore``
+        (sampling only): the probability that a sampled shop exit with a
+        legal voucher redeems it instead (``explored``; see
+        ``PPOConfig.explore_redeem``). ``T``: :meth:`encode`'s token slots
+        (the default saves nothing but a GPU sync). ``noise``: the random
+        draws, made beforehand in this order and these shapes (see
+        :func:`noise_shapes`); None draws them here (the same stream)."""
+        nxt = iter(noise).__next__ if noise is not None else lambda: None
+        cls, tok, op_e, logits = self.encode(o, T)
         if deterministic:
             op = logits.argmax(-1)
         else:
-            op = torch.distributions.Categorical(logits=logits).sample()
-        op_logp = F.log_softmax(logits, -1).gather(1, op[:, None]).squeeze(1)
+            op = sample(logits, nxt())
+        explored = torch.zeros_like(op, dtype=torch.bool)
+        if explore and not deterministic:
+            r1 = torch.rand(op.shape, device=op.device) if noise is None else nxt()
+            kinds = o.ops[..., 0]
+            red = (kinds == OP_REDEEM) & (logits > NEG / 2)
+            r2 = torch.rand(red.shape, device=op.device) if noise is None else nxt()
+            explored = (kinds.gather(1, op[:, None]).squeeze(1) == OP_END_SHOP) & red.any(-1) & (r1 < explore)
+            op = torch.where(explored, (r2 + red).argmax(-1), op)
+        lsm = F.log_softmax(logits, -1)
+        op_logp = lsm.gather(1, op[:, None]).squeeze(1)
+        # How sure the state is, whatever gets sampled (ppo.learn_frac): the log-prob of its likeliest op that
+        # takes no card or destination choice (fixed cards count as none).
+        rows = o.ops[:, : logits.shape[1]]
+        whole = ((rows[..., 3] == 0) | (rows[..., 4] == rows[..., 5])) & (rows[..., 6] == 0)
+        sure = lsm.masked_fill(~whole, NEG).amax(-1)
         B = op.shape[0]
         ar = torch.arange(B, device=op.device)
         op_e_a = op_e[ar, op]
@@ -288,7 +336,7 @@ class Net(nn.Module):
         def pick(_s, lg, m):
             if deterministic:
                 return lg.argmax(-1)
-            return torch.distributions.Categorical(logits=lg).sample()
+            return sample(lg, nxt())
 
         mask, seq, c_logp, _ = self._card_steps(cls, tok, op_e_a, op_row, o.n_hand, pick)
         dest, d_logp, _ = self._dest(cls, tok, op_e_a, op_row, seq, lambda lg, m: pick(0, lg, m))
@@ -299,12 +347,14 @@ class Net(nn.Module):
             "card_seq": seq,
             "dest": dest,
             "logp": op_logp + c_logp + d_logp,
+            "sure": sure,
             "value": value,
+            "explored": explored,
         }
 
-    def evaluate(self, o: Obs, op, card_seq, dest):
+    def evaluate(self, o: Obs, op, card_seq, dest, T: int | None = None, O: int | None = None):
         """Teacher-forced log-prob, entropy and value of stored actions."""
-        cls, tok, op_e, logits = self.encode(o)
+        cls, tok, op_e, logits = self.encode(o, T, O)
         lsm = F.log_softmax(logits, -1)
         op_logp = lsm.gather(1, op[:, None]).squeeze(1)
         valid = logits > NEG / 2

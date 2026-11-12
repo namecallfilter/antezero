@@ -1,0 +1,8 @@
+# Lint levels are in Cargo.toml [lints]; this file only configures lints.
+allow-unwrap-in-tests = true
+disallowed-methods = [
+	{ path = "std::panic::catch_unwind", reason = "only works with panic=unwind; avoid or fix the panic instead" },
+	{ path = "std::sync::PoisonError::into_inner", reason = "never reach inside a poisoned lock; its data may be inconsistent" },
+	{ path = "std::sync::PoisonError::get_ref", reason = "never reach inside a poisoned lock; its data may be inconsistent" },
+	{ path = "std::sync::PoisonError::get_mut", reason = "never reach inside a poisoned lock; its data may be inconsistent" },
+]
