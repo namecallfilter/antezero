@@ -8,7 +8,8 @@ It was trained on Red Deck, White Stake only, where it wins about 91% of
 games without any search.
 
 Not affiliated with LocalThunk or Playstack. You need your own copy of the
-game. No trained checkpoint is included.
+game. The trained checkpoint is on the
+[releases page](https://github.com/namecallfilter/antezero/releases/latest).
 
 ## Watch it play
 
@@ -16,12 +17,12 @@ Needs [Balatro](https://store.steampowered.com/app/2379780/Balatro/) on
 Windows (Steam) with
 [lovely](https://github.com/ethangreen-dev/lovely-injector) and
 [Steamodded](https://github.com/Steamodded/smods), [uv](https://docs.astral.sh/uv/),
-[Rust](https://www.rust-lang.org/tools/install), and a checkpoint. A CUDA GPU
-is recommended.
+[Rust](https://www.rust-lang.org/tools/install), and the checkpoint from the
+releases page. A CUDA GPU is recommended.
 
 ```
 uv sync
-uv run python -m antezero_agent.bot --install path/to/checkpoint.pt
+uv run python -m antezero_agent.bot --install antezero-v0.1.0.pt
 ```
 
 Then start Balatro, open New Run, switch on the bot toggle in the corner of
