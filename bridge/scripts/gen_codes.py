@@ -6,8 +6,8 @@ tables so the bridge can translate them without building the Rust crate.
 
 Usage (from the repository root)::
 
-    uv run python agent/bridge/scripts/gen_codes.py           # rewrite _codes.py
-    uv run python agent/bridge/scripts/gen_codes.py --check   # exit 1 if stale
+    uv run python bridge/scripts/gen_codes.py           # rewrite _codes.py
+    uv run python bridge/scripts/gen_codes.py --check   # exit 1 if stale
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "sim" / "src" / "data_gen.rs"
-OUT = ROOT / "agent" / "bridge" / "src" / "antezero_bridge" / "_codes.py"
+OUT = ROOT / "bridge" / "src" / "antezero_bridge" / "_codes.py"
 
 TABLES = [
     # (enum, ALL_ array, DEFS array, python name)
@@ -52,7 +52,7 @@ def render(text: str) -> str:
     """``_codes.py`` for the contents of ``data_gen.rs``."""
     lines = [
         '"""Index -> game key tables generated from sim/src/data_gen.rs by',
-        "agent/bridge/scripts/gen_codes.py. Do not edit by hand.",
+        "bridge/scripts/gen_codes.py. Do not edit by hand.",
         '"""',
         "",
     ]

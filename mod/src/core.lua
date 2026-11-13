@@ -28,14 +28,38 @@ AZB.config = {
 }
 
 ----------------------------------------------------------------------------
+-- Sessions
+----------------------------------------------------------------------------
+-- Bridge session: the developer tools started the game with BalatroBot,
+-- whose settings fix the timestep for the whole process; saves are guarded
+-- and everything is unlocked from the start. In any other session the mod
+-- leaves the game alone until a bot run (src/bot.lua) needs the same
+-- conditions, and puts everything back after it.
+function AZB.is_bridge() return BB_SETTINGS ~= nil end
+function AZB.parity() return AZB.is_bridge() or (AZB.bot ~= nil and AZB.bot.protected) end
+
+----------------------------------------------------------------------------
 -- Save guard
 ----------------------------------------------------------------------------
 AZB.blocked_saves = {}
 
+local function guarding() return AZB.config.save_guard and AZB.parity() end
+
+-- save_run() returns early on G.F_NO_SAVING.
+function AZB.guard_saves(on)
+  if not AZB.config.save_guard then return end
+  if on and not AZB._no_saving then
+    AZB._no_saving = {G.F_NO_SAVING}
+    G.F_NO_SAVING = true
+  elseif not on and AZB._no_saving then
+    G.F_NO_SAVING = AZB._no_saving[1]
+    AZB._no_saving = nil
+  end
+end
+
 function AZB.install_save_guard()
-  if not AZB.config.save_guard or AZB._guard_installed then return end
+  if AZB._guard_installed then return end
   AZB._guard_installed = true
-  G.F_NO_SAVING = true -- save_run() returns early
   local real = G.SAVE_MANAGER and G.SAVE_MANAGER.channel
   if real and not AZB._real_save_channel then
     AZB._real_save_channel = real
@@ -43,7 +67,7 @@ function AZB.install_save_guard()
     G.SAVE_MANAGER.channel = setmetatable({
       push = function(_, msg)
         local t = type(msg) == "table" and tostring(msg.type) or tostring(msg)
-        if t:sub(1, 5) == "save_" then
+        if guarding() and t:sub(1, 5) == "save_" then
           AZB.blocked_saves[t] = (AZB.blocked_saves[t] or 0) + 1
           return true
         end
@@ -60,7 +84,11 @@ function AZB.install_save_guard()
     })
   end
   -- remove_save() deletes <profile>/save.jkr directly.
-  remove_save = function() AZB.blocked_saves.remove_save = (AZB.blocked_saves.remove_save or 0) + 1 end
+  local real_remove = remove_save
+  remove_save = function(...)
+    if not guarding() then return real_remove(...) end
+    AZB.blocked_saves.remove_save = (AZB.blocked_saves.remove_save or 0) + 1
+  end
 end
 
 ----------------------------------------------------------------------------
@@ -83,7 +111,7 @@ if not AZB._card_init_hooked then
   local card_init = Card.init
   function Card:init(...)
     card_init(self, ...)
-    if AZB.config.stable_unique_val and self.sort_id then
+    if AZB.config.stable_unique_val and self.sort_id and AZB.parity() then
       self.unique_val = 1 - (self.sort_id * 50) / 1603301
     end
     if AZB.capture then AZB.capture[#AZB.capture + 1] = self end
@@ -91,7 +119,10 @@ if not AZB._card_init_hooked then
 end
 
 AZB.install_save_guard()
-AZB.unlock_all()
+if AZB.is_bridge() then
+  AZB.guard_saves(true)
+  AZB.unlock_all()
+end
 
 -- Vanilla `used_jokers` bookkeeping, tracked alongside SMODS's. Vanilla
 -- marks/clears every center sharing the card's *name* (e.g. all four
@@ -134,7 +165,7 @@ if AZB.config.smods_compat and not AZB._gcp_hooked then
   AZB._gcp_hooked = true
   local gcp = get_current_pool
   function get_current_pool(_type, _rarity, _legendary, _append, ...)
-    if _type == 'Joker' and _legendary and _rarity == nil and G.GAME and G.GAME.round_resets then
+    if AZB.parity() and _type == 'Joker' and _legendary and _rarity == nil and G.GAME and G.GAME.round_resets then
       pseudorandom('rarity' .. G.GAME.round_resets.ante .. (_append or ''))
     end
     return gcp(_type, _rarity, _legendary, _append, ...)
@@ -150,6 +181,7 @@ if AZB.config.smods_compat and not AZB._apply_hooked then
   local apply_to_run = Card.apply_to_run
   AZB.display_id = 0
   function Card.apply_to_run(self, ...)
+    if not AZB.parity() then return apply_to_run(self, ...) end
     local before = G.sort_id
     local outer = AZB.capture
     AZB.capture = {}
@@ -198,7 +230,7 @@ if AZB.config.smods_compat and not AZB._pta_hooked then
   local play = G.FUNCS.play_cards_from_highlighted
   G.FUNCS.play_cards_from_highlighted = function(...)
     played = {}
-    for _, c in ipairs(G.hand and G.hand.highlighted or {}) do
+    for _, c in ipairs(AZB.parity() and G.hand and G.hand.highlighted or {}) do
       if c.ability then
         c.ability.played_this_ante = true
         played[#played + 1] = {c, c.azb_set_ability or 0}
@@ -211,6 +243,7 @@ if AZB.config.smods_compat and not AZB._pta_hooked then
     local r = evaluate(...)
     local mine = played
     played = {}
+    if #mine == 0 then return r end
     G.E_MANAGER:add_event(Event({func = function()
       for _, p in ipairs(mine) do
         local c, n = p[1], p[2]
@@ -239,7 +272,7 @@ if not AZB._used_hooked then
   local set_ability = Card.set_ability
   function Card:set_ability(...)
     local r = set_ability(self, ...)
-    if AZB.config.smods_compat and self.ability then
+    if AZB.config.smods_compat and self.ability and AZB.parity() then
       self.ability.played_this_ante = nil -- vanilla rebuilds the table
       self.azb_set_ability = (self.azb_set_ability or 0) + 1
     end
@@ -402,8 +435,14 @@ function AZB.mark_action()
   if not AZB.in_tick then AZB.skip_tick = true end
 end
 
+-- A bot run with someone watching: the menus they open pause it.
+local function in_menu()
+  return AZB.bot ~= nil and AZB.bot.run ~= nil and G.OVERLAY_MENU ~= nil and G.STATE ~= G.STATES.GAME_OVER
+end
+
 function AZB.is_settled()
   if G.STATE == G.STATES.GAME_OVER then return true end
+  if in_menu() then return false end
   return AZB.quiet >= AZB.config.quiet_frames
 end
 
@@ -414,18 +453,32 @@ function AZB.when_settled(fn, timeout)
   AZB.waiters[#AZB.waiters + 1] = {fn = fn, deadline = now() + (timeout or 120), frames = 0}
 end
 
+local last_tick = now()
+
 local function run_waiters()
+  local t = now()
+  local dt = t - last_tick
+  last_tick = t
   if #AZB.waiters == 0 then return end
   -- Winning pauses the game behind an overlay; dismissing it is "endless
-  -- mode" (the harness does the same while settling).
-  if G.SETTINGS.paused and G.OVERLAY_MENU and G.STATE ~= G.STATES.GAME_OVER then
+  -- mode" (the harness does the same while settling). In a watched bot run
+  -- the win screen stays (the run is over for the bot) and any other menu
+  -- is the watcher's: the waits hold until it closes.
+  local won = false
+  if in_menu() then
+    won = G.GAME.won
+    if not won then
+      for _, w in ipairs(AZB.waiters) do w.deadline = w.deadline + dt end
+      return
+    end
+  elseif G.SETTINGS.paused and G.OVERLAY_MENU and G.STATE ~= G.STATES.GAME_OVER then
     G.FUNCS.exit_overlay_menu()
   end
   local keep = {}
   local ready = {}
   for _, w in ipairs(AZB.waiters) do
     w.frames = w.frames + 1
-    if AZB.is_settled() then ready[#ready+1] = {w, true, "settled"}
+    if won or AZB.is_settled() then ready[#ready+1] = {w, true, "settled"}
     elseif now() > w.deadline then ready[#ready+1] = {w, false, "timeout"}
     else keep[#keep+1] = w end
   end
@@ -433,9 +486,16 @@ local function run_waiters()
   AZB.in_tick = true
   for _, r in ipairs(ready) do
     local ok, err = pcall(r[1].fn, r[2], r[3], r[1].frames)
-    if not ok then sendErrorMessage("waiter failed: " .. tostring(err), "AZB") end
+    if not ok then sendErrorMessage("waiter failed: " .. tostring(err), "AnteZero") end
   end
   AZB.in_tick = false
+end
+
+-- Ends every pending wait unsettled (the run they waited in is gone).
+function AZB.cancel_waiters()
+  local ws = AZB.waiters
+  AZB.waiters = {}
+  for _, w in ipairs(ws) do pcall(w.fn, false, "cancelled", w.frames) end
 end
 
 function AZB.tick()
@@ -449,12 +509,37 @@ function AZB.tick()
     AZB.quiet = 0
   end
   run_waiters()
+  if AZB.bot then AZB.bot.tick() end
 end
 
+-- One game update, then the requests it may answer, then the settle count
+-- (BalatroBot serves its requests inside its own love.update). A bot run
+-- outside a bridge session runs on the oracle's clock: dt = 1/60 at
+-- GAMESPEED 1, as many updates per frame as the bot's speed setting asks
+-- for and a frame has time for (the rest are dropped: the run just plays
+-- slower than asked).
 local love_update = love.update
 love.update = function(dt)
-  love_update(dt)
-
-  local ok, err = pcall(AZB.tick)
-  if not ok then sendErrorMessage("tick failed: " .. tostring(err), "AZB") end
+  local n, gamespeed = 1, nil
+  if AZB.bot and AZB.bot.stepping() then
+    gamespeed = G.SETTINGS.GAMESPEED
+    n = AZB.bot.steps(dt)
+  end
+  local t0 = love.timer.getTime()
+  for i = 1, n do
+    if i > 1 and love.timer.getTime() - t0 > 0.008 then break end
+    if gamespeed then
+      G.SETTINGS.GAMESPEED = 1
+      love_update(1 / 60)
+    else
+      love_update(dt)
+    end
+    if AZB.server then AZB.server.update() end
+    local ok, err = pcall(AZB.tick)
+    if not ok then sendErrorMessage("tick failed: " .. tostring(err), "AnteZero") end
+    if gamespeed then
+      if G.SETTINGS.GAMESPEED ~= 1 then gamespeed = G.SETTINGS.GAMESPEED end -- changed in the settings menu
+      G.SETTINGS.GAMESPEED = gamespeed
+    end
+  end
 end

@@ -1,5 +1,5 @@
 """Index -> game key tables generated from sim/src/data_gen.rs by
-agent/bridge/scripts/gen_codes.py. Do not edit by hand.
+bridge/scripts/gen_codes.py. Do not edit by hand.
 """
 
 JOKERS: tuple[str, ...] = (

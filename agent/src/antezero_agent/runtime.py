@@ -101,16 +101,7 @@ def read_checkpoint(path: str | Path) -> dict:
 
 def load_model(path: str | Path, device="cpu") -> tuple[Net, Config, dict]:
     """The network of a checkpoint (in eval mode, on ``device``), its config
-    and its metadata (update, steps). ``a.pt+b.pt+...``: their greedy
-    :class:`~.ensemble.Ens`, with the first one's config and metadata."""
-    if "+" in str(path):
-        from .ensemble import Ens
-
-        loaded = [load_model(p, device) for p in str(path).split("+")]
-        obs = lambda c: (c.env.play_candidates, c.env.deck_tokens, c.env.build_previews, c.env.allow_skip)  # noqa: E731
-        if any(obs(c) != obs(loaded[0][1]) for _, c, _ in loaded):
-            raise ValueError(f"{path}: the ensemble's members were trained on different observations")
-        return Ens([m for m, _, _ in loaded]).eval(), loaded[0][1], loaded[0][2]
+    and its metadata (update, steps)."""
     ck = read_checkpoint(path)
     cfg = Config.from_dict(ck["config"])
     model = Net(cfg.model)

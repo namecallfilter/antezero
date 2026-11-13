@@ -8,7 +8,7 @@ import torch
 
 from antezero_agent import round_search
 from antezero_agent.config import ModelConfig, preset
-from antezero_agent.model import Net, Obs, obs_from_numpy
+from antezero_agent.model import Net, obs_from_numpy
 from antezero_agent.round_search import FREE, RoundSearch, _sign_p
 from antezero_agent.runtime import make_env, seeded
 
@@ -276,46 +276,3 @@ def test_sign_test():
     w, l = [True] * 6, [False] * 6
     assert _sign_p(w, l) == 1 / 64 and _sign_p(l, w) == 1.0 and _sign_p(w, w) == 1.0
     assert _sign_p(w + [False], l + [True]) == 8 / 128  # 6 of the 7 worlds only one of them wins
-
-
-def _each_op(o):
-    """Every op of every row alone (as ``RoundSearch._complete`` asks): the
-    card pointer and the destination run for every op kind."""
-    b, j = (torch.arange(o.ops.shape[1])[None] < o.n_ops[:, None]).nonzero().T
-    return Obs(o.tok_i[b], o.tok_f[b], o.glob_i[b], o.glob_f[b], o.ops[b, j][:, None], o.ops_f[b, j][:, None], torch.ones_like(b), o.n_tokens[b], o.n_hand[b])
-
-
-def test_an_ensemble_of_one_model_plays_like_it(tmp_path):
-    """``a.pt+b.pt+c.pt`` loads a greedy :class:`Ens`: with identical members
-    it picks the single model's actions exactly, for its chosen op and for
-    every op alone (discards, targeted uses and picks, hand and joker moves
-    with their destination); samples (the round search's proposals) are
-    member 0's."""
-    from antezero_agent.ensemble import Ens
-    from antezero_agent.runtime import load_model, save_checkpoint
-
-    cfg, net = preset("smoke"), tiny()
-    paths = [tmp_path / f"{x}.pt" for x in "abc"]
-    for p in paths:
-        save_checkpoint(p, net, torch.optim.Adam(net.parameters()), cfg, 1, 1)
-    ens, _, meta = load_model("+".join(map(str, paths)))
-    assert isinstance(ens, Ens) and len(ens.members) == 3 and meta["update"] == 1
-
-    def same(o):
-        a, b = net.act(o, deterministic=True), ens.act(o, deterministic=True)
-        assert all(torch.equal(a[k], b[k]) for k in ("op", "cards", "card_seq", "dest"))
-        return a
-
-    for g in shop_states():
-        same(_each_op(obs_from_numpy(g.encode(cfg.env.play_candidates, cfg.env.deck_tokens, cfg.env.build_previews))))
-    env = make_env(cfg, num_envs=8)
-    for _ in range(60):
-        o = obs_from_numpy(env)
-        same(_each_op(o))
-        a = same(o)
-        with seeded(7, "cpu"):
-            s0 = net.act(o)
-        with seeded(7, "cpu"):
-            s1 = ens.act(o)
-        assert all(torch.equal(s0[k], s1[k]) for k in ("op", "cards", "dest"))
-        env.step(a["op"].to(torch.int32).numpy(), a["cards"].numpy().astype(np.uint32), a["dest"].to(torch.int32).numpy())

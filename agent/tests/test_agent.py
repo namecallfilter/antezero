@@ -630,3 +630,45 @@ def test_wilson():
     lo, hi = wilson(95, 100)
     assert 0.88 < lo < 0.9 and 0.97 < hi < 0.99
     assert wilson(0, 0) == (0.0, 1.0)
+
+
+class _BotGame:
+    """Stands in for the game in a bot run (the mod's ``az_bot`` and a
+    ``GameEnv``), on a simulator of its own."""
+
+    def __init__(self, run, leave_at=None):
+        self.g, self.run, self.leave_at = az.Game(run["seed"], run["back"], run["stake"]), run, leave_at
+        self.polls, self.notes = 0, []
+
+    def az_bot(self, **params):
+        self.polls += 1
+        return {"active": self.polls != self.leave_at, "paused": self.polls == 2, "run": self.run, "search": True}
+
+    def refresh(self):
+        pass
+
+    def canonical(self):
+        return dict(self.g.canonical())
+
+    def step(self, code, run, note):
+        assert run == self.run["id"]
+        self.notes.append(note)
+        self.g.step(code)
+
+
+def test_the_bot_plays_its_run_to_the_end_in_step_with_the_game(monkeypatch):
+    from antezero_agent import bot
+
+    monkeypatch.setattr(bot.time, "sleep", lambda s: None)
+    cfg, net, run = preset("smoke"), tiny(), {"id": 7, "seed": "BOTTEST1", "back": "b_red", "stake": 1}
+    critic = Critic(cfg.model).eval()
+    game = _BotGame(run)
+    assert bot.play_run(game, game, run, net, cfg, "cpu", None, critic) == "lost the run"  # an untrained policy
+    assert game.g.is_terminal() and len(game.notes) > 5 and all("sure, win " in n for n in game.notes)
+    assert game.polls == len(game.notes) + 1  # one poll per action, and one more while a menu paused it
+    # the player leaves the run: the bot stops without a result
+    game = _BotGame(run, leave_at=4)
+    assert bot.play_run(game, game, run, net, cfg, "cpu", None, None) is None and len(game.notes) == 2
+    # the game is not where the simulator is: the bot hands the run back
+    game = _BotGame(dict(run, seed="OTHERRUN"))
+    assert bot.play_run(game, game, run, net, cfg, "cpu", None, None).startswith("stopped")

@@ -1,8 +1,10 @@
--- JSON-RPC methods registered on BalatroBot's dispatcher, plus two small
--- robustness patches to BalatroBot's server.
+-- The JSON-RPC methods (served by src/server.lua, or by BalatroBot with two
+-- small robustness patches to its server).
+
+local R = AZB.rpc
 
 local function bad(send, msg)
-  send({message = tostring(msg), name = BB_ERROR_NAMES.BAD_REQUEST})
+  send({message = tostring(msg), name = R.BAD_REQUEST})
 end
 
 local function err_text(e)
@@ -13,6 +15,7 @@ end
 -- Respond with the state once settled (or a timeout report).
 local function respond_settled(send, timeout, extra)
   AZB.when_settled(function(ok, reason, frames)
+    if reason == 'cancelled' then return send({message = 'the run ended', name = R.INVALID_STATE}) end
     local r = {state = AZB.state(), settled = ok, reason = reason, frames = frames}
     if not ok then r.diag = AZB.diagnostics() end
     for k, v in pairs(extra or {}) do r[k] = v end
@@ -26,7 +29,7 @@ local function on_settled(send, timeout, fn)
   AZB.when_settled(function(ok)
     if ok then fn() else
       send({message = 'game did not settle before the action: ' .. AZB.json.encode(AZB.diagnostics()),
-            name = BB_ERROR_NAMES.INVALID_STATE})
+            name = R.INVALID_STATE})
     end
   end, timeout)
 end
@@ -34,7 +37,7 @@ end
 local ENDPOINTS = {
   {
     name = 'az_info',
-    description = 'antezero bridge version, config and settle diagnostics',
+    description = 'mod version, config and settle diagnostics',
     schema = {},
     execute = function(_, send)
       local bs = {}
@@ -90,9 +93,14 @@ local ENDPOINTS = {
       action = {type = 'table', required = true},
       settle = {type = 'boolean', required = false},
       timeout = {type = 'number', required = false},
+      run = {type = 'integer', required = false, description = 'the bot run (az_bot) the action is for'},
+      note = {type = 'string', required = false, description = 'shown with the action in a bot run'},
     },
     execute = function(args, send)
       local a = args.action
+      if args.run and not AZB.bot.owns(args.run) then
+        return send({message = 'not the current bot run', name = R.NOT_ALLOWED})
+      end
       local function finish()
         if args.settle == false then
           send({state = AZB.state(), settled = false, reason = 'immediate', frames = 0})
@@ -101,6 +109,10 @@ local ENDPOINTS = {
         end
       end
       local function main()
+        if args.run then
+          if not AZB.bot.owns(args.run) then return send({message = 'not the current bot run', name = R.NOT_ALLOWED}) end
+          AZB.bot.acting(a, args.note)
+        end
         local ok, e = pcall(AZB.act_main, a)
         if not ok then return bad(send, err_text(e)) end
         finish()
@@ -110,7 +122,7 @@ local ENDPOINTS = {
         AZB.when_settled(function(ok)
           if ok then step() else
             send({message = 'game did not settle mid-action: ' .. AZB.json.encode(AZB.diagnostics()),
-                  name = BB_ERROR_NAMES.INTERNAL_ERROR})
+                  name = R.INTERNAL_ERROR})
           end
         end, args.timeout)
       end
@@ -150,7 +162,7 @@ local ENDPOINTS = {
     execute = function(args, send)
       on_settled(send, args.timeout, function()
         local ok, codes, ph = pcall(AZB.legal_codes)
-        if not ok then return send({message = tostring(codes), name = BB_ERROR_NAMES.INTERNAL_ERROR}) end
+        if not ok then return send({message = tostring(codes), name = R.INTERNAL_ERROR}) end
         codes.__array = true
         send({codes_json = AZB.json.encode(codes), phase = ph, state = AZB.vanilla_state_name()})
       end)
@@ -162,30 +174,26 @@ local ENDPOINTS = {
     schema = {code = {type = 'string', required = true}},
     execute = function(args, send)
       if not AZB.config.allow_eval then
-        return send({message = 'az_eval disabled (set AZB_ALLOW_EVAL=1)', name = BB_ERROR_NAMES.NOT_ALLOWED})
+        return send({message = 'az_eval disabled (set AZB_ALLOW_EVAL=1)', name = R.NOT_ALLOWED})
       end
       local f, perr = loadstring('return ' .. args.code)
       if not f then f, perr = loadstring(args.code) end
       if not f then return bad(send, perr) end
       local ok, res = xpcall(f, debug.traceback)
-      if not ok then return send({message = tostring(res), name = BB_ERROR_NAMES.INTERNAL_ERROR}) end
+      if not ok then return send({message = tostring(res), name = R.INTERNAL_ERROR}) end
       local okj, js = pcall(AZB.json.encode, res)
       send({result_json = okj and js or tostring(res)})
     end,
   },
 }
 
+for _, ep in ipairs(ENDPOINTS) do R.register(ep) end
+
 local READ_ONLY = {
   health = true, gamestate = true, ['rpc.discover'] = true, screenshot = true, save = true,
 }
 
-local function install()
-  if AZB._endpoints_installed then return true end
-  if not (BB_DISPATCHER and BB_DISPATCHER.register and BB_SERVER) then return false end
-  for _, ep in ipairs(ENDPOINTS) do
-    local ok, err = BB_DISPATCHER.register(ep)
-    if not ok then sendErrorMessage('register ' .. ep.name .. ': ' .. tostring(err), 'AZB') end
-  end
+if AZB.is_bridge() and BB_DISPATCHER and BB_SERVER then
   -- 1) Any other (BalatroBot) mutating method restarts the settle count.
   local dispatch = BB_DISPATCHER.dispatch
   BB_DISPATCHER.dispatch = function(request)
@@ -201,17 +209,5 @@ local function install()
   BB_SERVER.send_response = function(response)
     if BB_SERVER.client_socket then BB_SERVER.client_socket:settimeout(10) end
     return send_response(response)
-  end
-  AZB._endpoints_installed = true
-  sendInfoMessage('registered ' .. #ENDPOINTS .. ' endpoints on BalatroBot', 'AZB')
-  return true
-end
-
-if not install() then
-  -- BalatroBot not initialised yet: retry on the first frames.
-  local love_update = love.update
-  love.update = function(dt)
-    if not AZB._endpoints_installed then install() end
-    return love_update(dt)
   end
 end

@@ -13,7 +13,7 @@ dependencies = [
 [tool.uv.workspace]
 members = [
     "agent",
-    "agent/bridge",
+    "bridge",
     "sim/py",
 ]
 

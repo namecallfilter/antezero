@@ -68,6 +68,9 @@ class BridgeClient:
         self.port = port
         self.timeout = timeout
         self._ids = itertools.count(1)
+        # Extra seconds to wait for a settling call: in a watched bot run the
+        # player's menus hold the game's settle waits for as long as they stay open.
+        self.patience = 0.0
         self._http = httpx.Client(timeout=timeout)
 
     @property
@@ -131,7 +134,7 @@ class BridgeClient:
         times in-game, each within ``settle_timeout``."""
         if settle_timeout is None:
             return {}, None
-        return {"timeout": float(settle_timeout)}, phases * settle_timeout + 30.0
+        return {"timeout": float(settle_timeout)}, phases * settle_timeout + 30.0 + self.patience
 
     def az_state(self, settle: bool = True, settle_timeout: float | None = None) -> StateDump:
         p, t = self._t(settle_timeout)
@@ -143,11 +146,19 @@ class BridgeClient:
         p.update(seed=seed, back=back, stake=int(stake))
         return self._dump(self._result("az_start", p, t, "state"), True)
 
-    def az_act(self, action: dict[str, Any], settle_timeout: float | None = None) -> StateDump:
+    def az_act(self, action: dict[str, Any], settle_timeout: float | None = None, **bot: Any) -> StateDump:
+        """``bot``: ``run`` (the bot run the action is for; refused once that
+        run is over) and ``note`` (shown with the action)."""
         # settle before, after selecting the cards, and after the action
         p, t = self._t(settle_timeout, phases=3)
-        p["action"] = action
+        p.update(bot, action=action)
         return self._dump(self._result("az_act", p, t, "state"), True)
+
+    def az_bot(self, **params: Any) -> dict[str, Any]:
+        """The bot run to play (``run``: id, seed, back, stake; while
+        ``active``) and whether a menu pauses it. ``run`` + ``status`` or
+        ``stop``: the text to show for that run."""
+        return self._result("az_bot", params, 10.0, "active")
 
     def az_inject(self, inject: dict[str, Any], settle_timeout: float | None = None) -> StateDump:
         p, t = self._t(settle_timeout, phases=2)

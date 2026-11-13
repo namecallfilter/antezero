@@ -29,8 +29,8 @@ let noise override greedy in states it already won ~90% of the time.
 Every game is a generator yielding policy requests; :meth:`RoundSearch.run`
 serves the requests of all live games (main games, rollouts, samples) in
 chunked forward passes and encodes the next chunk on a thread pool while the
-device runs the current one. On u5200 (512 paired games, .scratch/search)
-the search took the win rate from 42.6% to 53.5% at ~106x the forwards.
+device runs the current one. On an early checkpoint (512 paired games) the
+search took the win rate from 42.6% to 53.5% at ~106x the forwards.
 """
 
 from __future__ import annotations

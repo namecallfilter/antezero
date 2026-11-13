@@ -227,8 +227,6 @@ def main(argv=None):
         ap.error("--endgame-ante must be 1..8")
     if a.endgame_ante != 8 and not a.endgame_search:
         ap.error("--endgame-ante needs --endgame-search")
-    if a.sample and "+" in a.checkpoint:
-        ap.error("--sample would play an ensemble's first member alone (it only samples from member 0)")
     model, cfg, _ = load_model(a.checkpoint, a.device)
     kw = dict(
         episodes=a.episodes,

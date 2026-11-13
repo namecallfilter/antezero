@@ -30,8 +30,8 @@ class ModelConfig:
     # Run the encoder (three quarters of the weights) in bfloat16 on CUDA;
     # embeddings, norms, heads and the loss stay float32. The op logits that
     # reach ~2,000 (where bfloat16 rounds in steps of 16, which ruled out
-    # ppo.amp) are made after the encoder, from activations of norm ~7. On
-    # run28_B: gradient cosine to float32 0.9997, acting and evaluating agree
+    # ppo.amp) are made after the encoder, from activations of norm ~7. On a
+    # trained base model: gradient cosine to float32 0.9997, acting and evaluating agree
     # exactly, the learning step 1.3-1.8x faster. Part of the model: a policy
     # trained this way is also run this way.
     bf16_encoder: bool = False
@@ -109,8 +109,8 @@ class PPOConfig:
     # destination choice, so a state is kept or skipped whatever was sampled
     # there: choosing by the sampled action's own probability leaves the
     # baseline's error uncancelled on rare actions). The others move nothing:
-    # with swa_B 58% of the samples have p > 0.999 and carry 0.06% of the
-    # policy gradient (.scratch/panel_r9/gaps/gradmass.py). Skipped samples
+    # with a policy that wins ~85% of games, 58% of the samples have
+    # p > 0.999 and carry 0.06% of the policy gradient. Skipped samples
     # count as zero in the loss and in the logged kl, clipfrac and entropy,
     # so the step keeps its size; the value head learns from the kept ones.
     learn_frac: float = 1.0

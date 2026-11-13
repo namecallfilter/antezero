@@ -14,11 +14,14 @@ agent/
     search.py      determinized lookahead (test-time policy improvement)
     round_search.py risk-gated within-round search over determinized worlds (batched)
     bench.py       env-only and end-to-end PPO throughput on a device
-    play_real.py   play the real game through the bridge, sim in lockstep
+    bot.py         the agent behind the in-game bot button (plays the real game, sim in lockstep)
+    play_real.py   win rate in the real game through the bridge, sim in lockstep
     stats.py       Wilson intervals, sample sizes
-  bridge/          real-game control (BalatroBot + companion mod), see bridge/README.md
   tests/           legality, log-probs, shaping, GAE, truncation, overfit, config, training / resume
 ```
+
+The real game is reached through `bridge/` and the `mod/` it installs (see
+`bridge/README.md`).
 
 ## Commands
 
@@ -32,11 +35,11 @@ uv run python -m antezero_agent.eval CKPT --episodes 200 --search          # sea
 uv run python -m antezero_agent.eval CKPT --episodes 512 --round-search --device cuda
 uv run python -m antezero_agent.play_real agent/runs/run1/last.pt --seeds 20 --search
 uv run python -m antezero_agent.play_real CKPT --seeds 20 --round-search --device cuda
-uv run python -m antezero_agent.play_real CKPT --watch --speed 2 --round-search --device auto   # watch it play (watch_bot.cmd)
+uv run python -m antezero_agent.bot --install CKPT                 # the in-game bot button (see the root README)
 uv run --with pytest pytest agent/tests -q
 ```
 
-`play_real` needs the real-game stack (`uv sync --extra game` when the agent
+`play_real` and `bot` need the real-game stack (`uv sync --extra game` when the agent
 is installed on its own; the uv workspace has it).
 
 Logs go to `agent/runs/<name>/log.csv` (fixed columns: win rate with its 95%
@@ -147,7 +150,8 @@ single device). Value head on CLS.
 **Decoupled critic** (`ppo.critic`, off by default): a second encoder of
 the same size with an HL-Gauss value head (`critic.py`), trained offline on
 the policy's sampled play plus perturbed branches (money, vouchers, jokers,
-real build ops; `.scratch/critic`, `.scratch/critic_v`) and read frozen. Its
+real build ops; the scripts that train it are not part of this repository)
+and read frozen. Its
 value replaces the policy's value head in GAE and the truncation bootstrap;
 the head still trains, on the resulting returns. The shared head learns the
 sampled policy's value but prices counterfactual builds poorly (money at a
@@ -224,8 +228,8 @@ the end of the round in 16 determinized worlds (tags from the game and
 decision indices only); only if some world fails are candidates (greedy, 16
 policy samples, the scored plays, every play on the last hand) screened on
 those worlds, and the best 4 meet greedy on 32 fresh worlds, where the most
-clears wins and greedy wins ties. On u5200: 42.6% -> 53.5% on 512 paired
-games (p = 7e-10), at ~100x the forwards of greedy play.
+clears wins and greedy wins ties. On an early checkpoint: 42.6% -> 53.5% on
+512 paired games (p = 7e-10), at ~100x the forwards of greedy play.
 
 ## Scope
 
@@ -235,7 +239,7 @@ rules (`b_challenge` is rejected).
 
 ## Validation gates (before and during a long run)
 
-1. Simulator fidelity: oracle difftests (`sim/oracle`, see the root README)
+1. Simulator fidelity: oracle difftests (`sim/oracle`, see `sim/README.md`)
    pass for the decks / stakes being trained.
 2. Legality: `invalid_actions` stays 0.
 3. Exact log-probs: `tests/test_agent.py`; `logp_drift` small; first-epoch
@@ -244,21 +248,40 @@ rules (`b_challenge` is rejected).
    destination choices).
 5. Throughput on the training machine: `antezero_agent.bench`.
 6. Held-out evaluation per deck / stake with intervals: `eval --episodes
-   10000` gives about +-0.4% at 95% win rate (`episodes_for_1pct` is
+   10000` gives about ±0.4% at 95% win rate (`episodes_for_1pct` is
    printed); claim 95% only when the lower bound is >= 0.95. Runs cut off by
    the step limit count as not won (`unresolved` reports them).
 7. Search ablation on the same seeds before relying on search.
 8. Real game: `play_real` in lockstep (any sim divergence is reported; the
    win rate is over the games that finished in agreement).
 
+## Best result
+
+`run29_B`: **90.85% of games won** on Red Deck, White Stake, playing greedily
+(no search), over 12,288 games on three held-out seed sets (95% interval
+about ±0.5 points). It is the `base` model (~6.3M parameters) after ~4.2
+billion env steps, trained in segments, each resumed from the previous one;
+the last segment ran with
+
+```
+--set model.bf16_encoder=true env.num_envs=4096 env.w_blind=0.01 env.w_score=0.005
+      env.snapshot_prob=0.2 env.snapshot_min_ante=5 env.allow_skip=false
+      ppo.gae_lambda=0.99 ppo.epochs=1 ppo.minibatches=256 ppo.learn_frac=0.5
+      ppo.lr=2.5e-5 ppo.lr_final=2.5e-5 ppo.ent_coef=0.0007 ppo.ent_coef_final=0.0007
+      ppo.fast_rollout=2 ppo.recompute_logp=false ppo.rollout_obs_on_cpu=true
+      ppo.critic=CRITIC.pt
+```
+
+and the final weights are the plain average of its checkpoints over the last
+230 updates. Earlier segments used other settings, and the frozen critic was
+refit offline between segments, so the result cannot be reproduced from
+this repository alone.
+
 ## Compute
 
-The model is compute-bound. On this laptop (Ryzen AI 9 CPU, fp32 ~170
-GFLOP/s, no CUDA GPU) the `base` model runs ~260 states/s forward and ~120/s
-forward+backward, i.e. far too slow to train to a high win rate. On a single
-modern CUDA GPU the same code is roughly two to three orders of magnitude
-faster, and the Rust envs supply 10^5 env-steps/s on 20 cores (round
-decisions with candidates: 0.2-0.8 ms per core). Run `antezero_agent.bench`
-on the training machine for real numbers. A 95%+ win rate likely needs
-billions of env steps (an estimate, not a measurement); the first runs
-should measure the learning curve before committing to that budget.
+Rollouts are bound by the simulator's CPU time and updates by GPU memory
+bandwidth. With the settings above, one RTX 4090 with a Ryzen 9 9950X (32
+threads) trains at ~22,600 env steps/s: 23 s per update of 524,288 samples,
+13 s of it collecting the rollout. Run `antezero_agent.bench` on the training
+machine for its own numbers. An 8 GB GPU can train `base` with
+`ppo.grad_accum=4`, several times slower.

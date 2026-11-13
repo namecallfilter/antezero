@@ -1,8 +1,11 @@
 """Install check and process management for the real game.
 
-The game is launched through BalatroBot's own launcher code
+The developer tools launch the game through BalatroBot's own launcher code
 (``balatrobot.config.Config`` + ``balatrobot.platforms``), i.e. exactly what
-``uvx balatrobot serve`` does, plus the companion-mod environment variables.
+``uvx balatrobot serve`` does, plus the mod's environment variables. BalatroBot
+mutes the game and overrides its settings whenever it loads, so its mod is
+enabled for these launches only (:func:`balatrobot_enabled`); a game started
+normally runs the AnteZero mod alone.
 
 Parity defaults (:data:`PARITY`): BalatroBot patches ``love.update`` to a
 fixed ``dt`` (1/60, or 4.99/60 in ``--headless``); the oracle harness runs
@@ -11,7 +14,7 @@ and get their speed from a high frame-rate cap (2000) with rendering only on
 API calls (``render_on_api``). ``--fast`` (GAMESPEED 10) is not
 seed-faithful (see coder/balatrobot#234).
 
-The companion mod is installed from ``agent/bridge/mod/antezero_bridge`` of
+The mod is installed from ``mod/`` of
 this checkout (``AZB_MOD_SRC`` overrides it), so the bridge is meant to be
 used from the repository (as the uv workspace installs it). Tested with
 BalatroBot 1.5.x, Steamodded 1.0.0~BETA / 26.x and lovely 0.10; ``--check``
@@ -23,6 +26,7 @@ CLI: ``uv run python -m antezero_bridge.serve [--check|--install|--serve]`` (or 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import hashlib
 import os
@@ -43,8 +47,11 @@ from .client import DEFAULT_PORT, BridgeClient
 GAME_DIR = Path(os.environ.get("BALATRO_GAME_DIR", r"C:\Program Files (x86)\Steam\steamapps\common\Balatro"))
 SAVE_DIR = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Balatro"
 MODS_DIR = SAVE_DIR / "Mods"
-MOD_NAME = "antezero_bridge"
-MOD_SRC = Path(os.environ.get("AZB_MOD_SRC", Path(__file__).resolve().parents[2] / "mod" / MOD_NAME))
+MOD_NAME = "AnteZero"
+MANIFEST = MOD_NAME + ".json"
+LEGACY_MOD_NAME = "antezero_bridge"  # the mod's folder before it was renamed
+BB_DISABLED = MODS_DIR / "balatrobot" / ".lovelyignore"  # Steamodded skips a mod folder holding this file
+MOD_SRC = Path(os.environ.get("AZB_MOD_SRC", Path(__file__).resolve().parents[3] / "mod"))
 LOGS_DIR = Path(os.environ.get("AZB_LOGS", Path(tempfile.gettempdir()) / "antezero_bridge" / "logs"))
 
 
@@ -67,7 +74,7 @@ class LaunchConfig:
     fast: bool = False
     audio: bool = False
     no_shaders: bool = True
-    # Companion mod switches (see agent/bridge/mod/antezero_bridge/src/core.lua).
+    # Mod switches (see mod/src/core.lua).
     allow_saves: bool = False
     unlock_all: bool = True
     allow_eval: bool = False
@@ -131,11 +138,13 @@ def _tree_hash(p: Path) -> str:
 
 
 def install_companion_mod(src: Path = MOD_SRC, mods_dir: Path = MODS_DIR) -> Path:
-    """Copy the companion mod into the Mods folder (if changed). The copy is
-    staged next to it first, so a failure never leaves a partial mod."""
+    """Copy the mod into the Mods folder (if changed). The copy is staged
+    next to it first, so a failure never leaves a partial mod."""
     dst = mods_dir / MOD_NAME
-    if not (src / "antezero_bridge.json").exists():
-        raise FileNotFoundError(f"companion mod source not found at {src}")
+    if not (src / MANIFEST).exists():
+        raise FileNotFoundError(f"mod source not found at {src}")
+    if (mods_dir / LEGACY_MOD_NAME).exists():  # both would load
+        shutil.rmtree(mods_dir / LEGACY_MOD_NAME)
     if dst.exists() and _tree_hash(src) == _tree_hash(dst):
         return dst
     new, old = dst.with_name(MOD_NAME + ".new"), dst.with_name(MOD_NAME + ".old")
@@ -182,7 +191,8 @@ def check_stack() -> dict[str, object]:
         "lovely_dll": str(lovely_dll()) if lovely_dll().exists() else None,
         "smods": smods_ver,
         "balatrobot": mod_version("balatrobot", "balatrobot.json"),
-        "companion": mod_version(MOD_NAME, "antezero_bridge.json"),
+        "balatrobot_enabled": (MODS_DIR / "balatrobot").exists() and not BB_DISABLED.exists(),
+        "companion": mod_version(MOD_NAME, MANIFEST),
         "companion_in_sync": dst.exists() and MOD_SRC.exists() and _tree_hash(MOD_SRC) == _tree_hash(dst),
         "other_mods": sorted(p.name for p in MODS_DIR.iterdir() if p.is_dir() and p.name not in ("smods", "balatrobot", MOD_NAME, "lovely")) if MODS_DIR.exists() else [],
     }
@@ -226,9 +236,26 @@ class GameProcess:
         self.stop()
 
 
+@contextlib.contextmanager
+def balatrobot_enabled():
+    """BalatroBot's mod loads in games started inside the block, and is left
+    disabled after it."""
+    BB_DISABLED.unlink(missing_ok=True)
+    try:
+        yield
+    finally:
+        if BB_DISABLED.parent.exists():
+            BB_DISABLED.touch()
+
+
 def launch(cfg: LaunchConfig = PARITY, install: bool = True) -> GameProcess:
     """Start the game and wait until BalatroBot and the companion respond
     (the process is stopped again if that fails)."""
+    with balatrobot_enabled():
+        return _launch(cfg, install)
+
+
+def _launch(cfg: LaunchConfig, install: bool) -> GameProcess:
     probe = BridgeClient(port=cfg.port)
     try:
         if probe.health():

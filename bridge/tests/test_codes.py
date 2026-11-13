@@ -17,7 +17,7 @@ from antezero_bridge.compare import main as compare_main
 from antezero_bridge.env import Env, back_key, stake_num
 from antezero_bridge.injects import Inject
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize(
@@ -109,7 +109,7 @@ def test_generated_tables_match_rust():
 
 
 def test_generated_tables_are_current():
-    spec = importlib.util.spec_from_file_location("gen_codes", ROOT / "agent" / "bridge" / "scripts" / "gen_codes.py")
+    spec = importlib.util.spec_from_file_location("gen_codes", ROOT / "bridge" / "scripts" / "gen_codes.py")
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)
     assert gen.OUT.read_text(encoding="utf-8") == gen.render(gen.SRC.read_text(encoding="utf-8"))
@@ -295,21 +295,51 @@ def test_companion_install_is_staged(tmp_path):
 
     src, mods = tmp_path / "src", tmp_path / "Mods"
     (src / "src").mkdir(parents=True)
-    (src / "antezero_bridge.json").write_text("{}")
+    (src / "AnteZero.json").write_text("{}")
     (src / "src" / "a.lua").write_text("return 1")
-    mods.mkdir()
+    (mods / "antezero_bridge").mkdir(parents=True)  # the mod under its old name: both would load
     dst = install_companion_mod(src, mods)
     assert (dst / "src" / "a.lua").read_text() == "return 1"
     (src / "src" / "a.lua").write_text("return 2")
     install_companion_mod(src, mods)
     assert (dst / "src" / "a.lua").read_text() == "return 2"
-    assert sorted(p.name for p in mods.iterdir()) == ["antezero_bridge"]
+    assert sorted(p.name for p in mods.iterdir()) == ["AnteZero"]
+
+
+def test_balatrobot_loads_only_inside_the_tools_launch(tmp_path, monkeypatch):
+    launch = importlib.import_module("antezero_bridge.launch")  # the package's `launch` is the function
+
+    flag = tmp_path / "balatrobot" / ".lovelyignore"
+    flag.parent.mkdir()
+    flag.touch()
+    monkeypatch.setattr(launch, "BB_DISABLED", flag)
+    with launch.balatrobot_enabled():
+        assert not flag.exists()
+    assert flag.exists()
 
 
 def _client(handler) -> BridgeClient:
     c = BridgeClient()
     c._http = httpx.Client(transport=httpx.MockTransport(handler))
     return c
+
+
+def test_bot_calls_carry_the_run_and_outwait_a_menu():
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        seen[body["method"]] = (body["params"], req.extensions["timeout"]["read"])
+        result = {"state": "{}", "settled": True} if body["method"] == "az_act" else {"active": True}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    c = _client(handler)
+    c.az_act({"type": "reroll"}, settle_timeout=10.0, run=3, note="90% sure")
+    assert seen["az_act"] == ({"timeout": 10.0, "run": 3, "note": "90% sure", "action": {"type": "reroll"}}, 60.0)
+    c.patience = 1000.0  # a watched bot run: the player's menus hold the settle waits
+    c.az_act({"type": "reroll"}, settle_timeout=10.0)
+    assert seen["az_act"][1] == 1060.0
+    assert c.az_bot(run=3, stop="lost the run") == {"active": True} and seen["az_bot"][0] == {"run": 3, "stop": "lost the run"}
 
 
 def test_client_checks_the_jsonrpc_envelope():

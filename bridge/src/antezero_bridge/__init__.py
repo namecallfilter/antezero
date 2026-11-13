@@ -1,4 +1,4 @@
-"""antezero bridge: drive the real Balatro game (BalatroBot + companion mod)
+"""antezero bridge: drive the real Balatro game (the AnteZero mod)
 and the Rust simulator through one environment interface.
 
 Quick start::

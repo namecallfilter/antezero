@@ -9,8 +9,8 @@
    GIL) while the GPU picks for the other. Same training math, other games (each half
    has its own seeds) and batch-256 forward passes, so not bitwise.
 
-Measured on an RTX 4090 + EPYC 9684X (u13200, 512 envs x 128): rollout 4.61 s ->
-4.09 s (1) and 3.08 s (2); see .scratch/speed/rollout/REPORT.md.
+Measured on an RTX 4090 + EPYC 9684X (512 envs x 128): rollout 4.61 s ->
+4.09 s (1) and 3.08 s (2).
 """
 
 from __future__ import annotations

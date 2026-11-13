@@ -1,0 +1,14 @@
+{
+  "id": "antezero",
+  "name": "AnteZero",
+  "author": ["antezero"],
+  "description": "Lets the AnteZero agent play a run (the bot toggle on the New Run screen's Play button). Also the developer tools' bridge: harness-faithful actions, injections, settle-waiting and full state dumps for sim parity checks.",
+  "prefix": "AZB",
+  "main_file": "main.lua",
+  "priority": 10,
+  "badge_colour": "3F51B5",
+  "badge_text_colour": "FFFFFF",
+  "display_name": "AnteZero",
+  "version": "0.2.0",
+  "dependencies": ["Steamodded (>=1.0.0~BETA-1221a)"]
+}

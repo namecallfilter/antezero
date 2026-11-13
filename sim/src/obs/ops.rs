@@ -12,7 +12,7 @@ use crate::{actions, num};
 
 /// Consecutive free reorders (hand moves / sorts, joker moves) offered before
 /// another action is required, so a policy cannot stall a game by
-/// reordering (a trained policy padded turns up to a cap of 10). Two: run13's
+/// reordering (a trained policy padded turns up to a cap of 10). Two: one trained
 /// policy shuffled jokers up to the old cap of 5 (35 moves a game, 16% undone
 /// at once), and a paired eval scored cap 2 = cap 5 (-0.1 pts) and cap 1 -1.0.
 pub const MAX_REARRANGES: u8 = 2;

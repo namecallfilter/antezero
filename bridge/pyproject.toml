@@ -1,7 +1,7 @@
 [project]
 name = "antezero-bridge"
 version = "0.1.0"
-description = "Real-game (BalatroBot) and sim backends behind one environment interface for antezero"
+description = "Real-game (the AnteZero mod) and sim backends behind one environment interface for antezero"
 authors = [
     { name = "namecallfilter", email = "namecallfilter@users.noreply.github.com" }
 ]

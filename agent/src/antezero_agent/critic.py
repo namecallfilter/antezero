@@ -1,7 +1,7 @@
 """A decoupled critic for PPO (``ppo.critic``): its own copy of :class:`~.model.Net`'s token encoder with an
 HL-Gauss value head (a categorical over return bins; Farebrother et al. 2024) and the P(win) head its checkpoints
 were trained with (unused by PPO). ``value`` is the expected bin value, in the policy value head's units. Trained
-offline and gated in .scratch/critic and .scratch/critic_v; PPO only reads it (frozen)."""
+offline (the training scripts are not part of this repository); PPO only reads it (frozen)."""
 
 from __future__ import annotations
 
@@ -33,9 +33,9 @@ class Critic(nn.Module):
         edges = torch.linspace(V_MIN, V_MAX, N_BINS + 1)
         self.register_buffer("centers", (edges[:-1] + edges[1:]) / 2, persistent=False)
 
-    def value(self, o: Obs, T: int | None = None) -> torch.Tensor:
-        """[B] values. ``T``: the token slots to run (default: the longest list, one GPU sync). Float inputs are
-        clipped to +-6e4 and rounded to float16, as the critic's training data was."""
+    def _cls(self, o: Obs, T: int | None = None) -> torch.Tensor:
+        """[B, d] state encodings. ``T``: the token slots to run (default: the longest list, one GPU sync). Float
+        inputs are clipped to +-6e4 and rounded to float16, as the critic's training data was."""
         T = T or max(int(o.n_tokens.max().item()), 1)
         ti, tf = o.tok_i[:, :T], o.tok_f[:, :T].clamp(-6e4, 6e4).half().float()
         x = self.tok_lin(tf)
@@ -48,12 +48,19 @@ class Critic(nn.Module):
         pad = torch.cat([torch.zeros_like(o.n_tokens[:, None], dtype=torch.bool), torch.arange(T, device=ti.device)[None] >= o.n_tokens[:, None]], 1)
         # The encoder may run in float16 (train.py on CUDA); the rest stays float32.
         enc = self.encoder(h.to(self.encoder.layers[0].linear1.weight.dtype), src_key_padding_mask=pad).float()
-        logits = self.v_head(self.out_norm(enc)[:, 0])
-        return (F.softmax(logits, -1) * self.centers).sum(-1)
+        return self.out_norm(enc)[:, 0]
+
+    def value(self, o: Obs, T: int | None = None) -> torch.Tensor:
+        """[B] values."""
+        return (F.softmax(self.v_head(self._cls(o, T)), -1) * self.centers).sum(-1)
+
+    def win_prob(self, o: Obs) -> torch.Tensor:
+        """[B] estimated probabilities that the run is won (not used by PPO; shown by the in-game bot)."""
+        return torch.sigmoid(self.w_head(self._cls(o))).squeeze(-1)
 
 
 def critic_state(path) -> dict:
-    """The critic weights of a checkpoint: a critic's own ({"model": ...}, .scratch/critic) or a training
+    """The critic weights of a checkpoint: a critic's own ({"model": ...}) or a training
     checkpoint that holds one ("critic")."""
     ck = torch.load(path, map_location="cpu", weights_only=True)
     if "critic" in ck:

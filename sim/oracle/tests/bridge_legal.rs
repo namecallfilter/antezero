@@ -1,4 +1,4 @@
-//! The real-game bridge's legal-action port (`agent/bridge/mod/.../legal.lua`)
+//! The real-game bridge's legal-action port (`mod/src/legal.lua`)
 //! run on the oracle's (vanilla) game, compared with `Game::legal_actions`
 //! after every step of differential games. Needs the game's `lua51.dll`:
 //! `cargo test -p oracle --test bridge_legal -- --include-ignored`.
@@ -14,8 +14,7 @@ use sim::num;
 /// Loads legal.lua with stand-ins for the two helpers it takes from the
 /// mod's core.lua (vanilla has no SMODS booster state).
 fn load_legal(o: &Oracle) {
-	let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-		.join("../../agent/bridge/mod/antezero_bridge/src/legal.lua");
+	let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mod/src/legal.lua");
 	let path = path.display().to_string().replace('\\', "/");
 	o.exec(&format!(
         r"

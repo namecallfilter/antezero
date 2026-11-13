@@ -36,7 +36,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "antezero-agent", editable = "agent" },
-    { name = "antezero-bridge", editable = "agent/bridge" },
+    { name = "antezero-bridge", editable = "bridge" },
     { name = "antezero-sim", editable = "sim/py" },
 ]
 
@@ -63,7 +63,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "antezero-bridge", marker = "extra == 'game'", editable = "agent/bridge" },
+    { name = "antezero-bridge", marker = "extra == 'game'", editable = "bridge" },
     { name = "antezero-sim", editable = "sim/py" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "torch", marker = "sys_platform != 'win32'", specifier = ">=2.9" },
@@ -77,7 +77,7 @@ dev = [{ name = "pytest", specifier = ">=9.0" }]
 [[package]]
 name = "antezero-bridge"
 version = "0.1.0"
-source = { editable = "agent/bridge" }
+source = { editable = "bridge" }
 dependencies = [
     { name = "balatrobot" },
     { name = "httpx" },

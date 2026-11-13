@@ -96,7 +96,8 @@ class GameEnv:
         self.last_route = "harness"
         return self.state()
 
-    def step(self, action: Action | str) -> Obs:
+    def step(self, action: Action | str, **bot: Any) -> Obs:
+        """``bot``: see :meth:`BridgeClient.az_act` (harness route only)."""
         a = parse_action(action)
         prev = self._state_name()
         how = self.route_for(a)
@@ -108,7 +109,7 @@ class GameEnv:
                 self.client.call(method, params, timeout=self.settle_timeout + 30)
                 dump = self.client.az_state(settle=True, settle_timeout=self.settle_timeout)
             else:
-                dump = self.client.az_act(a.harness(), settle_timeout=self.settle_timeout)
+                dump = self.client.az_act(a.harness(), settle_timeout=self.settle_timeout, **bot)
         except RPCError as e:
             if e.name in REJECTIONS:
                 raise ActionRejected(f"{a.code()} [{how}]: {e.message}") from e

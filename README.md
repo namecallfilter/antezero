@@ -1,45 +1,82 @@
-# antezero
+# AnteZero
 
-A bit-exact Balatro (v1.0.1o) simulator in Rust, verified against the real
-game, plus the tooling to train and run a transformer agent on it.
+A Balatro agent: a bit-exact Rust simulator of the game (v1.0.1o), a
+transformer policy trained on it with PPO, and a mod that lets it play your
+real game.
 
-| path | what |
-|---|---|
-| `sim/` | Rust simulator (`sim` crate): game logic, frame-exact event timing, deterministic RNG streams, `clone()` snapshots, learning interface (`sim::obs`) |
-| `sim/oracle/` | differential testing against the real game's Lua run headless in the game's own `lua51.dll` (`difftest`, `replay`, `ocli`), golden trajectories |
-| `sim/py/` | PyO3 bindings: `antezero_sim.Game`, `antezero_sim.VecEnv` |
-| `agent/` | PPO transformer agent (`antezero_agent`), see `agent/README.md` |
-| `agent/bridge/` | controls the real game (BalatroBot + Steamodded + lovely + companion mod), `antezero_bridge`, see `agent/bridge/README.md` |
+It was trained on Red Deck, White Stake only, where it wins about 91% of
+games without any search.
 
-The repository root is both the Cargo workspace (`Cargo.toml`) and the uv
-workspace (`pyproject.toml`); run the commands below from it.
+Not affiliated with LocalThunk or Playstack. You need your own copy of the
+game. No trained checkpoint is included.
+
+## Watch it play
+
+Needs [Balatro](https://store.steampowered.com/app/2379780/Balatro/) on
+Windows (Steam) with
+[lovely](https://github.com/ethangreen-dev/lovely-injector) and
+[Steamodded](https://github.com/Steamodded/smods), [uv](https://docs.astral.sh/uv/),
+[Rust](https://www.rust-lang.org/tools/install), and a checkpoint. A CUDA GPU
+is recommended.
 
 ```
-uv sync                                                  # Python packages; builds the Rust extension too
-cargo test --release                                     # simulator tests + golden trajectories
-cargo test --release -- --include-ignored                # also the oracle tests (need the game, see below)
-uv run --with pytest pytest agent/tests agent/bridge/tests -q
-cargo run --release -p sim --example bench               # simulator throughput
-cargo run --release -p oracle --bin difftest -- 20 1 400 b_red 1 0.15
+uv sync
+uv run python -m antezero_agent.bot --install path/to/checkpoint.pt
 ```
 
-**Golden trajectories** (`sim/oracle/tests/golden.rs`, no game needed): 200
-seeded games over every deck and stake are fingerprinted step by step, the
-simulator state and timeline (`golden_sim.txt`) separately from the learning
-observation (`golden_obs.txt`), so a refactor that changes behaviour fails in
-seconds. After an intended change re-record with `GOLDEN_BLESS=obs` (the
-simulator part must still match) or `GOLDEN_BLESS=all`.
+Then start Balatro, open New Run, switch on the bot toggle in the corner of
+the Play button, and press Play. Esc, Run Info and Options pause the bot.
+Bot runs never touch your saves, unlocks or stats. Search and the bot's speed
+are under Mods > AnteZero > Config.
 
-**Oracle** (`sim/oracle`, Windows): runs the game's scripts headlessly in the
-game's own LuaJIT. It needs `lua51.dll` from the Steam install (or
-`BALATRO_LUA51`) and the extracted game scripts in `reference/balatro` (or
-`BALATRO_SRC`); it never starts the game or touches its saves. `difftest
-[games] [first_seed] [max_steps] [back] [stake] [inject_rate]` plays random
-games in both engines and compares the canonical state (all RNG streams
-included) and the timeline of RNG calls, draws and removals after every
-step; frame offsets are counted, and fail the run with `ORACLE_FRAMES=1`. A
-diverging game's history is written to `.scratch/` and can be replayed with
-`replay <history>`. Both exit with status 1 on a divergence.
+## Train and evaluate
 
-The simulator's tables (`sim/src/data_gen.rs`) are generated from the game's
-prototypes (see `sim/oracle/lua/gen_data.lua` for the command).
+```
+uv run az-train --preset base --name run1 --device cuda
+uv run az-eval agent/runs/run1/last.pt --episodes 1024 --device cuda
+```
+
+## Test
+
+```
+cargo test --release
+uv run --with pytest pytest agent/tests bridge/tests -q
+```
+
+## Win rates
+
+Games won by the best checkpoint, playing its own choice with no search,
+over 1,024 games per cell (about ±3 points). Rows are decks, columns are
+stakes. Only the bold cell (Red Deck, White Stake) was trained on; the agent
+has never played any other deck or stake.
+
+<table>
+<tr><th rowspan="2">Deck</th><th colspan="8">Stake</th></tr>
+<tr><th>White</th><th>Red</th><th>Green</th><th>Black</th><th>Blue</th><th>Purple</th><th>Orange</th><th>Gold</th></tr>
+<tr><th>Red Deck</th><td align="right"><b>91%</b></td><td align="right">79%</td><td align="right">50%</td><td align="right">32%</td><td align="right">27%</td><td align="right">8%</td><td align="right">2%</td><td align="right">1%</td></tr>
+<tr><th>Blue Deck</th><td align="right">96%</td><td align="right">89%</td><td align="right">66%</td><td align="right">44%</td><td align="right">39%</td><td align="right">16%</td><td align="right">5%</td><td align="right">2%</td></tr>
+<tr><th>Yellow Deck</th><td align="right">92%</td><td align="right">82%</td><td align="right">57%</td><td align="right">44%</td><td align="right">31%</td><td align="right">10%</td><td align="right">3%</td><td align="right">1%</td></tr>
+<tr><th>Green Deck</th><td align="right">92%</td><td align="right">88%</td><td align="right">59%</td><td align="right">39%</td><td align="right">29%</td><td align="right">7%</td><td align="right">2%</td><td align="right">1%</td></tr>
+<tr><th>Black Deck</th><td align="right">63%</td><td align="right">41%</td><td align="right">15%</td><td align="right">11%</td><td align="right">7%</td><td align="right">2%</td><td align="right">1%</td><td align="right">0%</td></tr>
+<tr><th>Magic Deck</th><td align="right">90%</td><td align="right">79%</td><td align="right">47%</td><td align="right">30%</td><td align="right">25%</td><td align="right">7%</td><td align="right">2%</td><td align="right">1%</td></tr>
+<tr><th>Nebula Deck</th><td align="right">88%</td><td align="right">74%</td><td align="right">44%</td><td align="right">31%</td><td align="right">23%</td><td align="right">6%</td><td align="right">2%</td><td align="right">0%</td></tr>
+<tr><th>Ghost Deck</th><td align="right">87%</td><td align="right">72%</td><td align="right">44%</td><td align="right">27%</td><td align="right">22%</td><td align="right">5%</td><td align="right">2%</td><td align="right">0%</td></tr>
+<tr><th>Abandoned Deck</th><td align="right">86%</td><td align="right">71%</td><td align="right">40%</td><td align="right">26%</td><td align="right">21%</td><td align="right">7%</td><td align="right">2%</td><td align="right">0%</td></tr>
+<tr><th>Checkered Deck</th><td align="right">88%</td><td align="right">76%</td><td align="right">41%</td><td align="right">27%</td><td align="right">22%</td><td align="right">6%</td><td align="right">2%</td><td align="right">0%</td></tr>
+<tr><th>Zodiac Deck</th><td align="right">91%</td><td align="right">80%</td><td align="right">52%</td><td align="right">39%</td><td align="right">32%</td><td align="right">10%</td><td align="right">3%</td><td align="right">1%</td></tr>
+<tr><th>Painted Deck</th><td align="right">77%</td><td align="right">60%</td><td align="right">24%</td><td align="right">14%</td><td align="right">12%</td><td align="right">2%</td><td align="right">0%</td><td align="right">0%</td></tr>
+<tr><th>Anaglyph Deck</th><td align="right">86%</td><td align="right">61%</td><td align="right">35%</td><td align="right">25%</td><td align="right">15%</td><td align="right">5%</td><td align="right">1%</td><td align="right">0%</td></tr>
+<tr><th>Plasma Deck</th><td align="right">72%</td><td align="right">55%</td><td align="right">21%</td><td align="right">13%</td><td align="right">10%</td><td align="right">2%</td><td align="right">0%</td><td align="right">0%</td></tr>
+<tr><th>Erratic Deck</th><td align="right">85%</td><td align="right">74%</td><td align="right">41%</td><td align="right">29%</td><td align="right">21%</td><td align="right">4%</td><td align="right">1%</td><td align="right">0%</td></tr>
+</table>
+
+## More
+
+- [sim/README.md](sim/README.md): the simulator and how it is checked against the real game
+- [agent/README.md](agent/README.md): the agent's design, training and evaluation
+- [bridge/README.md](bridge/README.md): the mod (`mod/`) and the real-game tools
+
+## License
+
+[MIT](LICENSE): use and modify it freely, keeping the copyright notice that
+credits this repository.
