@@ -93,9 +93,22 @@ local ENDPOINTS = {
     },
     execute = function(args, send)
       local a = args.action
-      if args.run and not AZB.bot.owns(args.run) then
-        return send({message = 'not the current bot run', name = R.NOT_ALLOWED})
+      -- An action of the bot's turn is refused, before it touches the game,
+      -- if the turn is over or the game is no longer as the bot read it.
+      local function refused()
+        if not args.run then return false end
+        if not AZB.bot.owns(args.run) then
+          send({message = 'not the current bot run', name = R.NOT_ALLOWED})
+          return true
+        end
+        -- decided on the game as it was before the menu (az_bot reports it)
+        if AZB.bot.interrupted then
+          send({message = 'a menu was open since the bot read the game', name = R.INVALID_STATE})
+          return true
+        end
+        return false
       end
+      if refused() then return end
       local function finish()
         if args.settle == false then
           send({state = AZB.state(), settled = false, reason = 'immediate', frames = 0})
@@ -104,12 +117,8 @@ local ENDPOINTS = {
         end
       end
       local function main()
-        if args.run then
-          if not AZB.bot.owns(args.run) then return send({message = 'not the current bot run', name = R.NOT_ALLOWED}) end
-          -- decided on the game as it was before the menu (az_bot reports it)
-          if AZB.bot.interrupted then return send({message = 'a menu was open since the bot read the game', name = R.INVALID_STATE}) end
-          AZB.bot.acting(a, args.note)
-        end
+        if refused() then return end
+        if args.run then AZB.bot.acting(a, args.note) end
         local ok, e = pcall(AZB.act_main, a)
         if not ok then return bad(send, err_text(e)) end
         finish()
@@ -124,6 +133,7 @@ local ENDPOINTS = {
         end, args.timeout)
       end
       on_settled(send, args.timeout, function()
+        if refused() then return end
         local ok, needs = pcall(AZB.act_prepare, a)
         if not ok then return bad(send, err_text(needs)) end
         if needs then return after_settle(main) end

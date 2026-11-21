@@ -63,6 +63,7 @@ def _sources() -> str:
                 _definition(ui, h)
                 for h in ("function create_toggle(", "function create_UIBox_options(", "function create_UIBox_generic_options(", "function UIBox_button(")
             ),
+            _definition(_game_file("engine/controller.lua"), "function Controller:key_press("),
             _definition(_game_file("engine/controller.lua"), "function Controller:key_hold_update(", until="function "),
             *(_definition(game, h) for h in ("function Game:save_settings(", "function Game:save_progress(")),
             "save_thread = assert(loadstring(" + _long_string(_game_file("engine/save_manager.lua")) + "))",
@@ -142,7 +143,7 @@ local red = {key = 'b_red', name = 'Red Deck', order = 1, unlocked = true, disco
 local blue = {key = 'b_blue', name = 'Blue Deck', order = 2, unlocked = true, discovered = true}
 G = setmetatable({
   FUNCS = {start_run = function(e, args) G:delete_run() G:start_run(args) end},
-  ARGS = {}, C = setmetatable({UI = setmetatable({}, {__index = function() return {} end})}, {__index = function() return {} end}),
+  ARGS = {}, UIDEF = {run_setup = function() return {} end}, C = setmetatable({UI = setmetatable({}, {__index = function() return {} end})}, {__index = function() return {} end}),
   UIT = {T = 1, B = 2, C = 3, R = 4, O = 5, ROOT = 7}, ROOM = {T = {w = 20, h = 11}},
   E_MANAGER = {add_event = noop, clear_queue = noop, queues = {base = {}}}, CONTROLLER = {locks = {}},
   STAGES = {MAIN_MENU = 1, RUN = 2}, STAGE = 1, TIMERS = {TOTAL = 0}, ASSET_ATLAS = {},
@@ -157,7 +158,7 @@ G = setmetatable({
   P_CENTER_POOLS = {Back = {red, blue}, Stake = {white}},
   SAVE_MANAGER = {channel = {push = function(_, msg) queue[#queue+1] = STR_UNPACK(STR_PACK(msg)) end}}, -- a copy, as LOVE sends it
   GAME = {won = false},
-  STATES = {SHOP = 5, GAME_OVER = 4, ROUND_EVAL = 8},
+  STATES = {SELECTING_HAND = 1, SHOP = 5, GAME_OVER = 4, ROUND_EVAL = 8},
 }, {__index = Game})
 G.P_LOCKED = {G.P_CENTERS.j_blueprint}
 G.FUNCS.exit_overlay_menu = function() G.OVERLAY_MENU = nil end
@@ -386,6 +387,49 @@ def test_the_players_choices_for_the_next_run_are_kept_while_a_run_does_not_coun
     """)
 
 
+def test_the_new_run_screen_of_a_run_that_does_not_count_offers_what_the_player_has(game):
+    game.run("""
+    local blue = G.P_CENTERS.b_blue
+    blue.unlocked = false
+    play('b_red')
+    bot_toggle(true)
+    blue.unlocked = true -- the bot's run unlocks Blue Deck, and wins
+    profile().career_stats.c_wins = 3
+    G.UIDEF.run_setup() -- New Run, from the run's menu or its end screen
+    assert(not blue.unlocked and profile().career_stats.c_wins == 2, 'the screen offers what the player has')
+    assert(AZB.bot.protected, 'the run still does not count')
+    blue.unlocked = true -- Back: the run goes on, and unlocks it again
+    profile().career_stats.c_wins = 5
+    G:main_menu()
+    assert(not blue.unlocked and profile().career_stats.c_wins == 2, 'the set-aside profile is as it was')
+    """)
+
+
+def test_the_players_unlock_notes_wait_for_their_next_run(game):
+    game.run("""
+    play('b_red')
+    disk['1/unlock_notify.jkr'] = 'j_blueprint' .. string.char(10) -- from before the bot took over
+    bot_toggle(true)
+    unlock_notify() -- the end screen's New Run
+    assert(disk['1/unlock_notify.jkr'] and #shown == 0, 'kept while the run does not count')
+    play('b_blue')
+    assert(not disk['1/unlock_notify.jkr'] and shown[1] == 'j_blueprint', "shown at the player's next run")
+    """)
+
+
+def test_a_bot_win_does_not_spare_the_run_the_player_left_unfinished(game):
+    game.run("""
+    play('b_red')
+    G.SAVED_GAME = {GAME = {won = false}} -- the player's run, saved as it was handed over
+    bot_toggle(true)
+    G.GAME.won = true -- the bot wins it
+    play('b_blue') -- and the player starts another
+    flush()
+    assert(profile().high_scores.current_streak.amt == 0, 'the unfinished run ends the streak')
+    assert(on_disk('1/profile.jkr').high_scores.current_streak.amt == 0, 'saved')
+    """)
+
+
 def test_the_skipped_tutorial_is_never_saved(game):
     game.run("""
     SMODS.current_mod.config.count = true
@@ -470,6 +514,22 @@ def test_holding_r_in_a_run_that_does_not_count_restarts_it_as_the_players(game)
     """)
 
 
+def test_holding_r_while_the_bot_plays_restarts_the_run(game):
+    game.run("""
+    play('b_red')
+    bot_toggle(true)
+    G.GAME.round = 2
+    local c = setmetatable({held_key_times = {}, held_keys = {}, pressed_keys = {}, locks = {}}, {__index = Controller})
+    c:key_press('x')
+    assert(not c.pressed_keys.x, 'other keys stay locked while the bot plays')
+    c:key_press('r')
+    assert(c.pressed_keys.r)
+    c.held_key_times.r = 0 -- as the game's key_press_update starts the hold
+    for _ = 1, 10 do c:key_hold_update('r', 0.1) end
+    assert(not AZB.bot.protected and G.GAME.round == 0, 'a new run')
+    """)
+
+
 def test_a_run_handed_back_says_it_does_not_count(game):
     game.run("""
     play('b_red')
@@ -507,23 +567,32 @@ def test_the_bot_hears_of_a_menu_opened_since_its_last_poll(game):
     """)
 
 
-def test_an_action_decided_before_a_menu_was_opened_is_refused(game):
-    reply = game.run("""
+def test_an_action_of_a_turn_that_is_over_is_refused_before_it_touches_the_hand(game):
+    replies = game.run("""
     play('b_red')
     bot_toggle(true)
-    G.STATE, G.STATE_COMPLETE, G.shop, G.shop_jokers = G.STATES.SHOP, true, {}, {cards = {}}
+    local cards = {{}, {highlighted = true}} -- what the player selected
+    G.hand = {cards = cards,
+              unhighlight_all = function(self) for _, c in ipairs(self.cards) do c.highlighted = false end end,
+              add_to_highlighted = function(self, c) c.highlighted = true end}
+    G.STATE, G.STATE_COMPLETE, G.buttons = G.STATES.SELECTING_HAND, true, {}
     poll()
+    local replies, run = {}, AZB.bot.run.id
+    local function act() AZB.rpc.az_act({action = {type = 'play', cards = {1}}, run = run}, function(r) replies[#replies+1] = r end) end
     G.OVERLAY_MENU = MENU -- opened after the bot's poll
     AZB.bot.tick()
-    local reply
-    AZB.rpc.az_act({action = {type = 'reroll'}, run = AZB.bot.run.id}, function(r) reply = r end)
-    for _ = 1, 5 do AZB.tick() end
-    assert(not reply, 'held while the menu is open')
+    act()
     G.OVERLAY_MENU = nil
+    poll()
+    G.CONTROLLER.locks.test = true -- the game is busy when the next action comes ...
+    act()
+    bot_toggle(true) -- ... and the player takes the run back meanwhile
+    G.CONTROLLER.locks.test = nil
     for _ = 1, AZB.config.quiet_frames + 2 do AZB.tick() end
-    return AZB.json.encode(reply)
+    assert(not cards[1].highlighted and cards[2].highlighted, 'the hand as the player left it')
+    return AZB.json.encode(replies)
     """)
-    assert '"name":"INVALID_STATE"' in reply and "menu" in reply
+    assert '"name":"INVALID_STATE"' in replies and '"name":"NOT_ALLOWED"' in replies
 
 
 def test_the_bot_waits_on_the_win_screen_and_plays_on_in_endless_mode(game):
@@ -541,6 +610,10 @@ def test_the_bot_waits_on_the_win_screen_and_plays_on_in_endless_mode(game):
     local r = poll()
     assert(r.paused and r.interrupted and AZB.bot.line:find('Endless Mode'), AZB.bot.line)
     G.FUNCS.exit_overlay_menu() -- Endless Mode
+    G.E_MANAGER.queues.base = {{blocking = true}} -- the round's end, still running
+    for _ = 1, AZB.config.quiet_frames + 2 do AZB.tick() end
+    assert(not reply, 'answered before the round had ended')
+    G.E_MANAGER.queues.base = {}
     for _ = 1, AZB.config.quiet_frames + 2 do AZB.tick() end
     assert(reply and reply.settled, 'the game after the win screen')
     assert(AZB.bot.active and not poll().paused)

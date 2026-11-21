@@ -47,7 +47,7 @@ end
 
 local function protect()
   if B.protected or cfg.count then return end
-  local s = {flags = {}, locked = {unpack(G.P_LOCKED)}, profile = copy_table(G.PROFILES[G.SETTINGS.profile])}
+  local s = {flags = {}, locked = {unpack(G.P_LOCKED)}, profile = copy_table(G.PROFILES[G.SETTINGS.profile]), won = G.GAME.won}
   for _, t in ipairs(TABLES()) do
     for _, v in pairs(t or {}) do
       if type(v) == 'table' then s.flags[v] = {v.unlocked, v.discovered, v.alerted, v.alert} end
@@ -56,6 +56,27 @@ local function protect()
   B.saved = s
   B.protected = true
   AZB.guard_saves(true)
+end
+
+-- Puts the profile and unlocks back as they were when the run stopped
+-- counting; the set-aside copy stays as it was, for the next time.
+local function restore()
+  local s = B.saved
+  for v, f in pairs(s.flags) do v.unlocked, v.discovered, v.alerted, v.alert = f[1], f[2], f[3], f[4] end
+  G.P_LOCKED = {unpack(s.locked)}
+  -- as unlock_card orders the decks
+  table.sort(G.P_CENTER_POOLS.Back, function(a, b) return (a.order - (a.unlocked and 100 or 0)) < (b.order - (b.unlocked and 100 or 0)) end)
+  local live = G.PROFILES[G.SETTINGS.profile]
+  local profile = copy_table(with_choices(s.profile, live))
+  for k in pairs(live) do live[k] = nil end
+  for k, v in pairs(profile) do live[k] = v end
+  -- Steamodded's per-stake views of the usage tables (wins_by_key, ...) were
+  -- copied bound to the run's tables; bind them anew, as loading a profile does.
+  if convert_save_data then convert_save_data(live, true) end
+  set_discover_tallies()
+  set_profile_progress()
+  -- A progress save queued during the run would still write the run's unlocks and discoveries.
+  if G.FILE_HANDLER and G.FILE_HANDLER.progress then G:save_progress() end
 end
 
 -- Ends the bot's part in the run on screen, which is leaving: its turn, the
@@ -69,31 +90,35 @@ function B.release()
     B.tutorial = nil
   end
   if not B.protected then return end
-  local s = B.saved
-  for v, f in pairs(s.flags) do v.unlocked, v.discovered, v.alerted, v.alert = f[1], f[2], f[3], f[4] end
-  G.P_LOCKED = s.locked
-  -- as unlock_card orders the decks
-  table.sort(G.P_CENTER_POOLS.Back, function(a, b) return (a.order - (a.unlocked and 100 or 0)) < (b.order - (b.unlocked and 100 or 0)) end)
-  local live = G.PROFILES[G.SETTINGS.profile]
-  local profile = with_choices(s.profile, live)
-  for k in pairs(live) do live[k] = nil end
-  for k, v in pairs(profile) do live[k] = v end
-  -- Steamodded's per-stake views of the usage tables (wins_by_key, ...) were
-  -- copied bound to the run's tables; bind them anew, as loading a profile does.
-  if convert_save_data then convert_save_data(live, true) end
-  set_discover_tallies()
-  set_profile_progress()
-  -- A progress save queued during the run would still write the run's unlocks and discoveries.
-  if G.FILE_HANDLER and G.FILE_HANDLER.progress then G:save_progress() end
+  restore()
+  -- The game judges the run left behind (the streak) by G.GAME: the
+  -- player's is the run they handed over, not the bot's win.
+  G.GAME.won = B.saved.won
   B.saved = nil
   AZB.guard_saves(false)
   B.protected = false
+end
+
+-- The next run is chosen from what the player has: the New Run screen of a
+-- run that does not count is built on the profile without the run's unlocks.
+local run_setup = G.UIDEF.run_setup
+function G.UIDEF.run_setup(...)
+  if B.protected then restore() end
+  return run_setup(...)
 end
 
 local unlock_achievement_ = unlock_achievement
 function unlock_achievement(...)
   if B.protected then return end
   return unlock_achievement_(...)
+end
+
+-- The player's pending unlock notes (shown, then deleted, by the end
+-- screens' New Run) wait for the player's next run.
+local unlock_notify_ = unlock_notify
+function unlock_notify(...)
+  if B.protected then return end
+  return unlock_notify_(...)
 end
 
 -- What a save the game sends while the bot has a part in the run writes
@@ -400,7 +425,7 @@ end
 
 local key_press = Controller.key_press
 function Controller:key_press(key)
-  if locked() and key ~= 'escape' then return end
+  if locked() and key ~= 'escape' and key ~= 'r' then return end -- the run's menu, and holding R
   return key_press(self, key)
 end
 
