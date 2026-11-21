@@ -32,19 +32,24 @@ before the player opened a menu is refused, and decided again. The bot plays
 on a fixed 1/60 s clock at game speed 1 (the bot's speed setting is the
 number of such updates per 1/60 s) and skips the tutorial, which is saved as
 the player left it. At a win it waits on the win screen: Endless Mode lets it
-play on, New Run and Main Menu end the run as usual.
+play on, New Run and Main Menu end the run as usual. From Endless ante 39 the
+game's blind sizes overflow, and the bot hands the run back.
 
 With "Bot runs count" off (the default) the run stops counting when the bot
 takes over, for the rest of it, even after it is handed back: the saved run
 stays as it was then (Continue returns there), achievements are not awarded,
 what the game saves meanwhile is the player's profile as it was then (with any
 settings changed in Options and the choices made for the next run), and the
-profile, unlocks and discoveries are put back when the run is left. With it on,
+profile, unlocks and discoveries are put back when the run is left: the New
+Run screen opened from the run already shows them as the player has them, and
+the player's pending unlock notes wait for their next run. Leaving the run
+ends the streak as leaving the run handed over would. With it on,
 the run counts like one the player played: wins, stats, stake progress,
 unlocks, discoveries and achievements are kept and saved. Search, the speed
 and that switch are the mod's settings (Mods > AnteZero > Config; 1x, search
 on, not counting by default). While the bot plays, input is limited to Esc,
-Run Info and Options, whose menus pause it; a strip at the top shows its last
+Run Info and Options, whose menus pause it, and holding R, which restarts the
+run as the player's; a strip at the top shows its last
 action, how sure the policy was, and the critic's win estimate.
 
 ## Developer tools
