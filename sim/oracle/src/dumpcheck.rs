@@ -240,7 +240,10 @@ impl Check<'_> {
 		if !d.is_empty() {
 			return Err(self.fail(
 				step,
-				&format!("the simulator's dump differs from the game's: {}", shown(&d)),
+				&format!(
+					"the simulator's dump differs from the game's: {}",
+					shown(&d)
+				),
 			));
 		}
 		let mut imp = Game::from_dump(j).map_err(|e| self.fail(step, &e.to_string()))?;
@@ -252,8 +255,8 @@ impl Check<'_> {
 				&format!("import differs from its dump: {}", shown(&d)),
 			));
 		}
-		// The game pauses on GAME_OVER with its pending events unrun, so only
-		// the outcome compares (as in `canon::diff`).
+		// At GAME_OVER the run is over: its canonical state is all there is to
+		// compare (above), and no decision follows.
 		if imp.flow.phase == Phase::GameOver {
 			if !imp.is_terminal() || self.g.flow.phase != Phase::GameOver {
 				return Err(self.fail(step, "the imported game over is not the game's"));
