@@ -1,10 +1,10 @@
 //! What the simulator's Steamodded mode plays as the real game (which runs
 //! Steamodded) does, where it differs from vanilla.
 
-use sim::data::{Back, Joker, Spectral};
+use sim::data::{Back, Center, Joker, Spectral, Voucher};
 use sim::inject::{Consumable, Inject};
 use sim::json::Json;
-use sim::{Action, Game, Stake};
+use sim::{Action, Game, Phase, Stake};
 
 fn act(g: &mut Game, code: &str) {
 	let a: Action = code.parse().expect("an action code");
@@ -59,4 +59,50 @@ fn a_legendary_joker_takes_no_rarity_roll() {
 		let rolled = g.to_dump().get("rng").get("rarity1sou") != &Json::Null;
 		assert_eq!(rolled, !steamodded, "steamodded: {steamodded}");
 	}
+}
+
+/// Steamodded's display card of a redeemed voucher leaves the voucher in
+/// `used_jokers`, which the simulator does not track: no pool it draws from
+/// changes for it (a voucher's pool skips the redeemed ones anyway).
+#[test]
+fn a_redeemed_voucher_in_used_jokers_changes_no_draw() {
+	let mut plain = Game::new_run("VOUCHER", Back::Red, Stake::White);
+	plain.inject(Inject::Voucher(Voucher::OverstockNorm));
+	plain.inject(Inject::Dollars(500.0));
+	let mut marked = plain.clone();
+	marked
+		.history
+		.used_jokers
+		.insert(Center::Voucher(Voucher::OverstockNorm));
+	let (mut acts, mut shops) = (Vec::new(), 0);
+	for step in 0..400 {
+		shops += usize::from(plain.flow.phase == Phase::Shop);
+		plain.legal_actions(&mut acts);
+		// the play that scores most, the shop's first few actions, and on
+		let Some(a) = (if plain.flow.phase == Phase::Round {
+			acts.iter().copied().filter(|a| matches!(a, Action::Play(_))).max_by(|&x, &y| {
+				let score = |a| {
+					let mut g = plain.clone();
+					g.step(a).expect("a legal action");
+					g.round.chips
+				};
+				score(x).total_cmp(&score(y))
+			})
+		} else {
+			acts.get((step * 7) % acts.len().max(1)).copied()
+		}) else {
+			break;
+		};
+		plain.step(a).expect("a legal action");
+		marked.step(a).expect("the same action");
+		let (mut x, mut y) = (plain.to_dump(), marked.to_dump());
+		for d in [&mut x, &mut y] {
+			let Json::Obj(fields) = d else {
+				panic!("a dump is an object");
+			};
+			fields.remove("used_jokers");
+		}
+		assert_eq!(x, y, "step {step}: {a:?}");
+	}
+	assert!(shops > 10, "{shops} steps in a shop");
 }
