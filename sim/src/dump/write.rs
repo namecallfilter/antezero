@@ -14,7 +14,7 @@ use crate::game::{
 };
 use crate::json::Json;
 use crate::playing_card::PlayingCard;
-use crate::run::{History, Modifiers, Run};
+use crate::run::{History, Modifiers, Run, StartingParams};
 
 fn object<'key>(fields: impl IntoIterator<Item = (&'key str, Json)>) -> Json {
 	Json::Obj(
@@ -40,6 +40,7 @@ pub(crate) fn write(g: &Game) -> Json {
 		("challenge", Json::Null),
 		("vouchers_in_shop", Json::Null),
 		("boosters_in_shop", Json::Null),
+		("starting_params", starting_params(&g.setup.starting_params)),
 		("rng", rng(g)),
 		("blind", blind(&g.blind)),
 		("hands", hands(&g.hands)),
@@ -58,6 +59,18 @@ pub(crate) fn write(g: &Game) -> Json {
 	shop(&g.shop, &mut fields);
 	tags(&g.tags, &mut fields);
 	object(fields)
+}
+
+/// What of `G.GAME.starting_params` holds after the run's start, as the
+/// dump writes it (without Steamodded's play and discard limits).
+pub(super) fn starting_params(p: &StartingParams) -> Json {
+	object(vec![
+		("ante_scaling", p.ante_scaling.into()),
+		("no_faces", p.no_faces.into()),
+		("erratic_suits_and_ranks", p.erratic_suits_and_ranks.into()),
+		("play_limit", Json::Null),
+		("discard_limit", Json::Null),
+	])
 }
 
 /// `G.GAME.modifiers` as the dump writes it (a nested table's entries as

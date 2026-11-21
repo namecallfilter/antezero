@@ -268,6 +268,23 @@ fn read_setup(j: &Json) -> Result<Setup, DumpError> {
 			return Err(bad(key, at(j, key)?));
 		}
 	}
+	// What of the starting rules holds after the run's start: the deck's, and
+	// Steamodded's card limits (vanilla has none) as the simulator's.
+	let p = object(j, "starting_params")?;
+	let sp = &setup.starting_params;
+	let mut limits = Vec::new();
+	for key in ["play_limit", "discard_limit"] {
+		limits.extend(opt_number(p, key)?);
+	}
+	if number(p, "ante_scaling")? != sp.ante_scaling
+		|| flag(p, "no_faces")? != sp.no_faces
+		|| flag(p, "erratic_suits_and_ranks")? != sp.erratic_suits_and_ranks
+		|| limits
+			.into_iter()
+			.any(|n| n != num::float(Hand::HIGHLIGHT_LIMIT))
+	{
+		return Err(bad("starting_params", p));
+	}
 	let rules = entries(j, "modifiers")?;
 	let want = super::write::modifiers(&setup.modifiers);
 	let want: Vec<(&str, &Json)> = want.iter().map(|(k, v)| (k.as_str(), v)).collect();
@@ -913,12 +930,22 @@ mod tests {
 	#[test]
 	fn rules_the_simulator_does_not_have_are_refused() {
 		let set = |key: &str, v: Json| changed(|f| _ = f.insert(key.into(), v));
+		let start = |key: &str, v: Json| {
+			changed(|f| {
+				let Some(Json::Obj(p)) = f.get_mut("starting_params") else {
+					panic!("a dump has its starting rules");
+				};
+				p.insert(key.into(), v);
+			})
+		};
 		let mut rules = BTreeMap::new();
 		rules.insert("no_interest".to_string(), Json::Bool(true)); // a challenge's, not the Red Deck's
 		for dump in [
 			set("modifiers", Json::Obj(rules)),
 			set("challenge", Json::Str("c_omelette_1".into())),
 			set("vouchers_in_shop", Json::Num(2.0)),
+			start("ante_scaling", Json::Num(2.0)), // the Plasma Deck's, not the Red Deck's
+			start("play_limit", Json::Num(6.0)),
 			set(
 				"voucher",
 				Json::Arr(vec![
@@ -936,8 +963,18 @@ mod tests {
 		let plain = changed(|f| {
 			f.insert("vouchers_in_shop".into(), Json::Num(1.0));
 			f.insert("boosters_in_shop".into(), Json::Num(2.0));
+			let Some(Json::Obj(p)) = f.get_mut("starting_params") else {
+				panic!("a dump has its starting rules");
+			};
+			p.insert("play_limit".into(), Json::Num(5.0));
+			p.insert("discard_limit".into(), Json::Num(5.0));
 		});
 		assert!(read(&plain).is_ok());
+		let plasma = Game::new_run("TESTSEED", Back::Plasma, Stake::White).to_dump();
+		assert!(
+			read(&plasma).is_ok(),
+			"the Plasma Deck's blinds scale twice as fast"
+		);
 		let red = Game::new_run("TESTSEED", Back::Red, Stake::Red).to_dump();
 		assert!(
 			read(&red).is_ok(),

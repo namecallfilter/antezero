@@ -94,6 +94,9 @@ local function rules_and_profile(s, g)
   s.challenge = g.challenge or AZB.json.null
   s.vouchers_in_shop = g.starting_params.vouchers_in_shop or AZB.json.null
   s.boosters_in_shop = g.starting_params.boosters_in_shop or AZB.json.null
+  local p = g.starting_params -- what of it holds after the run's start (Steamodded adds the limits)
+  s.starting_params = {ante_scaling = p.ante_scaling, no_faces = p.no_faces, erratic_suits_and_ranks = p.erratic_suits_and_ranks,
+                       play_limit = p.play_limit or AZB.json.null, discard_limit = p.discard_limit or AZB.json.null}
   local POOLS = {Joker = true, Tarot = true, Planet = true, Spectral = true, Voucher = true}
   s.locked = {__array = true}
   for k, v in pairs(G.P_CENTERS) do

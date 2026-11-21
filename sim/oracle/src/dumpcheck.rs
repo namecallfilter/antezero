@@ -197,6 +197,25 @@ struct Check<'oracle> {
 	stats: DumpStats,
 }
 
+/// The keys of the run's rules and the profile's locks in a dump.
+const RULES: [&str; 7] = [
+	"modifiers",
+	"challenge",
+	"vouchers_in_shop",
+	"boosters_in_shop",
+	"starting_params",
+	"locked",
+	"tags_locked",
+];
+
+/// `j` as a Lua writer writes it: an empty table as `[]`.
+fn lua_table(j: &Json) -> Json {
+	match j {
+		Json::Obj(fields) if fields.is_empty() => Json::Arr(Vec::new()),
+		_ => j.clone(),
+	}
+}
+
 impl Check<'_> {
 	fn fail(&self, step: usize, what: &str) -> String {
 		let n = self.history.len();
@@ -235,8 +254,10 @@ impl Check<'_> {
 			));
 		}
 		// The simulator's own writer against the game's (`dump_roundtrip` holds
-		// it to its own reader only).
-		let d = canon::diff(&canon::from_lua(&self.g.to_dump()), &canon::from_lua(j));
+		// it to its own reader only): the canonical state, and the rules and
+		// locks the canonical state leaves out.
+		let ours = self.g.to_dump();
+		let d = canon::diff(&canon::from_lua(&ours), &canon::from_lua(j));
 		if !d.is_empty() {
 			return Err(self.fail(
 				step,
@@ -245,6 +266,18 @@ impl Check<'_> {
 					shown(&d)
 				),
 			));
+		}
+		for key in RULES {
+			if lua_table(ours.get(key)) != lua_table(j.get(key)) {
+				return Err(self.fail(
+					step,
+					&format!(
+						"the simulator writes {key} {} where the game has {}",
+						ours.get(key),
+						j.get(key)
+					),
+				));
+			}
 		}
 		let mut imp = Game::from_dump(j).map_err(|e| self.fail(step, &e.to_string()))?;
 		imp.flow.rearranges = self.g.flow.rearranges;
