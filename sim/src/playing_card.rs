@@ -192,6 +192,17 @@ impl PlayingCard {
 		self.sort_key(sort) + 0.000_001 * self.unique_val()
 	}
 
+	/// What `sort` orders the hand by of what the player sees of the card:
+	/// not the suit it was dealt with (a tie-break), nor anything of a Stone
+	/// card, whose rank and suit do not show (Stone cards sort last).
+	pub(crate) fn shown_sort_key(&self, sort: HandSort) -> f64 {
+		if self.is_stone() {
+			return f64::NEG_INFINITY;
+		}
+		let mult = if sort == HandSort::Suit { 1000.0 } else { 1.0 };
+		self.rank.nominal() + self.suit.nominal() * mult + self.rank.face_nominal()
+	}
+
 	/// What `sort` orders the hand by, without the tie-break between cards
 	/// that look the same.
 	pub(crate) fn sort_key(&self, sort: HandSort) -> f64 {

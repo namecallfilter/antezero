@@ -135,18 +135,6 @@ impl Hand {
 		self.cards
 			.sort_by(|a, b| b.nominal(order).total_cmp(&a.nominal(order)));
 	}
-
-	/// Whether sorting by the current order would move no card the player
-	/// can tell apart: every card is face up and none stands before one
-	/// that sorts ahead of it.
-	pub(crate) fn in_order(&self) -> bool {
-		let order = self.order;
-		self.cards.iter().all(|c| !c.core.face_down)
-			&& self
-				.cards
-				.windows(2)
-				.all(|pair| pair[0].sort_key(order) >= pair[1].sort_key(order))
-	}
 }
 
 /// The cards of one area.
@@ -529,16 +517,20 @@ pub(crate) fn position_of(cards: &[impl CardLike], id: u32) -> Option<usize> {
 	cards.iter().position(|c| c.core().id == id)
 }
 
-/// Deals the face-down hand cards again from the unseen pool (the deck and
-/// those cards): the pool is put in the order of `key`, shuffled by
-/// `shuffle` and dealt into the face-down slots, and the rest becomes the
-/// deck. A slot keeps its face-down state, and a card moved to the deck
-/// takes the deck's.
-pub(crate) fn redeal_face_down<K: Ord>(
+/// Deals the cards the player has not seen again from the unseen pool (the
+/// deck, the face-down hand cards and the cards discarded unseen, which keep
+/// `wheel_flipped` until the round ends): the pool is put in the order of
+/// `key`, shuffled by `shuffle` and dealt into the face-down hand slots and
+/// then the unseen discard slots, and the rest becomes the deck. A slot
+/// keeps its flags, and a card moved to the deck takes the deck's.
+pub(crate) fn redeal_unseen<K: Ord>(
 	areas: &mut Areas, key: impl FnMut(&PlayingCard) -> K, shuffle: impl FnOnce(&mut [PlayingCard]),
 ) {
-	let n_down = areas.hand.cards.iter().filter(|c| c.core.face_down).count();
-	if n_down == 0 {
+	let in_hand = |c: &PlayingCard| c.core.face_down;
+	let discarded = |c: &PlayingCard| c.wheel_flipped;
+	let n = areas.hand.cards.iter().filter(|c| in_hand(c)).count()
+		+ areas.discard.iter().filter(|c| discarded(c)).count();
+	if n == 0 {
 		return;
 	}
 	let deck_flags = areas
@@ -546,26 +538,33 @@ pub(crate) fn redeal_face_down<K: Ord>(
 		.first()
 		.map_or((false, false), |c| (c.core.face_down, c.wheel_flipped));
 	// The pool, in the deck's buffer: the face-down hand cards in hand order,
-	// then the deck.
-	let down = areas
+	// the unseen discards in pile order, then the deck.
+	let unseen: Vec<PlayingCard> = areas
 		.hand
 		.cards
 		.iter()
-		.filter(|c| c.core.face_down)
+		.filter(|c| in_hand(c))
+		.chain(areas.discard.iter().filter(|c| discarded(c)))
 		.map(|c| {
 			let mut c = c.clone();
 			(c.core.face_down, c.wheel_flipped) = deck_flags;
 			c
-		});
-	areas.deck.extend(down);
-	areas.deck.rotate_right(n_down);
+		})
+		.collect();
+	areas.deck.extend(unseen);
+	areas.deck.rotate_right(n);
 	areas.deck.sort_by_key(key);
 	shuffle(&mut areas.deck);
-	let slots = areas.hand.cards.iter_mut().filter(|c| c.core.face_down);
-	let dealt = slots.zip(areas.deck.drain(..n_down));
-	for (slot, mut c) in dealt {
-		c.core.face_down = true;
-		c.wheel_flipped = slot.wheel_flipped;
+	let mut dealt = areas.deck.drain(..n);
+	let slots = areas
+		.hand
+		.cards
+		.iter_mut()
+		.filter(|c| in_hand(c))
+		.chain(areas.discard.iter_mut().filter(|c| discarded(c)));
+	for slot in slots {
+		let mut c = dealt.next().expect("as many cards dealt as slots");
+		(c.core.face_down, c.wheel_flipped) = (slot.core.face_down, slot.wheel_flipped);
 		*slot = c;
 	}
 }

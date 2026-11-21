@@ -11,7 +11,7 @@ use crate::card::{Ability, AnyCard, Card, CardCore, CardLike, Kind};
 use crate::data::{
 	ALL_VOUCHERS, BlindKind, Edition, Enhancement, HandType, Joker, Rank, Seal, Suit, TagKind,
 };
-use crate::game::{Areas, BlindSlot, BlindStatus, Game, HandLevels, HandSort};
+use crate::game::{Areas, BlindSlot, BlindStatus, Game, Hand, HandLevels, HandSort};
 use crate::playing_card::PlayingCard;
 use crate::round::Round;
 use crate::tags::Tags;
@@ -292,10 +292,36 @@ fn any_token(z: Zone, slot: usize, c: &AnyCard, round: &Round) -> Token {
 
 /// The cards a player has not seen placed: the draw pile plus face-down hand
 /// cards (what the game's deck view lists as remaining).
-fn unseen_pool<'cards>(
-	deck: &'cards [PlayingCard], hand: &'cards [PlayingCard],
-) -> impl Iterator<Item = &'cards PlayingCard> {
-	deck.iter().chain(hand.iter().filter(|c| c.core.face_down))
+fn unseen_pool(areas: &Areas) -> impl Iterator<Item = &PlayingCard> {
+	areas
+		.deck
+		.iter()
+		.chain(areas.hand.cards.iter().filter(|c| c.core.face_down))
+		.chain(areas.discard.iter().filter(|c| c.wheel_flipped))
+}
+
+/// The discard pile but for the cards discarded unseen (still
+/// `ability.wheel_flipped`, which the game's deck view counts as remaining).
+fn seen_discards(areas: &Areas) -> impl Iterator<Item = &PlayingCard> {
+	areas.discard.iter().filter(|c| !c.wheel_flipped)
+}
+
+/// Whether sorting the hand by its current order would change nothing the
+/// player sees: every card is face up, the cards stand in the order of what
+/// the sort reads of them that shows, and the ones that order cannot tell
+/// apart look the same (the sort orders those by what does not show: the
+/// suit a card was dealt with, when it was made).
+pub(crate) fn null_sort(hand: &Hand) -> bool {
+	let order = hand.order;
+	let looks = |c: &PlayingCard| {
+		let t = playing_token(Zone::Hand, 0, c);
+		(t.ints, t.floats)
+	};
+	hand.cards.iter().all(|c| !c.core.face_down)
+		&& hand.cards.windows(2).all(|pair| {
+			let (a, b) = (pair[0].shown_sort_key(order), pair[1].shown_sort_key(order));
+			a > b || (a == b && looks(&pair[0]) == looks(&pair[1]))
+		})
 }
 
 /// Whether anything that affects scoring is face down (hand cards or
@@ -493,16 +519,13 @@ fn hand_type_tokens(toks: &mut TokenWriter, hands: &HandLevels) {
 }
 
 /// The remaining deck and the discard pile as sorted multisets. Like the
-/// game's deck view, the "remaining" pool includes face-down hand cards, so
-/// their identities cannot be deduced. Tokens are ordered by their whole
-/// content, so neither draw order nor hidden state breaks ties.
+/// game's deck view, the "remaining" pool includes the face-down hand cards
+/// and the cards discarded unseen, so their identities cannot be deduced.
+/// Tokens are ordered by their whole content, so neither draw order nor
+/// hidden state breaks ties.
 fn pile_tokens(toks: &mut TokenWriter, areas: &Areas) {
-	pile(
-		toks,
-		Zone::Deck,
-		unseen_pool(&areas.deck, &areas.hand.cards),
-	);
-	pile(toks, Zone::Discard, areas.discard.iter());
+	pile(toks, Zone::Deck, unseen_pool(areas));
+	pile(toks, Zone::Discard, seen_discards(areas));
 }
 
 fn pile<'cards>(toks: &mut TokenWriter, z: Zone, cards: impl Iterator<Item = &'cards PlayingCard>) {
@@ -633,7 +656,7 @@ fn global_floats(g: &Game, gf: &mut [f32], pv: Option<&BuildPreview>) {
 		gf[G_VOUCHERS + i] = flag(g.history.used_vouchers.contains(*v));
 	}
 	let (mut size, mut stone, mut debuffed): (usize, usize, usize) = (0, 0, 0);
-	for card in unseen_pool(&g.areas.deck, &g.areas.hand.cards) {
+	for card in unseen_pool(&g.areas) {
 		if let Some(i) = card_index(card) {
 			gf[G_DECK + i] += 0.5;
 		}
@@ -665,7 +688,7 @@ fn global_floats(g: &Game, gf: &mut [f32], pv: Option<&BuildPreview>) {
 			]);
 		}
 	}
-	for card in &g.areas.discard {
+	for card in seen_discards(&g.areas) {
 		if let Some(i) = card_index(card) {
 			gf[G_DISCARD + i] += 0.5;
 		}

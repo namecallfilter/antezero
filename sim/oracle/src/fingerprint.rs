@@ -62,6 +62,18 @@ pub fn fingerprint(g: &mut Game, action: &str) -> Fingerprint {
 ///
 /// If `obs::Layout::of` disagrees with the layout the encoder produced.
 pub fn obs_fingerprint(g: &mut Game) -> u64 {
+	obs_fingerprint_with(g, obs::OpOptions {
+		candidates: 4,
+		..Default::default()
+	})
+}
+
+/// [`obs_fingerprint`] with the ops of `options`.
+///
+/// # Panics
+///
+/// If `obs::Layout::of` disagrees with the layout the encoder produced.
+pub fn obs_fingerprint_with(g: &mut Game, options: obs::OpOptions) -> u64 {
 	let mut h = Fnv::new();
 	let mut buf = ObsBuf::new();
 	let lay = obs::encode_opts(g, &mut buf.as_mut(), /* deck_tokens= */ true);
@@ -80,15 +92,7 @@ pub fn obs_fingerprint(g: &mut Game) -> u64 {
 		h.bytes(&x.to_bits().to_le_bytes());
 	}
 	let mut ops = Vec::new();
-	obs::ops(
-		g,
-		&lay,
-		obs::OpOptions {
-			candidates: 4,
-			..Default::default()
-		},
-		&mut ops,
-	);
+	obs::ops(g, &lay, options, &mut ops);
 	obs::order_gain(g, &mut ops);
 	for o in &ops {
 		for x in o.ints() {

@@ -1,7 +1,7 @@
 //! Determinization: resampling what a player cannot know (used by search,
 //! candidate scoring and snapshot restarts).
 
-use crate::areas::redeal_face_down;
+use crate::areas::redeal_unseen;
 use crate::card::Card;
 use crate::game::Areas;
 use crate::obs::canon_key;
@@ -19,7 +19,7 @@ pub(crate) fn resample(
 ) {
 	rng.reseed(seed);
 	let order = |c: &PlayingCard| (canon_key(c), c.core.id);
-	redeal_face_down(areas, order, |pool| {
+	redeal_unseen(areas, order, |pool| {
 		shuffle(pool, rng.seed_for(&Key::from("resample_hand")));
 	});
 	areas.deck.sort_by_key(order);

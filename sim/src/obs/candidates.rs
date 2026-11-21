@@ -265,7 +265,7 @@ impl<'game> Scenarios<'game> {
 						// A world consistent with what the player sees, independent of the
 						// hidden assignment.
 						let seed = hand_id.rotate_left(17) ^ (num::index64(i) + 1);
-						areas::redeal_face_down(
+						areas::redeal_unseen(
 							&mut v.areas,
 							|c| (CardFace::of(c), c.core.debuff),
 							|pool| rng::splitmix_shuffle(pool, seed),

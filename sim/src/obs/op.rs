@@ -1,4 +1,4 @@
-use super::encode::signed_log;
+use super::encode::{null_sort, signed_log};
 use super::layout::shown_hand;
 use super::{Layout, MAX_OPS, OP_FLOAT, OP_INT, top_plays};
 use crate::actions::Action;
@@ -356,7 +356,7 @@ fn base_ops(g: &Game, lay: &Layout, options: OpOptions, out: &mut Vec<Op>) {
 	let can_reorder = g.flow.rearranges < MAX_REARRANGES;
 	if can_reorder && matches!(g.flow.phase, Phase::Round | Phase::Pack) && nh >= 2 {
 		let hand = &g.areas.hand;
-		let null = !options.null_sorts && hand.in_order();
+		let null = !options.null_sorts && null_sort(hand);
 		for (order, kind) in [
 			(HandSort::Rank, OpKind::SortRank),
 			(HandSort::Suit, OpKind::SortSuit),
