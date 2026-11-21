@@ -702,13 +702,15 @@ fn new_round(g: &mut Game) {
 }
 
 /// `G.FUNCS.play_cards_from_highlighted` with the hand cards at the
-/// positions `sel`.
+/// positions `sel`; under Steamodded, which marks a played card for The
+/// Pillar only once the hand is evaluated ([`Event::MarkPlayed`]).
 ///
 /// # Panics
 ///
 /// Panics if `sel` holds a position past the end of the hand.
 pub(crate) fn do_play(
 	flow: &mut Flow, areas: &mut Areas, blind: &mut Blind, events: &mut EventQueue, sel: CardMask,
+	steamodded: bool,
 ) {
 	if !areas.play.is_empty() {
 		return;
@@ -725,7 +727,9 @@ pub(crate) fn do_play(
 	for i in sel.indices() {
 		let c = &mut areas.hand.cards[i];
 		c.times_played += 1;
-		c.played_this_ante = true;
+		if !steamodded {
+			c.played_this_ante = true;
+		}
 		let id = c.core.id;
 		events.draw(Draw::card(Pile::Hand, Pile::Play, id), 0.1);
 	}

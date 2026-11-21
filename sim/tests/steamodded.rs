@@ -43,6 +43,32 @@ fn a_card_changed_while_scoring_stays_marked_played() {
 	}
 }
 
+/// DNA copies the first hand's one card while it scores: under Steamodded
+/// the card is not marked played yet, so neither is its copy.
+#[test]
+fn a_card_copied_while_scoring_has_the_mark_its_original_had() {
+	for steamodded in [false, true] {
+		let mut g = Game::new_run("DNA", Back::Red, Stake::White);
+		g.setup.steamodded = steamodded;
+		g.inject(Inject::joker(Joker::Dna));
+		act(&mut g, "select");
+		let dealt = g.areas.deck.iter().chain(&g.areas.hand.cards);
+		let last = dealt.map(|c| c.core.id).max();
+		act(&mut g, "play 1");
+		let copy = g
+			.areas
+			.hand
+			.cards
+			.iter()
+			.find(|c| Some(c.core.id) > last)
+			.expect("DNA's copy, drawn to the hand");
+		assert_eq!(
+			copy.played_this_ante, !steamodded,
+			"steamodded: {steamodded}"
+		);
+	}
+}
+
 /// The Soul's legendary joker: vanilla rolls the rarity stream and ignores
 /// the roll; Steamodded does not roll it.
 #[test]

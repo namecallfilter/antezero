@@ -422,7 +422,14 @@ pub(crate) fn step(g: &mut Game, a: Action) -> Result<(), ActionError> {
 			g.events.push(Event::EaseDollars(-flow::BOSS_REROLL_COST));
 			flow::do_reroll_boss(&mut g.blind_select, &mut g.events);
 		}
-		A::Play(m) => flow::do_play(&mut g.flow, &mut g.areas, &mut g.blind, &mut g.events, m),
+		A::Play(m) => flow::do_play(
+			&mut g.flow,
+			&mut g.areas,
+			&mut g.blind,
+			&mut g.events,
+			m,
+			g.setup.steamodded,
+		),
 		A::Discard(m) => {
 			let mut sel = [0; Hand::HIGHLIGHT_LIMIT];
 			for (slot, i) in sel.iter_mut().zip(m.indices()) {
@@ -473,7 +480,14 @@ pub(crate) fn step(g: &mut Game, a: Action) -> Result<(), ActionError> {
 pub(crate) fn preview_play(g: &mut Game, mask: CardMask) -> Result<f64, ActionError> {
 	g.check(Action::Play(mask))?;
 	event_queue::begin_action(&mut g.rng, &mut g.events);
-	flow::do_play(&mut g.flow, &mut g.areas, &mut g.blind, &mut g.events, mask);
+	flow::do_play(
+		&mut g.flow,
+		&mut g.areas,
+		&mut g.blind,
+		&mut g.events,
+		mask,
+		g.setup.steamodded,
+	);
 	event_queue::run_until_scored(g);
 	Ok(g.run.last_hand_score)
 }
@@ -483,7 +497,14 @@ pub(crate) fn preview_play(g: &mut Game, mask: CardMask) -> Result<f64, ActionEr
 pub(crate) fn preview_hand(g: &mut Game, mask: CardMask) -> Result<f64, ActionError> {
 	g.check(Action::Play(mask))?;
 	event_queue::begin_action(&mut g.rng, &mut g.events);
-	flow::do_play(&mut g.flow, &mut g.areas, &mut g.blind, &mut g.events, mask);
+	flow::do_play(
+		&mut g.flow,
+		&mut g.areas,
+		&mut g.blind,
+		&mut g.events,
+		mask,
+		g.setup.steamodded,
+	);
 	event_queue::run_until_played(g);
 	Ok(g.run.last_hand_score)
 }
