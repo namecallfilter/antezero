@@ -80,14 +80,17 @@ fn a_redeemed_voucher_in_used_jokers_changes_no_draw() {
 		plain.legal_actions(&mut acts);
 		// the play that scores most, the shop's first few actions, and on
 		let Some(a) = (if plain.flow.phase == Phase::Round {
-			acts.iter().copied().filter(|a| matches!(a, Action::Play(_))).max_by(|&x, &y| {
-				let score = |a| {
-					let mut g = plain.clone();
-					g.step(a).expect("a legal action");
-					g.round.chips
-				};
-				score(x).total_cmp(&score(y))
-			})
+			acts.iter()
+				.copied()
+				.filter(|a| matches!(a, Action::Play(_)))
+				.max_by(|&x, &y| {
+					let score = |a| {
+						let mut g = plain.clone();
+						g.step(a).expect("a legal action");
+						g.round.chips
+					};
+					score(x).total_cmp(&score(y))
+				})
 		} else {
 			acts.get((step * 7) % acts.len().max(1)).copied()
 		}) else {
