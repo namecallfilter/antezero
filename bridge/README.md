@@ -65,7 +65,15 @@ uv run python -m antezero_bridge.serve --serve     # start the game with parity 
 uv run python -m antezero_bridge.replay .scratch/fail_T0000004_b_red_1.txt --oracle-cli target/release/ocli.exe
 uv run python -m antezero_bridge.compare game.jsonl oracle.jsonl
 uv run python -m antezero_agent.play_real CKPT --seeds 20 --round-search --device cuda   # win rate in the real game
+uv run python -m antezero_agent.bot_check CKPT --drain 120   # the bot's loop against the oracle (no game needed)
 ```
+
+`bot_check` plays the bot's own loop (`antezero_agent.bot.play_run`) against
+the headless game of `sim/oracle`, read through the mod's `state.lua`, for
+every deck and stake, on into Endless Mode after a win: a stop there is a
+false stop of the bot's checks. It also counts the steps the expected-state
+check excused, and with `--drain` the fields that still changed after a reply
+the mod calls settled.
 
 ```python
 from antezero_bridge import GameEnv, Action
@@ -84,7 +92,7 @@ with GameEnv.launch() as env:           # parity settings (dt 1/60, GAMESPEED 1)
 | `canon`, `compare` | the canonical comparison view (port of `sim/oracle/src/canon.rs`), stream diffs |
 | `client`, `launch` | JSON-RPC client, game process management and installation |
 | `replay` | replay a simulator history in the game (optionally diffed against the oracle) |
-| `mod/` | the mod: the bot button, harness-faithful actions, settle waiting, legal actions, `H.state`-shaped dumps |
+| `mod/` | the mod: the bot toggle, harness-faithful actions, settle waiting, legal actions, `H.state`-shaped dumps |
 
 Offline tests (`uv run --with pytest pytest bridge/tests`) cover the
 codecs against the simulator's parsers, the generated tables
