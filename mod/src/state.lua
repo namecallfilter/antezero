@@ -195,7 +195,7 @@ function AZB.state_table()
     boss_rerolled = g.round_resets.boss_rerolled,
     starting_deck_size = g.starting_deck_size,
     sort_mode = G.hand and G.hand.config.sort,
-    pack_size = g.azb_pack_size or g.pack_size, -- vanilla value (SMODS leaves pack_size alone)
+    pack_size = AZB.pack_size or g.pack_size, -- vanilla value (SMODS leaves pack_size alone)
   }
   local function keys_of(t)
     local out = {__array = true}
@@ -203,8 +203,9 @@ function AZB.state_table()
     table.sort(out)
     return out
   end
-  -- Vanilla (name-based) used_jokers; SMODS's key-based set goes to az.
-  s.used_jokers = keys_of(g.azb_used_jokers or g.used_jokers)
+  -- Vanilla (name-based) used_jokers in a bridge session (see core.lua),
+  -- else the game's own; SMODS's key-based set also goes to az.
+  s.used_jokers = keys_of(AZB.is_bridge() and g.azb_used_jokers or g.used_jokers)
   local uv = {__array = true}
   for k, v in pairs(g.used_vouchers) do if v then uv[#uv+1] = k end end
   table.sort(uv)

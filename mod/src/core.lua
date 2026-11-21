@@ -115,14 +115,15 @@ if AZB.is_bridge() then
   AZB.unlock_all()
 end
 
--- Vanilla `used_jokers` bookkeeping, tracked alongside SMODS's. Vanilla
--- marks/clears every center sharing the card's *name* (e.g. all four
--- "Standard Pack" art variants); SMODS tracks the exact key. For vanilla
--- content only booster names are shared and boosters never consult
--- used_jokers, so this is representation-only; the dump reports the vanilla
--- set so it compares with the oracle.
+-- Vanilla `used_jokers` bookkeeping, tracked alongside SMODS's in a bridge
+-- session. Vanilla marks/clears every center sharing the card's *name*
+-- (e.g. all four "Standard Pack" art variants); SMODS tracks the exact key.
+-- For vanilla content only booster names are shared and boosters never
+-- consult used_jokers, so this is representation-only; the dump reports the
+-- vanilla set so it compares with the oracle. Elsewhere the dump reports the
+-- game's own set, and nothing of the mod's goes into a run.
 local function vanilla_used()
-  if not G.GAME then return nil end
+  if not (G.GAME and AZB.is_bridge()) then return nil end
   local u = G.GAME.azb_used_jokers
   if not u then u = {}; G.GAME.azb_used_jokers = u end
   return u
@@ -247,14 +248,25 @@ if AZB.config.smods_compat and not AZB._pta_hooked then
 end
 
 -- Vanilla Card:open sets G.GAME.pack_size = ability.extra; SMODS does not.
+-- The size is kept here for the dump (a continued run has the game's own
+-- value until a pack is opened).
 if not AZB._open_hooked then
   AZB._open_hooked = true
   local open = Card.open
   function Card:open(...)
     if self.ability and self.ability.set == 'Booster' and G.GAME then
-      G.GAME.azb_pack_size = self.ability.extra
+      AZB.pack_size = self.ability.extra
     end
     return open(self, ...)
+  end
+  local start_run = Game.start_run
+  function Game:start_run(...)
+    AZB.pack_size = nil
+    local r = start_run(self, ...)
+    -- what earlier versions of the mod kept in the run (and so in its save)
+    G.GAME.azb_pack_size = nil
+    if not AZB.is_bridge() then G.GAME.azb_used_jokers = nil end
+    return r
   end
 end
 

@@ -538,3 +538,16 @@ def test_a_buy_the_game_refuses_is_refused(game):
     return AZB.json.encode(reply)
     """)
     assert '"name":"BAD_REQUEST"' in reply and "no room" in reply
+
+
+def test_a_run_holds_nothing_of_the_mods(game):
+    game.run("""
+    play('b_red')
+    G.FUNCS.start_run(nil, {savetext = {GAME = {azb_used_jokers = {j_joker = true}, azb_pack_size = 3}}}) -- saved by an earlier version
+    local card = {ability = {set = 'Booster', name = 'Arcana Pack', extra = 3}}
+    Card.open(card)
+    Card.set_ability(card)
+    Card.remove(card)
+    assert(AZB.pack_size == 3, 'the pack size for the dump')
+    for k in pairs(G.GAME) do assert(not tostring(k):find('^azb_'), k) end
+    """)
