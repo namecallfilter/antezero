@@ -131,6 +131,8 @@ def play_run(client, env, run: dict, model, cfg, dev, rs: RoundSearch | None, cr
             if sim.is_terminal():
                 return f"lost in Endless Mode at ante {sim.ante}" if sim.run_won else "lost the run"
             code, out, o = greedy(model, cfg, sim, dev)
+            if not math.isfinite(float(out["logp"][0])):  # from Endless ante 39 the game's blind sizes are NaN
+                return "stopped: the blinds are past what the bot can read"
             note = f"{math.exp(float(out['logp'][0])):.0%} sure"
             if rs is not None and s["search"]:
                 pick = rs.choose(sim, f"{run['id']}_{steps}")

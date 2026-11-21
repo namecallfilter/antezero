@@ -1093,6 +1093,19 @@ def test_the_bot_holds_the_action_that_ends_the_run_to_its_prediction(bot_game):
     assert game.changed == 1
 
 
+def test_the_bot_stops_where_the_blinds_outgrow_numbers(bot_game):
+    from antezero_agent import bot
+
+    g = az.Game(BOT_RUN["seed"], BOT_RUN["back"], BOT_RUN["stake"], endless=True)
+    d = json.loads(g.state_json())
+    d["ante"], d["won"] = 39, True  # Endless Mode, where the game's blind sizes are NaN
+    g.load_state(json.dumps(d))
+    cfg, net = preset("smoke"), tiny()
+    game = bot_game(BOT_RUN, g=g)
+    assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None) == "stopped: the blinds are past what the bot can read"
+    assert not game.notes
+
+
 def test_what_the_game_may_do_otherwise_is_no_surprise():
     from antezero_agent.bot import surprises
 
