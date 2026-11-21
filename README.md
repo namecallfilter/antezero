@@ -1,14 +1,14 @@
 # AnteZero
 
-A Balatro agent: a bit-exact Rust simulator of the game (v1.0.1o), a
-transformer policy trained on it with PPO, and a mod that lets it play your
-real game.
+An AI that plays Balatro. It includes a fast Rust simulator matching the real
+game (v1.0.1o), a neural network trained to play all 15 decks and 8 stakes,
+and a mod so you can watch it play your copy of the game.
 
-It plays all 15 decks at all 8 stakes. Without any search it wins about 94%
-of games at White Stake and about 12% at Gold Stake.
+Playing purely on instinct (no lookahead search), it wins about 94% of White
+Stake runs and 12% of Gold Stake runs.
 
 Not affiliated with LocalThunk or Playstack. You need your own copy of the
-game. The trained checkpoint is on the
+game. Download the trained model from the
 [releases page](https://github.com/namecallfilter/antezero/releases/latest).
 
 ## Watch it play
@@ -17,8 +17,8 @@ Needs [Balatro](https://store.steampowered.com/app/2379780/Balatro/) on
 Windows (Steam) with
 [lovely](https://github.com/ethangreen-dev/lovely-injector) and
 [Steamodded](https://github.com/Steamodded/smods), [uv](https://docs.astral.sh/uv/),
-[Rust](https://www.rust-lang.org/tools/install), and the checkpoint from the
-releases page. A CUDA GPU is recommended.
+[Rust](https://www.rust-lang.org/tools/install), and the trained model from the
+releases page. An NVIDIA (CUDA) GPU is recommended.
 
 ```
 uv sync
@@ -26,14 +26,14 @@ uv run python -m antezero_agent.bot --install antezero-v0.2.0.pt
 ```
 
 Then start Balatro and, in a run, switch on "Bot plays this run" in the
-options menu (Esc): the bot plays the run from there, until you switch it
-off. It is off at the start of every run. Esc, Run Info and Options pause the
-bot; at a win it waits, and plays on if you choose Endless Mode. The bot uses
-only what your profile has unlocked and, from when it takes over, leaves the
-profile and the saved run as they were, unless you switch on "Bot runs
-count": the run then counts like one you played (wins, losses, stats,
-unlocks, achievements). Search, the bot's speed and that switch are under
-Mods > AnteZero > Config.
+options menu (Esc). The bot plays from there until you switch it off; it is
+off at the start of every run. Esc, Run Info, and Options pause the bot. At a
+win it waits, and plays on if you choose Endless Mode. By default, the bot
+only uses items unlocked on your profile, and from when it takes over the run
+won't save progress (your profile and saved run stay as they were). If you
+want bot runs to count for wins, stats, unlocks, and achievements, turn on
+"Bot runs count" under Mods > AnteZero > Config (where you can also adjust bot
+speed and lookahead search).
 
 ## Train and evaluate
 
@@ -51,9 +51,9 @@ uv run --with pytest pytest agent/tests bridge/tests -q
 
 ## Win rates
 
-Games won by the released checkpoint, playing its own choice with no search,
-over about 1,024 games per cell (about ±3 points; 122,880 games in all).
-Rows are decks, columns are stakes.
+Win rates for the released model with lookahead search turned off (~1,024 runs
+per cell, 122,880 total; margin of error ~±3%). Rows are decks, columns are
+stakes.
 
 <table>
 <tr><th rowspan="2">Deck</th><th colspan="8">Stake</th></tr>
@@ -75,6 +75,14 @@ Rows are decks, columns are stakes.
 <tr><th>Erratic Deck</th><td align="right">95%</td><td align="right">88%</td><td align="right">67%</td><td align="right">58%</td><td align="right">52%</td><td align="right">29%</td><td align="right">17%</td><td align="right">10%</td></tr>
 <tr><th>All decks</th><td align="right">94%</td><td align="right">88%</td><td align="right">69%</td><td align="right">63%</td><td align="right">55%</td><td align="right">32%</td><td align="right">21%</td><td align="right">12%</td></tr>
 </table>
+
+## How it works
+
+- **Simulator:** A bit-exact Rust reimplementation of Balatro v1.0.1o, verified in lockstep against the real game and exposed to Python as a vectorized environment (`antezero_sim.VecEnv`).
+- **Model:** An entity transformer over variable-length game-state tokens, with card effects (jokers, tarots, planets) encoded directly as token features and factored action heads.
+- **Training:** PPO over parallel Rust environments with a decoupled critic and a stake curriculum spanning all 15 decks and 8 stakes.
+- **Search:** Optional test-time determinized lookahead and within-round search (both disabled in the win-rate table above).
+- **Real-game bridge:** A Steamodded mod and local bridge that rebuild the simulator state from the live game at every decision.
 
 ## More
 
