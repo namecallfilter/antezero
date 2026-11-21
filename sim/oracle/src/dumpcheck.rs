@@ -10,7 +10,9 @@
 //!   commands.
 //!
 //! There the game is also dumped by the mod's own writer (`mod/src/state.lua`,
-//! which the bot imports in the real game), and both dumps must be the same.
+//! which the bot imports in the real game), and both dumps must be the same;
+//! and the simulator's own dump of the same point must read as the same
+//! canonical state.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
@@ -230,6 +232,15 @@ impl Check<'_> {
 					"the mod's dump differs from the harness's in {}",
 					differ.join(", ")
 				),
+			));
+		}
+		// The simulator's own writer against the game's (`dump_roundtrip` holds
+		// it to its own reader only).
+		let d = canon::diff(&canon::from_lua(&self.g.to_dump()), &canon::from_lua(j));
+		if !d.is_empty() {
+			return Err(self.fail(
+				step,
+				&format!("the simulator's dump differs from the game's: {}", shown(&d)),
 			));
 		}
 		let mut imp = Game::from_dump(j).map_err(|e| self.fail(step, &e.to_string()))?;
