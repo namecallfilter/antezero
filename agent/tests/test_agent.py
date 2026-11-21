@@ -1076,6 +1076,23 @@ def test_the_bot_stops_when_the_game_does_not_do_what_it_expected(bot_game):
     assert game.notes
 
 
+def test_the_bot_holds_the_action_that_ends_the_run_to_its_prediction(bot_game):
+    from antezero_agent import bot
+
+    def deal(g, code):  # the game over pays what the simulator did not
+        if not g.is_terminal():
+            return False
+        d = json.loads(g.state_json())
+        d["dollars"] += 7
+        g.load_state(json.dumps(d))
+        return True
+
+    cfg, net = preset("smoke"), tiny()
+    game = bot_game(BOT_RUN, deal=deal)
+    assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None) == "stopped: the game did not do what the simulator expected"
+    assert game.changed == 1
+
+
 def test_what_the_game_may_do_otherwise_is_no_surprise():
     from antezero_agent.bot import surprises
 
@@ -1102,6 +1119,36 @@ def test_the_bot_hands_its_run_back_after_losing_contact(monkeypatch):
             self.polls += 1
             if self.polls > 4:
                 raise httpx.ConnectError("the game closed")
+            return {"active": True, "run": dict(BOT_RUN)}
+
+    def lost(*a):
+        raise httpx.ReadTimeout("no reply")
+
+    made = []
+    monkeypatch.setattr(client, "BridgeClient", lambda port: made.append(Client(port)) or made[-1])
+    monkeypatch.setattr(bot, "load_model", lambda ckpt, dev: (None, None, None))
+    monkeypatch.setattr(bot, "read_checkpoint", lambda ckpt: {})
+    monkeypatch.setattr(bot, "play_run", lost)
+    monkeypatch.setattr(bot.time, "sleep", lambda s: None)
+    bot.serve(argparse.Namespace(port=1, device="cpu", checkpoint="ckpt"))
+    assert made[0].stops == [(BOT_RUN["id"], "stopped: lost contact with the game (ReadTimeout)")]
+
+
+def test_the_bot_hands_its_run_back_once_the_game_answers_again(monkeypatch):
+    import httpx
+    from antezero_agent import bot
+    from antezero_bridge import client
+
+    class Client:
+        def __init__(self, port):
+            self.calls, self.stops = 0, []
+
+        def az_bot(self, run=None, stop=None, status=None):
+            self.calls += 1
+            if self.calls == 3 or self.calls > 8:  # away for the stop after the turn, then closed
+                raise httpx.ConnectError("no reply")
+            if stop:
+                self.stops.append((run, stop))
             return {"active": True, "run": dict(BOT_RUN)}
 
     def lost(*a):

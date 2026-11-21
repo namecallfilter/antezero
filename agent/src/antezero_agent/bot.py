@@ -126,10 +126,10 @@ def play_run(client, env, run: dict, model, cfg, dev, rs: RoundSearch | None, cr
             sim.endless = sim.endless or sim.run_won
             if wrong := canon.diff(sim.canonical(), game):
                 return _stop(run, "the simulator misread the game", wrong)
-            if sim.is_terminal():
-                return f"lost in Endless Mode at ante {sim.ante}" if sim.run_won else "lost the run"
             if expected and (wrong := surprises(*expected, game)):
                 return _stop(run, "the game did not do what the simulator expected", wrong)
+            if sim.is_terminal():
+                return f"lost in Endless Mode at ante {sim.ante}" if sim.run_won else "lost the run"
             code, out, o = greedy(model, cfg, sim, dev)
             note = f"{math.exp(float(out['logp'][0])):.0%} sure"
             if rs is not None and s["search"]:
@@ -185,9 +185,12 @@ def serve(a) -> None:
         critic.to(dev).eval()
     del ck
     print(f"ready on {dev}: {a.checkpoint}, search {'available' if rs else 'unavailable (no CUDA GPU)'}", flush=True)
-    done, misses = None, 0
+    done, stop, misses = None, None, 0
     while misses < 5:  # else the game closed
         try:
+            if stop:  # sent until the game has it: it hands the run back
+                client.az_bot(run=done, stop=stop)
+                stop = None
             s = client.az_bot()
             misses = 0
             run = s.get("run")
@@ -196,14 +199,14 @@ def serve(a) -> None:
                 print(f"playing {run}", flush=True)
                 try:
                     end = play_run(client, env, run, model, cfg, dev, rs, critic)
-                except httpx.HTTPError as e:  # handed back if the game is still there, else the stop fails too
+                except httpx.HTTPError as e:  # handed back once the game answers again
                     end = f"stopped: lost contact with the game ({type(e).__name__})"
                 except Exception as e:
                     traceback.print_exc()
                     end = f"stopped: {type(e).__name__}"
                 print(f"[{run['seed']}] {end}", flush=True)
-                if end:
-                    client.az_bot(run=run["id"], stop=end)
+                stop = end
+                continue
         except httpx.HTTPError:
             misses += 1
         time.sleep(0.3)
