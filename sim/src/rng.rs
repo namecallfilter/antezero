@@ -105,15 +105,16 @@ pub fn lua_mod(a: f64, b: f64) -> f64 {
 	a - (a / b).floor() * b
 }
 
-/// The game's (`LuaJIT`'s) `a ^ b`: a whole exponent of at most 65536 either
+/// The game's (`LuaJIT`'s) `base ^ exponent`: a whole exponent of at most 65536 either
 /// way multiplies by repeated squaring (`lj_vm_powi`), which rounds large
 /// powers otherwise than `pow`; any other exponent is `pow`'s.
 #[must_use]
-pub fn lua_pow(a: f64, b: f64) -> f64 {
-	let Some(k) = num::whole(b).filter(|k| k.abs() <= 65_536) else {
-		return a.powf(b);
+pub fn lua_pow(base: f64, exponent: f64) -> f64 {
+	let Some(whole) = num::whole(exponent).filter(|k| k.abs() <= 65_536) else {
+		return base.powf(exponent);
 	};
-	let (mut x, mut n) = (if k < 0 { 1.0 / a } else { a }, k.unsigned_abs());
+	let mut x = if whole < 0 { 1.0 / base } else { base };
+	let mut n = whole.unsigned_abs();
 	if n == 0 {
 		return 1.0;
 	}
@@ -121,7 +122,7 @@ pub fn lua_pow(a: f64, b: f64) -> f64 {
 		x *= x;
 		n >>= 1;
 	}
-	let mut y = x;
+	let mut product = x;
 	n >>= 1;
 	if n != 0 {
 		loop {
@@ -130,13 +131,13 @@ pub fn lua_pow(a: f64, b: f64) -> f64 {
 				break;
 			}
 			if n & 1 == 1 {
-				y *= x;
+				product *= x;
 			}
 			n >>= 1;
 		}
-		y *= x;
+		product *= x;
 	}
-	y
+	product
 }
 
 /// `pseudohash(str)` from `misc_functions.lua`.
