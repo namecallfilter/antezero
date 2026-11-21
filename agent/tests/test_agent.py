@@ -1068,11 +1068,6 @@ def test_what_the_game_may_do_otherwise_is_no_surprise():
     game = dict(expected, **{"jokers.1.key": "j_juggler", "hand_limit": "9"})
     assert surprises(before, expected, game) == []
     assert surprises(before, expected, dict(expected, hand_limit="9")) == [("hand_limit", "10", "9")]
-    # Steamodded keeps The Pillar's mark through an enhancement, and the debuff with it
-    expected = dict(before, **{"hand.0.played_this_ante": "false", "hand.0.debuff": "false", "hand.1.debuff": "false"})
-    game = dict(expected, **{"hand.0.played_this_ante": "true", "hand.0.debuff": "true"})
-    assert surprises(before, expected, game) == []
-    assert surprises(before, expected, dict(game, **{"hand.1.debuff": "true"})) == [("hand.1.debuff", "false", "true")]
 
 
 def test_the_bot_hands_its_run_back_after_losing_contact(monkeypatch):

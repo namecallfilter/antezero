@@ -56,15 +56,14 @@ def install(a) -> None:
         print("BalatroBot stays disabled outside the developer tools")
 
 
-# What the game draws from its pools may differ from the simulator's draw with
-# nothing wrong: a profile's locked cards are not offered (the simulator offers
-# every card), and Steamodded rolls a few things its own way (the Soul's rarity
-# roll, a used_jokers mark for a redeemed voucher). So the expected state is
-# compared but for new cards, the next voucher and skip tags, used_jokers and
-# the RNG streams, and not at all after the game made other cards than the
-# simulator (a joker's own effects, such as hand size, can show anywhere).
-# Steamodded also keeps The Pillar's mark through an enhancement, and the
-# card stays debuffed.
+# What the game draws may differ from the simulator's draw with nothing
+# wrong: a card the run unlocks joins the game's pools at once (the dump
+# carries the profile's locks as they stand), and Steamodded keeps a few
+# things its own way (RNG streams of its own, used_jokers by key and with a
+# redeemed voucher's mark). So the expected state is compared but for new
+# cards, the next voucher and skip tags, used_jokers and the RNG streams, and
+# not at all after the game made other cards than the simulator (a joker's
+# own effects, such as hand size, can show anywhere).
 LOOSE = ("rng.", "used_jokers", "voucher", "blind_tags.")
 
 
@@ -80,9 +79,7 @@ def surprises(before: dict, expected: dict, game: dict) -> list[tuple[str, str, 
     new = {card(k) for c in (expected, game) for k, v in c.items() if k.endswith(".id") and float(v) > last}
     if any(expected.get(f"{c}.key") != game.get(f"{c}.key") for c in new):
         return []
-    diffs = canon.diff(expected, game)
-    pillar = {f"{card(p)}.{f}" for p, _, _ in diffs if p.endswith(".played_this_ante") for f in ("played_this_ante", "debuff")}
-    return [d for d in diffs if not d[0].startswith(LOOSE) and d[0] not in pillar and card(d[0]) not in new]
+    return [d for d in canon.diff(expected, game) if not d[0].startswith(LOOSE) and card(d[0]) not in new]
 
 
 def _stop(run: dict, why: str, diffs: list) -> str:
