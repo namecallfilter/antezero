@@ -25,12 +25,15 @@ uv sync
 uv run python -m antezero_agent.bot --install antezero-v0.2.0.pt
 ```
 
-Then start Balatro, open New Run, switch on the bot toggle in the corner of
-the Play button, and press Play. Esc, Run Info and Options pause the bot.
-Bot runs use only what your profile has unlocked and leave the profile as it
-was, unless you switch on "Bot runs count": the run then counts like one you
-played (wins, losses, stats, unlocks, achievements). Search, the bot's speed
-and that switch are under Mods > AnteZero > Config.
+Then start Balatro and, in a run, switch on "Bot plays this run" in the
+options menu (Esc): the bot plays the run from there, until you switch it
+off. It is off at the start of every run. Esc, Run Info and Options pause the
+bot; at a win it waits, and plays on if you choose Endless Mode. The bot uses
+only what your profile has unlocked and, from when it takes over, leaves the
+profile and the saved run as they were, unless you switch on "Bot runs
+count": the run then counts like one you played (wins, losses, stats,
+unlocks, achievements). Search, the bot's speed and that switch are under
+Mods > AnteZero > Config.
 
 ## Train and evaluate
 

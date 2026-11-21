@@ -417,7 +417,7 @@ function AZB.mark_action()
   if not AZB.in_tick then AZB.skip_tick = true end
 end
 
--- A bot run with someone watching: the menus they open pause it.
+-- A run the bot has a part in, with someone watching: the menus they open pause it.
 local function in_menu()
   return AZB.bot ~= nil and AZB.bot.run ~= nil and G.OVERLAY_MENU ~= nil and G.STATE ~= G.STATES.GAME_OVER
 end
@@ -441,17 +441,13 @@ local function run_waiters()
   local dt = t - last_tick
   last_tick = t
   if #AZB.waiters == 0 then return end
-  -- Winning pauses the game behind an overlay; dismissing it is "endless
-  -- mode" (the harness does the same while settling). In a watched bot run
-  -- the win screen stays (the run is over for the bot) and any other menu
-  -- is the watcher's: the waits hold until it closes.
-  local won = false
+  -- In a bot run every menu is the player's, the win screen too (Endless
+  -- Mode goes on, New Run or Main Menu end the run): the waits hold until
+  -- it closes. Elsewhere winning pauses the game behind an overlay, and
+  -- dismissing it is "endless mode" (the harness does the same while settling).
   if in_menu() then
-    won = G.GAME.won
-    if not won then
-      for _, w in ipairs(AZB.waiters) do w.deadline = w.deadline + dt end
-      return
-    end
+    for _, w in ipairs(AZB.waiters) do w.deadline = w.deadline + dt end
+    return
   elseif G.SETTINGS.paused and G.OVERLAY_MENU and G.STATE ~= G.STATES.GAME_OVER then
     G.FUNCS.exit_overlay_menu()
   end
@@ -459,7 +455,7 @@ local function run_waiters()
   local ready = {}
   for _, w in ipairs(AZB.waiters) do
     w.frames = w.frames + 1
-    if won or AZB.is_settled() then ready[#ready+1] = {w, true, "settled"}
+    if AZB.is_settled() then ready[#ready+1] = {w, true, "settled"}
     elseif now() > w.deadline then ready[#ready+1] = {w, false, "timeout"}
     else keep[#keep+1] = w end
   end

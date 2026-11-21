@@ -106,6 +106,8 @@ local ENDPOINTS = {
       local function main()
         if args.run then
           if not AZB.bot.owns(args.run) then return send({message = 'not the current bot run', name = R.NOT_ALLOWED}) end
+          -- decided on the game as it was before the menu (az_bot reports it)
+          if AZB.bot.interrupted then return send({message = 'a menu was open since the bot read the game', name = R.INVALID_STATE}) end
           AZB.bot.acting(a, args.note)
         end
         local ok, e = pcall(AZB.act_main, a)

@@ -2,7 +2,7 @@
   "id": "antezero",
   "name": "AnteZero",
   "author": ["antezero"],
-  "description": "Lets the AnteZero agent play a run (the bot toggle on the New Run screen's Play button). Also the developer tools' bridge: harness-faithful actions, injections, settle-waiting and full state dumps for sim parity checks.",
+  "description": "Lets the AnteZero agent play a run (\"Bot plays this run\" in a run's options menu). Also the developer tools' bridge: harness-faithful actions, injections, settle-waiting and full state dumps for sim parity checks.",
   "prefix": "AZB",
   "main_file": "main.lua",
   "priority": 10,

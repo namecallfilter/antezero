@@ -801,28 +801,41 @@ def test_wilson():
 class _BotGame:
     """Stands in for the game in a bot run (the mod's ``az_bot`` and a
     ``GameEnv``, which keeps the reply to the last request) on a simulator of
-    its own. A menu pauses the bot at the polls in ``pauses``, and
-    ``player(game)`` runs while it is open: the player changing the game.
-    ``deal(game, code)`` runs after each of the bot's actions: the game doing
-    what the simulator would not (a locked card in its shop). ``misread(dump)``
-    changes the dump the bot loads, but not what the bridge reads of it."""
+    its own. A menu pauses the bot at the polls in ``pauses``, and opens
+    between the bot's poll and its action at the actions in ``menus``;
+    ``player(game)`` runs while a menu is open: the player changing the game.
+    The win screen pauses the bot for ``win_polls`` polls, then the player
+    chooses Endless Mode. ``deal(game, code)`` runs after each of the bot's
+    actions: the game doing what the simulator would not (a locked card in
+    its shop). ``misread(dump)`` changes the dump the bot loads, but not what
+    the bridge reads of it."""
 
-    def __init__(self, run, leave_at=None, pauses=(2,), player=None, deal=None, misread=None, g=None, refuse=False):
+    def __init__(self, run, leave_at=None, pauses=(2,), player=None, deal=None, misread=None, g=None, refuse=False, menus=(), win_polls=3):
         self.g = g or az.Game(run["seed"], run["back"], run["stake"])
-        self.run, self.leave_at, self.pauses, self.refuse = run, leave_at, pauses, refuse
-        self.player, self.deal, self.misread = player, deal, misread
-        self.polls, self.notes, self.changed, self.free, self.interrupted = 0, [], 0, 0, False
+        self.run, self.leave_at, self.pauses, self.menus, self.refuse = run, leave_at, pauses, menus, refuse
+        self.player, self.deal, self.misread, self.win_polls = player, deal, misread, win_polls
+        self.polls, self.notes, self.changed, self.free, self.interrupted, self.tries = 0, [], 0, 0, False, 0
         self.reply = self.g.state_json()
 
-    def az_bot(self, **params):
+    def _menu(self):
+        self.interrupted = True
+        if self.player and self.player(self.g):
+            self.changed += 1
+
+    def az_bot(self, run=None, **params):
         self.polls += 1
-        paused = self.polls in self.pauses
+        win_screen = self.g.run_won and not self.g.endless and self.g.phase == "round_eval"
+        if win_screen:
+            self.win_polls -= 1
+            self.g.endless = self.win_polls < 0  # the player chooses Endless Mode
+        paused = self.polls in self.pauses or win_screen
         if paused:
-            self.interrupted = True
-            if self.player and self.player(self.g):
-                self.changed += 1
+            self._menu()
+        interrupted = False
+        if run is not None:  # the bot's own poll reports it once
+            interrupted, self.interrupted = self.interrupted, False
         active = self.polls != self.leave_at
-        return {"active": active, "paused": paused, "interrupted": self.interrupted, "run": self.run, "search": True}
+        return {"active": active, "paused": paused, "interrupted": interrupted, "run": self.run, "search": True}
 
     def refresh(self):
         self.reply = self.g.state_json()
@@ -839,10 +852,12 @@ class _BotGame:
         from antezero_bridge.game_env import ActionRejected
 
         assert run == self.run["id"]
-        if self.refuse:
+        self.tries += 1
+        if self.tries in self.menus:
+            self._menu()
+        if self.refuse or self.interrupted:
             raise ActionRejected(code)
         self.notes.append(note)
-        self.interrupted = False
         self.g.step(code)
         if self.deal and self.deal(self.g, code):
             self.changed += 1
@@ -943,6 +958,45 @@ def test_the_bot_reads_the_game_after_the_player_changed_it(bot_game):
     game = bot_game(BOT_RUN, pauses=range(2, 1000, 3), player=player)
     assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None) in ("lost the run", "won the run")
     assert game.changed > 1
+
+
+def test_the_bot_decides_again_on_a_menu_opened_before_its_action(bot_game):
+    from antezero_agent import bot
+
+    def player(g):
+        if g.is_terminal():
+            return False
+        g.step(g.legal_codes()[-1])
+        return True
+
+    cfg, net = preset("smoke"), tiny()
+    game = bot_game(BOT_RUN, menus=range(3, 1000, 4), player=player)
+    assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None) == "lost the run"
+    assert game.changed > 1 and game.tries > len(game.notes)
+
+
+def _won() -> az.Game:
+    """A run at the round evaluation of a won boss (the win screen)."""
+    rng = random.Random(0)
+    g = az.Game(BOT_RUN["seed"], BOT_RUN["back"], BOT_RUN["stake"])
+    while g.phase != "round_eval":
+        if g.is_terminal():
+            g = az.Game(BOT_RUN["seed"], BOT_RUN["back"], BOT_RUN["stake"])
+        g.step(rng.choice(g.legal_codes()))
+    d = json.loads(g.state_json())
+    d["won"] = d["win_notified"] = True
+    g.load_state(json.dumps(d))
+    assert g.run_won and not g.endless
+    return g
+
+
+def test_the_bot_plays_on_in_endless_mode_once_the_player_chooses_it(bot_game):
+    from antezero_agent import bot
+
+    cfg, net = preset("smoke"), tiny()
+    game = bot_game(BOT_RUN, pauses=(), g=_won())
+    assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None).startswith("lost in Endless Mode at ante ")
+    assert game.notes and game.polls > len(game.notes) + 3  # it waited on the win screen
 
 
 def test_the_bot_stops_on_a_dump_its_simulator_misreads(bot_game):

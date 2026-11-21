@@ -3,11 +3,11 @@
     uv run python -m antezero_agent.bot --install CKPT [--device auto]
 
 installs the AnteZero mod and tells it how to start this agent. Then start
-Balatro as usual: on the New Run screen, turn on the bot toggle on the Play
-button and press Play. The mod starts the agent (``python -m
-antezero_agent.bot CKPT --port PORT``), which plays every such run until the
-game closes. Search and the bot's speed are settings of the mod (Mods >
-AnteZero > Config in the game).
+Balatro as usual and, in a run, turn on "Bot plays this run" in the options
+menu (Esc). The mod starts the agent (``python -m antezero_agent.bot CKPT
+--port PORT``), which plays the run from there, and any other the toggle is
+turned on in, until the game closes. Search and the bot's speed are
+settings of the mod (Mods > AnteZero > Config in the game).
 
 Before every decision the simulator's copy of the run is rebuilt from the
 game's state (the mod's state dump), and the policy reads its observation:
@@ -92,8 +92,9 @@ def _stop(run: dict, why: str, diffs: list) -> str:
 
 @torch.no_grad()
 def play_run(client, env, run: dict, model, cfg, dev, rs: RoundSearch | None, critic: Critic | None) -> str | None:
-    """Plays the bot run ``run`` of the mod; returns how it ended for the
-    bot (the text the game shows), or ``None`` if the player left it."""
+    """Plays the bot's turn ``run`` at a run of the mod; returns how it
+    ended for the bot (the text the game shows), or ``None`` if the player
+    took the run back or left it."""
     from antezero_bridge import canon
     from antezero_bridge.client import RPCError
     from antezero_bridge.game_env import ActionRejected
@@ -103,28 +104,29 @@ def play_run(client, env, run: dict, model, cfg, dev, rs: RoundSearch | None, cr
     sim.steamodded = True  # the game runs Steamodded, whose xMult rounds differently
     steps, free = 0, 0  # free: the bot's rearranges in a row, which the policy is held to as in training
     expected = None  # (the game before the bot's last action, what the simulator expected after it)
+    stale = True  # the game is to be read anew: at the start, and after a menu was open
     try:
-        env.refresh()
         while True:
-            interrupted = False
-            while True:  # a menu the player opened pauses the bot
+            while True:  # a menu the player opened (the win screen too) pauses the bot
                 s = client.az_bot(run=run["id"], status="thinking")
                 if not s["active"] or s["run"]["id"] != run["id"]:
                     return None
-                interrupted = interrupted or s["interrupted"]
+                stale = stale or s["interrupted"]
                 if not s["paused"]:
                     break
                 time.sleep(0.2)
-            if interrupted:  # the game as the player left it
+            if stale:  # the game as the player left it
                 env.refresh()
-                expected = None
+                expected, stale = None, False
             game = env.canonical()
             sim.load_state(env.state_json())
             sim.rearranges = free
+            # The bot waits on the win screen: a won run it reads goes on in Endless Mode.
+            sim.endless = sim.endless or sim.run_won
             if wrong := canon.diff(sim.canonical(), game):
                 return _stop(run, "the simulator misread the game", wrong)
             if sim.is_terminal():
-                return "won the run" if sim.run_won else "lost the run"
+                return f"lost in Endless Mode at ante {sim.ante}" if sim.run_won else "lost the run"
             if expected and (wrong := surprises(*expected, game)):
                 return _stop(run, "the game did not do what the simulator expected", wrong)
             code, out, o = greedy(model, cfg, sim, dev)
@@ -140,13 +142,23 @@ def play_run(client, env, run: dict, model, cfg, dev, rs: RoundSearch | None, cr
             nxt = sim.clone()
             nxt.step(code)
             expected = (game, nxt.canonical())
-            env.step(code, run=run["id"], note=note)
+            try:
+                env.step(code, run=run["id"], note=note)
+            except ActionRejected as e:
+                s = client.az_bot(run=run["id"])
+                if not s["active"] or s["run"]["id"] != run["id"]:
+                    return None
+                if s["interrupted"]:  # decided before a menu was opened: decide again
+                    stale = True
+                    continue
+                print(f"[{run['seed']}] {e}", flush=True)
+                return "stopped: the game refused the bot's action"
             free = free + 1 if code.startswith(FREE) else 0
             steps += 1
-    except (ActionRejected, RPCError) as e:  # the run ended under the action, or the game refused it
+    except RPCError as e:  # the run ended under the action
         print(f"[{run['seed']}] {e}", flush=True)
         s = client.az_bot(run=run["id"])
-        return "stopped: the game refused the bot's action" if s["active"] and s["run"]["id"] == run["id"] else None
+        return "stopped: the game did not finish the bot's action" if s["active"] and s["run"]["id"] == run["id"] else None
 
 
 def serve(a) -> None:

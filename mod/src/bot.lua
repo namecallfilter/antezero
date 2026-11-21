@@ -1,25 +1,26 @@
--- The bot button: a toggle on the New Run screen's Play button. A run
--- started with it on is played by the agent (antezero_agent.bot, a Python
--- process this file starts and that talks to the methods in endpoints.lua).
+-- The bot toggle, in a run's options menu (Esc). Turned on, the agent
+-- (antezero_agent.bot, a Python process this file starts and that talks to
+-- the methods in endpoints.lua) plays the run from where it is; turned off,
+-- or when the bot stops, the run is the player's again. It is off at the
+-- start of every run, new or continued.
 --
--- A bot run is an ordinary run on the player's profile: the agent rebuilds
--- its simulator from the game's state before every decision, so the run
--- needs nothing set up for it. With "Bot runs count" off it leaves the
--- profile exactly as it was: the run is not saved, no achievement is
--- awarded, what the game saves meanwhile is the profile as it was when Play
--- was pressed (with the player's settings), and the profile, unlocks and
--- discoveries are put back when the run ends. With it on, the run counts
--- like one the player played. Either way the tutorial is skipped for the run
--- (and saved as it was), the run plays at the bot's speed setting (the clock
--- of core.lua), and input is limited to Esc, Run Info and Options, whose
--- menus pause it.
+-- The agent rebuilds its simulator from the game's state before every
+-- decision, so the bot can take over any run it can read. With "Bot runs
+-- count" off, the run stops counting when the bot takes over, for the rest of
+-- it: the saved run stays as it was then (Continue returns there), no
+-- achievement is awarded, what the game saves meanwhile is the profile as it
+-- was then (with the player's settings and choices for the next run), and
+-- the profile, unlocks and discoveries are put back when the run ends. With
+-- it on, the run counts like one the player played. Either way the tutorial
+-- is skipped while the bot plays (and saved as it was), the run plays at the
+-- bot's speed setting (the clock of core.lua), and input is limited to Esc,
+-- Run Info and Options, whose menus pause it. At a win the bot waits on the
+-- win screen and plays on if the player chooses Endless Mode.
 
 local B = {
-  enabled = false,   -- the toggle
-  pending = false,   -- the run being started is the bot's
   protected = false, -- the player's state is set aside (see protect): the run does not count
-  active = false,    -- the bot is playing
-  run = nil,         -- {id, seed, back, stake} of the bot's run, while it is on screen
+  active = false,    -- the bot is playing (the toggle)
+  run = nil,         -- {id, seed, back, stake} of the bot's turn at the run, while it is on screen
   runs = 0,
   acc = 0,
   line = '',         -- what the strip shows
@@ -32,6 +33,17 @@ local cfg = SMODS.current_mod.config
 local function now() return love.timer.getTime() end
 
 local TABLES = function() return {G.P_CENTERS, G.P_BLINDS, G.P_TAGS, G.P_SEALS} end
+
+-- What only the player's run setup writes to the profile: the choices for
+-- the next run. They are the player's even while a run does not count.
+local CHOICES = {'MEMORY', 'last_choices'}
+
+local function with_choices(saved, live)
+  local p = {}
+  for k, v in pairs(saved) do p[k] = v end
+  for _, k in ipairs(CHOICES) do p[k] = live[k] end
+  return p
+end
 
 local function protect()
   if B.protected or cfg.count then return end
@@ -46,6 +58,8 @@ local function protect()
   AZB.guard_saves(true)
 end
 
+-- Ends the bot's part in the run on screen, which is leaving: its turn, the
+-- skipped tutorial and, if the run did not count, the set-aside profile.
 function B.release()
   B.active, B.run = false, nil
   if B.hud then B.hud:remove(); B.hud = nil end
@@ -61,8 +75,9 @@ function B.release()
   -- as unlock_card orders the decks
   table.sort(G.P_CENTER_POOLS.Back, function(a, b) return (a.order - (a.unlocked and 100 or 0)) < (b.order - (b.unlocked and 100 or 0)) end)
   local live = G.PROFILES[G.SETTINGS.profile]
+  local profile = with_choices(s.profile, live)
   for k in pairs(live) do live[k] = nil end
-  for k, v in pairs(s.profile) do live[k] = v end
+  for k, v in pairs(profile) do live[k] = v end
   -- Steamodded's per-stake views of the usage tables (wins_by_key, ...) were
   -- copied bound to the run's tables; bind them anew, as loading a profile does.
   if convert_save_data then convert_save_data(live, true) end
@@ -81,19 +96,11 @@ function unlock_achievement(...)
   return unlock_achievement_(...)
 end
 
--- The start of a run shows the unlocks an earlier session left in
--- unlock_notify.jkr and deletes it; they wait for a run that counts or the menu.
-local unlock_notify_ = unlock_notify
-function unlock_notify(...)
-  if B.protected then return end
-  return unlock_notify_(...)
-end
-
--- What a save the game sends during a bot run writes (core.lua's save
--- channel asks; nil: nothing): the player's tutorial, and while the run does
--- not count, the profile and unlocks as they were when it started. Run saves
--- are stopped where they are made (G.F_NO_SAVING), so one sent now was
--- queued before the run started and is the player's.
+-- What a save the game sends while the bot has a part in the run writes
+-- (core.lua's save channel asks; nil: nothing): the player's tutorial, and
+-- while the run does not count, the profile and unlocks as they were when it
+-- stopped counting. Run saves are stopped where they are made (G.F_NO_SAVING),
+-- so one sent now was queued before and is the player's.
 function B.outgoing(msg)
   local t = msg.type
   if not (B.tutorial or B.protected) or t == 'save_run' then return msg end
@@ -111,7 +118,8 @@ function B.outgoing(msg)
     return {type = t, save_settings = settings, profile_num = msg.profile_num, save_profile = msg.save_profile}
   end
   local s = B.saved
-  if not p then return {type = t, save_settings = settings, profile_num = msg.profile_num, save_profile = s.profile} end
+  local profile = with_choices(s.profile, G.PROFILES[G.SETTINGS.profile])
+  if not p then return {type = t, save_settings = settings, profile_num = msg.profile_num, save_profile = profile} end
   local uda = {} -- as Game:save_progress writes the flags
   for _, tbl in ipairs(TABLES()) do
     for k, v in pairs(tbl or {}) do
@@ -119,7 +127,7 @@ function B.outgoing(msg)
       if f then uda[k] = (f[1] and 'u' or '') .. (f[2] and 'd' or '') .. (f[3] and 'a' or '') end
     end
   end
-  return {type = t, save_progress = {UDA = uda, SETTINGS = settings, PROFILE = s.profile}}
+  return {type = t, save_progress = {UDA = uda, SETTINGS = settings, PROFILE = profile}}
 end
 
 function B.stepping()
@@ -135,18 +143,45 @@ end
 
 -- The command that starts the Python agent, as `antezero_agent.bot --install` stored it.
 local function command()
-  local ok, cfg = pcall(JSON.decode, love.filesystem.read('antezero.json') or '')
-  return ok and type(cfg) == 'table' and type(cfg.command) == 'string' and cfg.command or nil
+  local ok, c = pcall(JSON.decode, love.filesystem.read('antezero.json') or '')
+  return ok and type(c) == 'table' and type(c.command) == 'string' and c.command or nil
 end
 
 local function spawn()
   if B.contact and now() - B.contact < 3 then return end       -- it is polling
   if B.spawned and now() - B.spawned < 120 then return end      -- it is loading
-  local cmd = command()
-  if not cmd then return end -- the toggle is off without it; B.tick reports a bot that never answers
   local port = AZB.server and AZB.server.port or (BB_SETTINGS and BB_SETTINGS.port) or 12346
-  os.execute('start "AnteZero bot" /min ' .. cmd .. ' --port ' .. port)
+  os.execute('start "AnteZero bot" /min ' .. command() .. ' --port ' .. port)
   B.spawned = now()
+end
+
+-- Why the bot cannot take over the run on screen, if it cannot.
+local function refusal()
+  if not command() then return {'Not set up. Run:', 'python -m antezero_agent.bot', '--install CHECKPOINT'} end
+  if G.GAME.challenge then return {'The bot does not play challenge runs'} end
+  if G.STATE == G.STATES.GAME_OVER then return {'The run is over'} end
+end
+
+local function take_over()
+  protect()
+  if not G.SETTINGS.tutorial_complete and not B.tutorial then
+    B.tutorial = {G.SETTINGS.tutorial_complete, G.SETTINGS.tutorial_progress}
+    G.SETTINGS.tutorial_complete, G.SETTINGS.tutorial_progress = true, nil
+    -- as skipping a section of it ends its overlay
+    if G.OVERLAY_TUTORIAL then
+      if G.OVERLAY_TUTORIAL.Jimbo then G.OVERLAY_TUTORIAL.Jimbo:remove() end
+      if G.OVERLAY_TUTORIAL.content then G.OVERLAY_TUTORIAL.content:remove() end
+      G.OVERLAY_TUTORIAL:remove()
+      G.OVERLAY_TUTORIAL = nil
+      G.E_MANAGER:clear_queue('tutorial')
+    end
+  end
+  B.runs = B.runs + 1
+  B.run = {id = B.runs, seed = G.GAME.pseudorandom.seed, back = G.GAME.selected_back.effect.center.key, stake = G.GAME.stake}
+  B.active, B.acc, B.seen, B.status, B.last, B.thinking, B.line = true, 0, now(), 'starting...', nil, nil, ''
+  B.make_hud()
+  spawn()
+  AZB.mark_action()
 end
 
 local function stop(text)
@@ -154,27 +189,44 @@ local function stop(text)
   B.status, B.last = text, nil
 end
 
-local start_run = Game.start_run
-function Game:start_run(args)
-  args = args or {}
-  local bot = B.pending and not args.savetext and not args.challenge
-  B.pending = false
-  if not bot then -- (a bot run's Play button settled the run before it)
+-- The toggle's callback (it has set B.active to `on`).
+local function toggled(on)
+  if not on then return stop('handed back to you') end
+  if refusal() then B.active = false return end
+  take_over()
+end
+
+-- Every way out of the run on screen ends the bot's part in it before
+-- anything is written for the next one: the start of a run (the Play
+-- buttons write its choices to the profile first, holding R the end of the
+-- streak) and the way to the main menu.
+local function release_first(t, name)
+  local f = t and t[name]
+  if not f then return end
+  t[name] = function(...)
     B.release()
-    return start_run(self, args)
+    return f(...)
   end
-  if not G.SETTINGS.tutorial_complete then
-    B.tutorial = {G.SETTINGS.tutorial_complete, G.SETTINGS.tutorial_progress}
-    G.SETTINGS.tutorial_complete, G.SETTINGS.tutorial_progress = true, nil
+end
+release_first(G.FUNCS, 'start_setup_run')
+release_first(G.FUNCS, 'start_challenge_run')
+release_first(G.FUNCS, 'go_to_menu')
+release_first(SMODS.RunSelect and SMODS.RunSelect.Functions, 'start_run')
+
+-- Holding R restarts the run on these conditions (and the ones of the game's code).
+local key_hold_update = Controller.key_hold_update
+function Controller:key_hold_update(key, dt)
+  if key == 'r' and not (self.locked or self.locks.frame or self.frame_buttonpress or G.SETTINGS.paused)
+      and (self.held_key_times[key] or 0) > 0.7 then
+    B.release()
   end
-  local r = start_run(self, args)
-  B.runs = B.runs + 1
-  B.run = {id = B.runs, seed = G.GAME.pseudorandom.seed, back = G.GAME.selected_back.effect.center.key, stake = G.GAME.stake}
-  B.active, B.acc, B.seen, B.status, B.last, B.thinking, B.line = true, 0, now(), 'starting...', nil, nil, ''
-  B.make_hud()
-  spawn()
-  AZB.mark_action()
-  return r
+  return key_hold_update(self, key, dt)
+end
+
+local start_run = Game.start_run
+function Game:start_run(...)
+  B.release()
+  return start_run(self, ...)
 end
 
 local main_menu = Game.main_menu
@@ -182,23 +234,6 @@ function Game:main_menu(...)
   B.release()
   return main_menu(self, ...)
 end
-
--- The Play buttons: the vanilla screen's, and Steamodded's run select (its
--- Play, Quick Start and double-click). They write the new run's choices to
--- the profile, so the run on screen is settled first.
-local function play_button(t, name, is_new_run)
-  local f = t and t[name]
-  if not f then return end
-  t[name] = function(...)
-    B.release()
-    B.pending = B.enabled and is_new_run(...)
-    if B.pending then protect() end
-    return f(...)
-  end
-end
--- holding R restarts a run through it, with no button
-play_button(G.FUNCS, 'start_setup_run', function(e) return e ~= nil and G.SETTINGS.current_setup == 'New Run' end)
-play_button(SMODS.RunSelect and SMODS.RunSelect.Functions, 'start_run', function() return true end)
 
 local atlas = SMODS.Atlas({key = 'bot', path = 'bot.png', px = 16, py = 16})
 
@@ -208,48 +243,29 @@ local function icon(size, cell)
   return s
 end
 
-G.FUNCS.azb_toggle_bot = function() B.enabled = not B.enabled end
-
-G.FUNCS.azb_bot_toggle = function(e)
-  e.config.colour = B.enabled and G.C.GOLD or G.C.BLACK
-  e.config.outline_colour = B.enabled and G.C.WHITE or G.C.UI.TEXT_INACTIVE
-  local sprite = e.children[1].config.object
-  local cell = B.enabled and 0 or 2
-  if sprite.sprite_pos.x ~= cell then sprite:set_sprite_pos({x = cell, y = 0}) end
+local function toggle_node()
+  local why = refusal()
+  return create_toggle({
+    label = 'Bot plays this run', ref_table = B, ref_value = 'active', callback = toggled, w = 4,
+    info = why or (B.protected and {'The run no longer counts'}
+                   or cfg.count and {'The run counts (Mods > AnteZero > Config)'}
+                   or {'From here the run does not count', '(Mods > AnteZero > Config)'}),
+  })
 end
 
--- On the Play button `e` while `show`, like the game's alert badges.
-local function toggle_on(e, show)
-  if show and not e.children.alert then
-    local ready = command() ~= nil
-    if not ready then B.enabled = false end
-    e.children.alert = UIBox{
-      definition = {n = G.UIT.ROOT, config = {align = 'cm', colour = G.C.CLEAR}, nodes = {
-        {n = G.UIT.C, config = {align = 'cm', r = 0.1, minw = 0.66, minh = 0.66, colour = G.C.BLACK, outline = 1.5, outline_colour = G.C.UI.TEXT_INACTIVE,
-            hover = true, shadow = true, button = ready and 'azb_toggle_bot' or nil, func = 'azb_bot_toggle',
-            tooltip = {title = 'AnteZero', text = ready and {'Let the bot play this run'}
-              or {'Not set up. Run:', 'python -m antezero_agent.bot', '--install CHECKPOINT'}}}, nodes = {
-          {n = G.UIT.O, config = {object = icon(0.5, 2)}},
-        }},
-      }},
-      config = {instance_type = 'ALERT', align = 'tri', offset = {x = 0.05, y = -0.25}, major = e, parent = e},
-    }
-  elseif not show and e.children.alert then
-    e.children.alert:remove()
-    e.children.alert = nil
+-- Below the run's buttons (Settings ... Customize Deck).
+local options = create_UIBox_options
+function create_UIBox_options(...)
+  local t = options(...)
+  local box = G.STAGE == G.STAGES.RUN and t.nodes[1].nodes[1].nodes[1]
+  if box then
+    local rows = {}
+    for i = 1, table.maxn(box.nodes) do rows[#rows+1] = box.nodes[i] end
+    rows[#rows+1] = toggle_node()
+    box.nodes = rows
   end
+  return t
 end
-
-local function with_toggle(name, show)
-  local f = G.FUNCS[name]
-  if not f then return end
-  G.FUNCS[name] = function(e)
-    f(e)
-    toggle_on(e, show(e))
-  end
-end
-with_toggle('can_start_run', function(e) return G.SETTINGS.current_setup == 'New Run' and e.config.button ~= nil end)
-with_toggle('run_select_can_change_page', function(e) return e.config.button == 'run_select_start_run' end)
 
 -- Built anew for every text: the game re-lays out a live text node only when
 -- its character count changes, which leaves the backdrop at the old width.
@@ -307,12 +323,17 @@ function B.owns(id) return B.active and B.run ~= nil and B.run.id == id end
 function B.acting(a, note)
   local ok, text = pcall(describe, a)
   B.last = (ok and text or a.type) .. (note and note ~= '' and ('   ' .. note) or '')
-  B.seen, B.thinking, B.interrupted = now(), nil, false
+  B.seen, B.thinking = now(), nil
 end
 
--- A menu the player opened, not the screen that ends the run.
+-- A menu the player opened (the win screen too: the player chooses there),
+-- not the screen that ends the run.
 local function paused()
-  return G.OVERLAY_MENU ~= nil and G.STATE ~= G.STATES.GAME_OVER and not (G.GAME and G.GAME.won)
+  return G.OVERLAY_MENU ~= nil and G.STATE ~= G.STATES.GAME_OVER
+end
+
+local function win_screen()
+  return G.OVERLAY_MENU ~= nil and G.OVERLAY_MENU:get_UIE_by_ID('you_win_UI') ~= nil
 end
 
 function B.tick()
@@ -325,6 +346,7 @@ function B.tick()
   end
   local line
   if not B.active then line = (B.status or '') .. (B.protected and '   (this run does not count)' or '')
+  elseif win_screen() then line = 'won the run (Endless Mode lets the bot play on)'
   elseif paused() then line = 'paused (close the menu to go on)'
   elseif not B.last then line = B.status or ''
   elseif B.thinking and now() - B.thinking > 0.7 then line = B.last .. '   thinking...'
@@ -390,7 +412,7 @@ end
 
 AZB.rpc.register({
   name = 'az_bot',
-  description = "The bot run to play, if any, and whether a menu was open since the bot's last action (`interrupted`); `status` is shown while it plays, `stop` ends the bot's part with that text",
+  description = "The bot's turn at the run on screen, if it has one, and (with `run`) whether a menu was open since the last such call (`interrupted`); `status` is shown while it plays, `stop` ends its turn with that text",
   schema = {
     status = {type = 'string', required = false},
     stop = {type = 'string', required = false},
@@ -398,6 +420,7 @@ AZB.rpc.register({
   },
   execute = function(args, send)
     B.contact = now()
+    local interrupted = false
     if not args.run or B.owns(args.run) then
       if B.active then B.seen = now() end
       if args.stop and args.run then stop(args.stop)
@@ -405,6 +428,9 @@ AZB.rpc.register({
         if B.last then B.thinking = B.thinking or now() else B.status = args.status end
       end
     end
-    send({active = B.active, run = B.active and B.run or nil, paused = paused(), interrupted = B.interrupted or false, search = cfg.search})
+    if args.run and B.owns(args.run) then
+      interrupted, B.interrupted = B.interrupted or false, false
+    end
+    send({active = B.active, run = B.active and B.run or nil, paused = paused(), interrupted = interrupted, search = cfg.search})
   end,
 })
