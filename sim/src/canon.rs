@@ -236,6 +236,15 @@ impl JokerField {
 	}
 }
 
+/// Whether `k` is one of the game's placeholder centers, the faces it shows
+/// for a card not unlocked or not discovered (`j_locked`, `v_undiscovered`,
+/// ...): Steamodded marks one in `used_jokers` when an unlock alert shows it.
+/// They are in no pool.
+#[must_use]
+pub fn placeholder_center(k: &str) -> bool {
+	k.ends_with("_locked") || k.ends_with("_undiscovered")
+}
+
 /// The key a card shows in the canonical state: three packs have a second
 /// variant that matches the first in name, cost, weight and contents, and
 /// both show as the first.

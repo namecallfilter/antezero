@@ -271,7 +271,7 @@ def from_lua(j: dict | str) -> Canon:
     uj = sorted(
         k
         for k in _arr(_get(j, "used_jokers"))
-        if isinstance(k, str) and k.startswith(("j_", "c_", "v_", "p_")) and k != "c_base"
+        if isinstance(k, str) and k.startswith(("j_", "c_", "v_", "p_")) and k != "c_base" and not k.endswith(("_locked", "_undiscovered"))
     )
     o["used_jokers"] = ",".join(uj)
     for name, key in AREAS:

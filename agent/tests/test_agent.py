@@ -1016,6 +1016,23 @@ def test_the_bot_plays_on_in_endless_mode_once_the_player_chooses_it(bot_game):
     assert game.notes and game.polls > len(game.notes) + 3  # it waited on the win screen
 
 
+def test_the_bot_plays_on_past_an_unlock_alert():
+    """Steamodded marks the placeholder an unlock alert shows (``j_locked``)
+    in ``used_jokers``: no card of any pool."""
+    from antezero_agent import bot
+
+    class Alerted(_BotGame):
+        def refresh(self):
+            super().refresh()
+            d = json.loads(self.reply)
+            d["used_jokers"] = sorted(d["used_jokers"] + ["j_locked", "j_undiscovered"])
+            self.reply = json.dumps(d)
+
+    cfg, net = preset("smoke"), tiny()
+    game = Alerted(BOT_RUN)
+    assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None) == "lost the run"
+
+
 def test_the_bot_stops_on_a_run_the_simulator_cannot_hold(bot_game):
     from antezero_agent import bot
 

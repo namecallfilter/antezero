@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub use sim::canon::{Canon, from_sim};
-use sim::canon::{CanonArea, JokerField, canon_number, normalize_key};
+use sim::canon::{CanonArea, JokerField, canon_number, normalize_key, placeholder_center};
 use sim::data::{HandType, Joker};
 use sim::game::Game;
 use sim::json::Json;
@@ -246,6 +246,7 @@ pub fn from_lua(j: &Json) -> Canon {
 				|| k.starts_with("v_")
 				|| k.starts_with("p_"))
 				&& *k != "c_base"
+				&& !placeholder_center(k)
 		})
 		.collect();
 	uj.sort_unstable();

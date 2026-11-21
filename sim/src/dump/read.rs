@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::areas::{Hand, HandSort, Limit, Limits};
-use crate::canon::JokerField;
+use crate::canon::{self, JokerField};
 use crate::card::{AnyCard, Card, CardCore, Kind, Sticker};
 use crate::data::{
 	ALL_BLINDS, Back, BlindKind, Booster, Edition, Enhancement, HandType, Joker, PackKind, Planet,
@@ -344,8 +344,9 @@ fn read_history(j: &Json) -> Result<History, DumpError> {
 	let mut used_jokers = CenterSet::default();
 	for k in list(j, "used_jokers")? {
 		let k = k.as_str().ok_or_else(|| bad("used_jokers", k))?;
-		// The game also marks the playing cards' centers, which the simulator does not track.
-		if k == "c_base" || Enhancement::from_key(k).is_some() {
+		// The game also marks centers that are in no pool: the playing
+		// cards' (`c_base`, the enhancements) and its placeholders.
+		if k == "c_base" || Enhancement::from_key(k).is_some() || canon::placeholder_center(k) {
 			continue;
 		}
 		let kind = kind_of(k).ok_or_else(|| bad("used_jokers", &Json::Str(k.into())))?;
@@ -974,6 +975,22 @@ mod tests {
 		assert!(g.history.locked_tags.contains(TagKind::Rare));
 		let back = read(&g.to_dump()).expect("written back");
 		assert_eq!(back.history, g.history);
+	}
+
+	#[test]
+	fn used_jokers_holds_the_cards_the_simulator_has() {
+		let used = |keys: &[&str]| {
+			changed(|f| {
+				let keys = keys.iter().map(|&k| Json::Str(k.into())).collect();
+				f.insert("used_jokers".into(), Json::Arr(keys));
+			})
+		};
+		let g = read(&used(&["c_base", "m_glass", "j_locked", "j_joker"]))
+			.expect("the game marks a placeholder in an unlock alert");
+		let mut want = CenterSet::default();
+		want.insert(Center::Joker(Joker::Joker));
+		assert_eq!(g.history.used_jokers, want);
+		assert!(read(&used(&["j_mod_card"])).is_err(), "another mod's card");
 	}
 
 	#[test]
