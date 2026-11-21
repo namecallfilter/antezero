@@ -291,11 +291,7 @@ def from_lua(j: dict | str) -> Canon:
 
 
 def diff(a: Canon, b: Canon) -> list[tuple[str, str, str]]:
-    """Differences ``(path, a, b)`` with the GAME_OVER rule of canon::diff."""
-    if a.get("state") == "GAME_OVER" or b.get("state") == "GAME_OVER":
-        if a.get("state") != b.get("state"):
-            return [("state", a.get("state", "<missing>"), b.get("state", "<missing>"))]
-        return []
+    """Differences ``(path, a, b)``, as canon::diff."""
     out = []
     for k, v in sorted(a.items()):
         w = b.get(k)

@@ -347,14 +347,7 @@ impl fmt::Display for Diff {
 /// The differences between the two canonical states.
 #[must_use]
 pub fn diff(sim: &Canon, lua: &Canon) -> Vec<Diff> {
-	// A lost round's end queues a rental joker's rent (`ease_dollars` runs
-	// in an event) before it sets GAME_OVER; the game stops there with the
-	// event unrun, the simulator runs it. The money is all that differs.
-	let over = [sim, lua]
-		.iter()
-		.any(|c| c.get("state").map(String::as_str) == Some("GAME_OVER"));
 	fields(sim, lua)
-		.filter(|f| !(over && f.path == "dollars"))
 		.filter(Field::differs)
 		.map(|field| field.to_diff())
 		.collect()

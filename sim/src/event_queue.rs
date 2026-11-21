@@ -422,7 +422,9 @@ pub(crate) fn run_until_played(g: &mut Game) {
 /// Panics if the event queue stalls, never empties, or empties in a state
 /// that is not a decision point (a simulator bug).
 pub(crate) fn run_queue(g: &mut Game) {
-	run_frames(g, |_| false);
+	// The game-over screen pauses the game, and events queued before a pause
+	// never run (a lost round's rent, say): the simulator stops there too.
+	run_frames(g, |flow| flow.state == State::GameOver);
 	flow::sync_phase(&mut g.flow);
 }
 

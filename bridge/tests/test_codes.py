@@ -116,6 +116,11 @@ def _ocli() -> Path:
     return exe
 
 
+def test_a_game_over_is_compared_whole():
+    over = {"state": "GAME_OVER", "round": "8", "dollars": "1"}
+    assert diff(over, {**over, "round": "0"}) == [("round", "8", "0")]
+
+
 def test_canon_port_matches_rust_on_oracle_dumps():
     """``canon.from_lua`` of the oracle's state dumps equals the simulator's
     canonical view along a game (the Rust canonicalizers agree on these)."""
