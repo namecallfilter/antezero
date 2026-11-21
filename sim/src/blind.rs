@@ -372,7 +372,28 @@ pub(crate) fn blind_amount(ante: i32, scaling: BlindScaling) -> f64 {
 	let past = f64::from(ante - num::id(amounts.len()));
 	let power = 1.0 + 0.2 * past;
 	let last = amounts[amounts.len() - 1];
-	let mut amount = (last * (1.6f64 + (0.75f64 * past).powf(power)).powf(past)).floor();
-	amount -= rng::lua_mod(amount, 10f64.powf((amount.log10() - 1.0).floor()));
+	let mut amount = (last * rng::lua_pow(1.6 + rng::lua_pow(0.75 * past, power), past)).floor();
+	amount -= rng::lua_mod(amount, rng::lua_pow(10.0, (amount.log10() - 1.0).floor()));
 	amount
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The game's blind sizes past ante 8, as its `LuaJIT` computes
+	/// `get_blind_amount`: whole powers there are repeated squarings, which
+	/// round otherwise than `pow`.
+	#[test]
+	fn blind_sizes_past_ante_8_are_the_games() {
+		for (ante, scaling, chips) in [
+			(30, BlindScaling::Base, 2.100_000_000_000_000_6e149),
+			(25, BlindScaling::Faster, 4.900_000_000_000_001e87),
+			(30, BlindScaling::Faster, 4.300_000_000_000_001e149),
+			(25, BlindScaling::Fastest, 9.800_000_000_000_001e87),
+			(30, BlindScaling::Fastest, 8.600_000_000_000_002e149),
+		] {
+			assert_eq!(blind_amount(ante, scaling), chips, "ante {ante}");
+		}
+	}
 }
