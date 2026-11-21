@@ -87,6 +87,11 @@ pub(crate) enum Event {
 	DissolvePlaying {
 		id: u32,
 	},
+	/// Steamodded's `played_this_ante` mark on a card that was played (if it
+	/// is still in the game).
+	MarkPlayed {
+		id: u32,
+	},
 	/// Removal at the end of a dissolve/shatter/explode animation. Those
 	/// animations queue blocking-but-unblockable events that hold back every
 	/// event queued after them, so removal is modelled as an event queued at

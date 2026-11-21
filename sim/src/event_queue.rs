@@ -477,6 +477,11 @@ fn run_event(g: &mut Game, e: Event) -> Status {
 				.expect("a destroyed card stays in its area until this event dissolves it");
 			card.shatter_or_dissolve(&mut g.events);
 		}
+		Event::MarkPlayed { id } => {
+			if let Some(c) = g.areas.playing_cards_mut().find(|c| c.core.id == id) {
+				c.played_this_ante = true;
+			}
+		}
 		Event::RemoveCard { id } => flow::remove_card_by_id(g, id),
 		Event::BlindReset => blind::set_blind(g, None),
 		Event::DrawCard(draw) => {

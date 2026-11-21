@@ -160,14 +160,16 @@ fn joker_pool(
 	areas: &Areas, ante: i32, filter: PoolFilter, rng: &mut PseudoRandom, roll: RarityRoll,
 	append: &str, pool: &mut Pool,
 ) -> Rarity {
-	let r = if let RarityRoll::Fixed(r) = roll {
-		r
-	} else {
-		let mut k = Key::from("rarity");
-		k.push_int(i64::from(ante)).push(append);
-		rng.random(&k)
+	let r = match roll {
+		RarityRoll::Fixed(r) => r,
+		RarityRoll::Legendary { rolled: false } => 0.0,
+		RarityRoll::Seeded | RarityRoll::Legendary { rolled: true } => {
+			let mut k = Key::from("rarity");
+			k.push_int(i64::from(ante)).push(append);
+			rng.random(&k)
+		}
 	};
-	let rarity = if roll == RarityRoll::Legendary {
+	let rarity = if matches!(roll, RarityRoll::Legendary { .. }) {
 		Rarity::Legendary
 	} else if r > 0.95 {
 		Rarity::Rare
@@ -213,7 +215,7 @@ fn sample_pool(
 		PoolSet::Joker(roll) => {
 			let rarity = joker_pool(areas, ante, filter, rng, roll, append, &mut pool);
 			key.push("Joker").push_int(i64::from(rarity.id()));
-			if roll != RarityRoll::Legendary {
+			if !matches!(roll, RarityRoll::Legendary { .. }) {
 				key.push(append);
 			}
 		}
@@ -243,7 +245,7 @@ fn sample_pool(
 			}
 		}
 	}
-	if set != PoolSet::Joker(RarityRoll::Legendary) {
+	if !matches!(set, PoolSet::Joker(RarityRoll::Legendary { .. })) {
 		key.push_int(i64::from(ante));
 	}
 	let fallback = match set {
@@ -357,8 +359,10 @@ pub(crate) enum RarityRoll {
 	Seeded,
 	/// This value, with nothing drawn (`_rarity`).
 	Fixed(f64),
-	/// `legendary`: drawn from the seeded stream, then ignored.
-	Legendary,
+	/// `legendary`: a legendary joker. Vanilla draws the rarity from the
+	/// seeded stream all the same and ignores it (`rolled`); Steamodded
+	/// draws nothing.
+	Legendary { rolled: bool },
 }
 
 /// The Soul or Black Hole taking the place of a card of `set`: a 0.3% roll

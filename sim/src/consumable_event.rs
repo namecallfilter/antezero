@@ -260,7 +260,12 @@ fn make_consumable(g: &mut Game, which: ConsumableMaker) {
 fn make_joker(g: &mut Game, which: JokerMaker) {
 	let (rarity, append) = match which {
 		JokerMaker::Judgement => (RarityRoll::Seeded, "jud"),
-		JokerMaker::Soul => (RarityRoll::Legendary, "sou"),
+		JokerMaker::Soul => (
+			RarityRoll::Legendary {
+				rolled: !g.setup.steamodded,
+			},
+			"sou",
+		),
 	};
 	pools::create_owned(g, NewCard::joker(rarity, OwnedArea::Jokers, append));
 }

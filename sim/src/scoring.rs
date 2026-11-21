@@ -329,6 +329,15 @@ pub(crate) fn evaluate_play(g: &mut Game) {
 			calculate_joker::effect_status(&mut g.events, &e);
 		}
 	}
+	if g.setup.steamodded {
+		// Steamodded marks the cards for The Pillar here as well as when they
+		// are played, so the mark stays on a card a joker changed while
+		// scoring (Vampire, Midas Mask), which clears it.
+		for i in 0..g.areas.play.len() {
+			let id = g.areas.play[i].core.id;
+			g.events.push(Event::MarkPlayed { id });
+		}
+	}
 	g.events.push(Event::Wait);
 }
 
