@@ -9,14 +9,15 @@
 //! resampler must deal the swapped worlds alike. A game
 //! read from the real game's state dump holds the game's true hidden state,
 //! so the games are compared as the bot reads them (imported from their
-//! dumps), with the ops as training offers them and as the released policy
-//! is offered them (eight candidates, no skips, no null sorts).
+//! dumps), with and without the deck's tokens, with the ops as training
+//! offers them, as the released policy is offered them (eight candidates,
+//! no skips) and without the null sorts.
 
 use std::mem;
 
 use oracle::fingerprint::obs_fingerprint_with;
 use oracle::policy::Policy;
-use sim::data::{Back, Suit};
+use sim::data::{Back, Edition, Suit};
 use sim::game::Game;
 use sim::json::Json;
 use sim::obs::OpOptions;
@@ -25,11 +26,16 @@ use sim::{Stake, num};
 const GAMES: u64 = 30;
 const STEPS: usize = 200;
 
-fn options() -> [OpOptions; 2] {
+fn options() -> [OpOptions; 3] {
 	[
 		OpOptions {
 			candidates: 4,
 			..OpOptions::default()
+		},
+		OpOptions {
+			candidates: 8,
+			allow_skip: false,
+			null_sorts: true,
 		},
 		OpOptions {
 			candidates: 8,
@@ -44,10 +50,13 @@ fn imported(dump: &Json) -> Game {
 }
 
 fn fingerprints(g: &mut Game) -> Vec<u64> {
-	options()
-		.into_iter()
-		.map(|o| obs_fingerprint_with(g, o))
-		.collect()
+	let mut out = Vec::new();
+	for deck_tokens in [false, true] {
+		for o in options() {
+			out.push(obs_fingerprint_with(g, deck_tokens, o));
+		}
+	}
+	out
 }
 
 fn cards_mut<'d>(dump: &'d mut Json, area: &str) -> &'d mut Vec<Json> {
@@ -258,5 +267,97 @@ fn the_sort_ops_do_not_tell_the_suit_a_card_was_dealt() {
 	assert_eq!(
 		fingerprints(&mut imported(&dump)),
 		fingerprints(&mut imported(&other))
+	);
+}
+
+/// `card` made a Stone card hiding the suit and rank it has.
+fn stone(card: &mut Json, suit: Suit, rank: f64, edition: Option<Edition>) {
+	for (key, v) in [
+		("key", Json::Str("m_stone".into())),
+		("suit", Json::Str(suit.name().into())),
+		("rank", Json::Num(rank)),
+		("suit_nominal_original", Json::Num(suit.nominal_original())),
+		(
+			"edition",
+			edition.map_or(Json::Null, |e| Json::Str(e.name().into())),
+		),
+	] {
+		*field_mut(card, key) = v;
+	}
+}
+
+/// What shows of the hand and the deck, in order: a Stone card without the
+/// suit and rank it hides.
+fn shown(dump: &Json) -> Vec<String> {
+	let cards = dump
+		.get("hand")
+		.as_list()
+		.iter()
+		.chain(dump.get("deck").as_list());
+	cards
+		.map(|c| {
+			let key = c.get("key").as_str().unwrap_or("?");
+			let face = if key == "m_stone" {
+				String::new()
+			} else {
+				format!("{:?} {:?}", c.get("suit").as_str(), c.get("rank").as_f64())
+			};
+			format!(
+				"{key} {:?} {:?} {face}",
+				c.get("edition").as_str(),
+				c.get("facing").as_str()
+			)
+		})
+		.collect()
+}
+
+/// Stone cards show no suit or rank: one in the hand, and two in the deck
+/// told apart only by their editions, read and resample alike whatever
+/// suits and ranks they hide (with a card face down in the hand, so that the
+/// play candidates deal unseen worlds too).
+#[test]
+fn a_stone_card_keeps_its_suit_and_rank_hidden() {
+	let mut g = Game::new_run("STONES", Back::Red, Stake::White);
+	let a: sim::Action = "select".parse().expect("an action");
+	g.step(a).expect("the small blind");
+	let mut dump = g.to_dump();
+	*field_mut(&mut cards_mut(&mut dump, "hand")[1], "facing") = Json::Str("back".into());
+	let mut other = dump.clone();
+	for (d, hidden) in [
+		(&mut dump, [
+			(Suit::Spades, 14.0),
+			(Suit::Spades, 14.0),
+			(Suit::Hearts, 2.0),
+		]),
+		(&mut other, [
+			(Suit::Clubs, 7.0),
+			(Suit::Hearts, 2.0),
+			(Suit::Spades, 14.0),
+		]),
+	] {
+		stone(&mut cards_mut(d, "hand")[0], hidden[0].0, hidden[0].1, None);
+		stone(
+			&mut cards_mut(d, "deck")[0],
+			hidden[1].0,
+			hidden[1].1,
+			Some(Edition::Foil),
+		);
+		stone(
+			&mut cards_mut(d, "deck")[1],
+			hidden[2].0,
+			hidden[2].1,
+			Some(Edition::Polychrome),
+		);
+	}
+	let (a, b) = (imported(&dump), imported(&other));
+	assert_eq!(
+		fingerprints(&mut a.clone()),
+		fingerprints(&mut b.clone()),
+		"the observation"
+	);
+	assert_eq!(
+		shown(&resampled(&a, "stones")),
+		shown(&resampled(&b, "stones")),
+		"the resampled worlds"
 	);
 }

@@ -106,8 +106,9 @@ pub(super) fn blinds_done(states: PerBlind<BlindStatus>) -> [bool; BlindSlot::AL
 /// What a player sees of a playing card's face (never its id).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct CardFace {
+	/// 0 for a Stone card, which shows no suit or rank.
 	pub suit: u8,
-	/// The rank id.
+	/// The rank id (0 for a Stone card).
 	pub rank: u8,
 	pub enhancement: u8,
 	/// [`Edition::id`].
@@ -120,9 +121,14 @@ pub(crate) struct CardFace {
 
 impl CardFace {
 	pub(crate) fn of(c: &PlayingCard) -> CardFace {
+		let (suit, rank) = if c.is_stone() {
+			(0, 0)
+		} else {
+			(c.suit as u8, c.rank.id())
+		};
 		CardFace {
-			suit: c.suit as u8,
-			rank: c.rank.id(),
+			suit,
+			rank,
 			enhancement: c.enhancement as u8,
 			edition: Edition::id(c.core.edition),
 			seal: c.seal.map_or(0, |s| s as u8 + 1),

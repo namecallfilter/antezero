@@ -1,3 +1,4 @@
+import json
 import zlib
 from collections import Counter
 from types import SimpleNamespace
@@ -35,28 +36,41 @@ def round_states(n=12):
     return out
 
 
+def _deck_swapped(g, k):
+    """``g`` read from its dump with two deck cards changed places: a world
+    the player cannot tell from it, made apart from the resampler."""
+    d = json.loads(g.state_json())
+    deck = d["deck"]
+    i = k % len(deck)
+    j = next(j for j in range(len(deck)) if deck[j]["card"] != deck[i]["card"])
+    deck[i], deck[j] = deck[j], deck[i]
+    h = g.clone()
+    h.load_state(json.dumps(d))
+    return h
+
+
 def test_round_search_ignores_the_hidden_arrangement():
-    """Permuting the hidden state (deck order, future randomness) changes
-    neither the worlds nor the search's decision: worlds come from a
-    canonical order, never from the true one."""
+    """Permuting the hidden state (deck order, future randomness), by the
+    resampler or in the dump, changes neither the worlds nor the search's
+    decision: worlds come from a canonical order, never from the true one."""
     rs = RoundSearch(tiny(), preset("smoke"), **SEARCH)
     risky = 0
     for k, g in enumerate(round_states()):
         h = g.clone()
         h.resample_hidden(f"PERM{k}")  # same visible state, other hidden arrangement
         assert h.canonical() != g.canonical()
-        w, v = g.clone(), h.clone()
-        w.resample_hidden("T")
-        v.resample_hidden("T")
-        assert w.canonical() == v.canonical(), "a world depends on the hidden arrangement"
+        g, swapped = g.clone(), _deck_swapped(g, k)
+        g.load_state(g.state_json())  # read as the bot reads the game
+        worlds = [[w.canonical() for w in rs.worlds(x, 4, f"G{k}_0")] for x in (g, h, swapped)]
+        assert worlds[0] == worlds[1] == worlds[2], "a world depends on the hidden arrangement"
         decisions = []
-        for x in (g, h):
+        for x in (g, h, swapped):
             before = x.canonical()
             with seeded(k):  # the same policy samples
                 (code, info), = rs.run([_decide(rs, x, f"{k}_0")])
             assert x.canonical() == before, "the search mutated the game it searched"
             decisions.append((code, info))
-        assert decisions[0] == decisions[1]
+        assert decisions[0] == decisions[1] == decisions[2]
         risky += decisions[0][1]["risky"]
     assert risky >= 3  # the screen and final stages ran
 
