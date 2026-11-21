@@ -999,6 +999,19 @@ def test_the_bot_plays_on_in_endless_mode_once_the_player_chooses_it(bot_game):
     assert game.notes and game.polls > len(game.notes) + 3  # it waited on the win screen
 
 
+def test_the_bot_stops_on_a_run_the_simulator_cannot_hold(bot_game):
+    from antezero_agent import bot
+
+    def challenge(dump):
+        d = json.loads(dump)
+        d["challenge"] = "c_omelette_1"
+        return json.dumps(d)
+
+    cfg, net = preset("smoke"), tiny()
+    game = bot_game(BOT_RUN, misread=challenge)
+    assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None) == "stopped: the simulator cannot play this run"
+
+
 def test_the_bot_stops_on_a_dump_its_simulator_misreads(bot_game):
     from antezero_agent import bot
 

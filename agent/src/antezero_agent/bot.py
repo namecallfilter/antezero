@@ -119,7 +119,11 @@ def play_run(client, env, run: dict, model, cfg, dev, rs: RoundSearch | None, cr
                 env.refresh()
                 expected, stale = None, False
             game = env.canonical()
-            sim.load_state(env.state_json())
+            try:
+                sim.load_state(env.state_json())
+            except ValueError as e:  # another mod's cards or rules, a challenge
+                print(f"[{run['seed']}] {e}", flush=True)
+                return "stopped: the simulator cannot play this run"
             sim.rearranges = free
             # The bot waits on the win screen: a won run it reads goes on in Endless Mode.
             sim.endless = sim.endless or sim.run_won

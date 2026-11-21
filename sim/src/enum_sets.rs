@@ -1,7 +1,7 @@
 //! Bit sets of the game's enums: centers (`G.GAME.used_jokers`), poker
-//! hands, planets, vouchers and suits.
+//! hands, planets, vouchers, suits and tags.
 
-use crate::data::{CENTER_COUNT, Center, HandType, Planet, Suit, Voucher};
+use crate::data::{CENTER_COUNT, Center, HandType, Planet, Suit, TagKind, Voucher};
 
 /// A set of centers, one bit each (`G.GAME.used_jokers`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -70,4 +70,8 @@ variant_set!(
 variant_set!(
 	/// A set of suits.
 	SuitSet(u8) of Suit
+);
+variant_set!(
+	/// A set of skip tags.
+	TagSet(u32) of TagKind
 );

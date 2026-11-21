@@ -161,6 +161,7 @@ G = setmetatable({
 }, {__index = Game})
 G.P_LOCKED = {G.P_CENTERS.j_blueprint}
 G.FUNCS.exit_overlay_menu = function() G.OVERLAY_MENU = nil end
+G.FUNCS.go_to_menu = function() G:main_menu() end -- after its screen wipe
 """
 
 MOD = r"""
@@ -299,6 +300,27 @@ def test_the_bot_takes_over_from_the_runs_options_menu_and_hands_it_back(game):
     assert(not AZB.bot.active and AZB.bot.line:find('handed back') and AZB.bot.line:find('does not count'), AZB.bot.line)
     bot_toggle(true)
     assert(AZB.bot.active and AZB.bot.run.id ~= first, 'taken over again, a new turn for the agent')
+    """)
+
+
+def test_the_run_stops_counting_when_the_bot_takes_over_with_count_off(game):
+    game.run("""
+    SMODS.current_mod.config.count = true
+    play('b_red')
+    bot_toggle(true)
+    assert(AZB.bot.active and not AZB.bot.protected, 'a turn that counts')
+    profile().career_stats.c_wins = 3 -- what it did
+    bot_toggle(true)
+    SMODS.current_mod.config.count = false
+    bot_toggle(true)
+    assert(AZB.bot.protected, 'from here it does not count')
+    profile().career_stats.c_wins = 4
+    SMODS.current_mod.config.count = true -- too late for this run
+    bot_toggle(true)
+    bot_toggle(true)
+    assert(AZB.bot.protected)
+    G.FUNCS.go_to_menu()
+    assert(not AZB.bot.protected and profile().career_stats.c_wins == 3, 'the part that counted is kept')
     """)
 
 
@@ -522,6 +544,9 @@ def test_the_bot_waits_on_the_win_screen_and_plays_on_in_endless_mode(game):
     for _ = 1, AZB.config.quiet_frames + 2 do AZB.tick() end
     assert(reply and reply.settled, 'the game after the win screen')
     assert(AZB.bot.active and not poll().paused)
+    G.OVERLAY_MENU = MENU -- a menu in Endless Mode
+    AZB.bot.tick()
+    assert(poll().paused and AZB.bot.line:find('paused'), AZB.bot.line)
     """)
 
 
@@ -550,4 +575,14 @@ def test_a_run_holds_nothing_of_the_mods(game):
     Card.remove(card)
     assert(AZB.pack_size == 3, 'the pack size for the dump')
     for k in pairs(G.GAME) do assert(not tostring(k):find('^azb_'), k) end
+    """)
+
+
+def test_several_pending_vouchers_are_written_for_the_importer_to_refuse(game):
+    game.run("""
+    dofile(MOD .. 'src/state.lua')
+    assert(AZB.vanilla_voucher({'v_grabber', spawn = {v_grabber = true}}) == 'v_grabber')
+    assert(AZB.vanilla_voucher({'v_grabber', 'v_wasteful', spawn = {v_grabber = false, v_wasteful = true}}) == 'v_wasteful')
+    local several = AZB.vanilla_voucher({'v_grabber', 'v_wasteful', spawn = {v_grabber = true, v_wasteful = true}})
+    assert(type(several) == 'table' and #several == 2, 'a second voucher of another mod')
     """)

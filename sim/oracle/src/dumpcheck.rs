@@ -303,6 +303,7 @@ fn load_mod_writer(o: &mut Oracle) -> Result<(), String> {
 		function AZB.state_name(s) for k, v in pairs(G.STATES) do if v == s then return k end end end
 		function AZB.vanilla_state_name() return AZB.state_name(G.STATE) end
 		function AZB.is_settled() return true end
+		function AZB.is_bridge() return false end
 		function AZB.smods_only_rng() return false end
 		dofile({state})",
 		json = lua_path(&dir.join("json.lua")),

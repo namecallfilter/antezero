@@ -9,7 +9,7 @@ use crate::card::Kind;
 use crate::data::{
 	Back, Enhancement, HandType, P_CARDS_SORTED, Rank, Spectral, Suit, Tarot, Voucher,
 };
-use crate::enum_sets::{CenterSet, PlanetSet, VoucherSet};
+use crate::enum_sets::{CenterSet, PlanetSet, TagSet, VoucherSet};
 use crate::event::Event;
 use crate::event_queue::EventQueue;
 use crate::game::{
@@ -323,9 +323,15 @@ impl Run {
 	}
 }
 
-/// What the run has used, for the pools and the jokers that count it.
+/// What the run has used, for the pools and the jokers that count it, and
+/// what the player's profile keeps out of the pools.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct History {
+	/// The cards the profile has not unlocked: in no pool, but for legendary
+	/// jokers (`get_current_pool`).
+	pub locked: CenterSet,
+	/// The skip tags whose prerequisite the profile has not discovered.
+	pub locked_tags: TagSet,
 	pub used_jokers: CenterSet,
 	pub used_vouchers: VoucherSet,
 	pub planets_used: PlanetSet,
@@ -385,8 +391,8 @@ fn start_run(g: &mut Game) {
 		&mut g.rng,
 		VoucherRoll::Ante,
 	));
-	g.blind_select.skip_tags.small = Some(pools::get_next_tag(&g.run, &mut g.rng));
-	g.blind_select.skip_tags.big = Some(pools::get_next_tag(&g.run, &mut g.rng));
+	g.blind_select.skip_tags.small = Some(pools::get_next_tag(&g.run, &g.history, &mut g.rng));
+	g.blind_select.skip_tags.big = Some(pools::get_next_tag(&g.run, &g.history, &mut g.rng));
 
 	g.areas.limits.consumables = Limit::new(sp.consumable_slots);
 	g.areas.limits.jokers = Limit::new(sp.joker_slots);

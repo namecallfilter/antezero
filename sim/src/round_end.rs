@@ -274,8 +274,8 @@ pub(crate) fn do_cash_out(g: &mut Game) {
 	g.events.push(Event::Wait);
 	g.events.push(Event::EaseChips0);
 	if g.blind_select.states[BlindSlot::Boss] == BlindStatus::Defeated {
-		g.blind_select.skip_tags.small = Some(pools::get_next_tag(&g.run, &mut g.rng));
-		g.blind_select.skip_tags.big = Some(pools::get_next_tag(&g.run, &mut g.rng));
+		g.blind_select.skip_tags.small = Some(pools::get_next_tag(&g.run, &g.history, &mut g.rng));
+		g.blind_select.skip_tags.big = Some(pools::get_next_tag(&g.run, &g.history, &mut g.rng));
 	}
 	reset_blinds(
 		g.setup.win_ante,

@@ -50,11 +50,13 @@ pub(crate) fn poll_guaranteed_edition(rng: &mut PseudoRandom, key: &Key) -> Opti
 }
 
 /// What keeps a card out of the pools: having been used
-/// (`G.GAME.used_jokers`) unless Showman is owned, and, for the jokers whose
-/// pool flag names it, whether Gros Michel is extinct.
+/// (`G.GAME.used_jokers`) unless Showman is owned, being locked on the
+/// player's profile, and, for the jokers whose pool flag names it, whether
+/// Gros Michel is extinct.
 #[derive(Clone, Copy, Debug)]
 struct PoolFilter {
 	used_jokers: CenterSet,
+	locked: CenterSet,
 	showman: bool,
 	gros_michel_extinct: bool,
 }
@@ -63,6 +65,7 @@ impl PoolFilter {
 	fn new(areas: &Areas, history: &History) -> PoolFilter {
 		PoolFilter {
 			used_jokers: history.used_jokers,
+			locked: history.locked,
 			showman: areas.has_joker(Joker::RingMaster),
 			gros_michel_extinct: history.gros_michel_extinct,
 		}
@@ -71,6 +74,11 @@ impl PoolFilter {
 	/// Whether `c` is left out for having been used.
 	fn is_used(self, c: Center) -> bool {
 		self.used_jokers.contains(c) && !self.showman
+	}
+
+	/// Whether `c` is left out for having been used or being locked.
+	fn excludes(self, c: Center) -> bool {
+		self.is_used(c) || self.locked.contains(c)
 	}
 }
 
@@ -186,7 +194,13 @@ fn joker_pool(
 	};
 	for &j in src {
 		let mut add = false;
-		if !filter.is_used(Center::Joker(j)) {
+		// a legendary joker is never left out for being locked
+		let out = if rarity == Rarity::Legendary {
+			filter.is_used(Center::Joker(j))
+		} else {
+			filter.excludes(Center::Joker(j))
+		};
+		if !out {
 			let d = j.def();
 			add = match d.enhancement_gate {
 				Some(gate) => areas.playing_cards().any(|c| c.enhancement == gate),
@@ -222,14 +236,14 @@ fn sample_pool(
 		PoolSet::Tarot => {
 			key.push("Tarot").push(append);
 			for &t in &ALL_TAROTS {
-				pool.push(Kind::Tarot(t), !filter.is_used(Center::Tarot(t)));
+				pool.push(Kind::Tarot(t), !filter.excludes(Center::Tarot(t)));
 			}
 		}
 		PoolSet::Planet => {
 			key.push("Planet").push(append);
 			for &p in &ALL_PLANETS {
 				let mut add = false;
-				if !filter.is_used(Center::Planet(p)) {
+				if !filter.excludes(Center::Planet(p)) {
 					let softlock = matches!(p, Planet::PlanetX | Planet::Ceres | Planet::Eris);
 					add = !softlock || hands[p.hand()].played > 0.0;
 				}
@@ -239,7 +253,7 @@ fn sample_pool(
 		PoolSet::Spectral => {
 			key.push("Spectral").push(append);
 			for &s in &ALL_SPECTRALS {
-				let add = !filter.is_used(Center::Spectral(s))
+				let add = !filter.excludes(Center::Spectral(s))
 					&& !matches!(s, Spectral::Soul | Spectral::BlackHole);
 				pool.push(Kind::Spectral(s), add);
 			}
@@ -564,7 +578,7 @@ pub(crate) fn get_next_voucher(
 ) -> Voucher {
 	let filter = PoolFilter::new(areas, history);
 	let pool = ALL_VOUCHERS.map(|v| {
-		let add = !filter.is_used(Center::Voucher(v))
+		let add = !filter.excludes(Center::Voucher(v))
 			&& !history.used_vouchers.contains(v)
 			&& v.def()
 				.requires
@@ -583,9 +597,11 @@ pub(crate) fn get_next_voucher(
 }
 
 /// `get_next_tag_key()`.
-pub(crate) fn get_next_tag(run: &Run, rng: &mut PseudoRandom) -> TagKind {
-	// With a fully discovered profile every `requires` is satisfied.
-	let pool = ALL_TAGS.map(|t| t.min_ante().is_none_or(|m| m <= run.ante).then_some(t));
+pub(crate) fn get_next_tag(run: &Run, history: &History, rng: &mut PseudoRandom) -> TagKind {
+	let pool = ALL_TAGS.map(|t| {
+		(t.min_ante().is_none_or(|m| m <= run.ante) && !history.locked_tags.contains(t))
+			.then_some(t)
+	});
 	sample_or(rng, run.key_ante("Tag"), &pool, TagKind::Handy)
 }
 
@@ -620,4 +636,62 @@ pub(crate) fn get_pack(run: &Run, shop: &mut Shop, rng: &mut PseudoRandom) -> Bo
 	unreachable!(
 		"the boosters' ranges cover 0 to the total weight without gaps, and the poll lies in it"
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::data::{ALL_JOKERS, Back};
+	use crate::game::Stake;
+
+	fn drawn(g: &mut Game, set: PoolSet, n: usize) -> Vec<Kind> {
+		(0..n)
+			.map(|_| {
+				let spec = NewCard {
+					source: CardSource::Pool {
+						set,
+						soulable: false,
+					},
+					area: Area::ShopJokers,
+					append: "sho",
+				};
+				create_card(g, spec).kind
+			})
+			.collect()
+	}
+
+	#[test]
+	fn the_pools_leave_out_what_the_profile_has_locked_but_legendary_jokers() {
+		let mut g = Game::new_run("LOCKS", Back::Red, Stake::White);
+		for j in ALL_JOKERS {
+			if j != Joker::Joker {
+				g.history.locked.insert(Center::Joker(j));
+			}
+		}
+		for t in ALL_TAGS {
+			if t != TagKind::Economy {
+				g.history.locked_tags.insert(t);
+			}
+		}
+		let jokers = drawn(&mut g, PoolSet::Joker(RarityRoll::Seeded), 50);
+		assert!(
+			jokers.iter().all(|&k| k == Kind::Joker(Joker::Joker)),
+			"{jokers:?}"
+		);
+		let legendary = drawn(
+			&mut g,
+			PoolSet::Joker(RarityRoll::Legendary { rolled: true }),
+			5,
+		);
+		assert!(
+			legendary.iter().all(|&k| k != Kind::Joker(Joker::Joker)),
+			"{legendary:?}"
+		);
+		for _ in 0..20 {
+			assert_eq!(
+				get_next_tag(&g.run, &g.history, &mut g.rng),
+				TagKind::Economy
+			);
+		}
+	}
 }

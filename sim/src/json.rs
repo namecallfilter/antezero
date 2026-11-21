@@ -26,6 +26,15 @@ impl Json {
 		}
 	}
 
+	/// Member `k` of an object, if it has one (a `null` one too).
+	#[must_use]
+	pub fn field(&self, k: &str) -> Option<&Json> {
+		match self {
+			Json::Obj(m) => m.get(k),
+			_ => None,
+		}
+	}
+
 	/// The number, also one the harness wrote as `"inf"`, `"-inf"` or
 	/// `"nan"`.
 	#[must_use]

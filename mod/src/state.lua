@@ -21,8 +21,7 @@ local function card_info(c)
   local t = {
     key = c.config.center_key,
     sort_id = c.sort_id,
-    edition = edition_of(c),
-    seal = c.seal,
+    edition = edition_of(c) or AZB.json.null,
     debuff = c.debuff or false,
     cost = c.cost,
     sell_cost = c.sell_cost,
@@ -30,6 +29,7 @@ local function card_info(c)
   }
   if c.ability.set == 'Default' or c.ability.set == 'Enhanced' then
     t.card = c.config.card_key
+    t.seal = c.seal or AZB.json.null
     t.rank = c.base.id
     t.suit = c.base.suit
     t.bonus = c.ability.bonus
@@ -64,13 +64,62 @@ local function area_info(area)
 end
 
 -- SMODS stores {key, ..., spawn = {[key] = bool}} where vanilla stores the
--- key (and sets it to nil on redeem; SMODS sets spawn[key] = false).
+-- key (and sets it to nil on redeem; SMODS sets spawn[key] = false). Several
+-- keys pending (another mod's rule) are written as a list, which the
+-- importer refuses.
 function AZB.vanilla_voucher(v)
   if type(v) ~= 'table' then return v end
+  local keys = {__array = true}
   for _, k in ipairs(v) do
-    if v.spawn == nil or v.spawn[k] then return k end
+    if v.spawn == nil or v.spawn[k] then keys[#keys+1] = k end
   end
-  return nil
+  if #keys > 1 then return keys end
+  return keys[1]
+end
+
+-- The run's rules beyond its deck and stake (the importer refuses any it
+-- does not have) and what the profile keeps out of the pools
+-- (`get_current_pool`): the cards it has not unlocked, and the tags whose
+-- prerequisite it has not discovered.
+local function rules_and_profile(s, g)
+  local m = {}
+  for k, v in pairs(g.modifiers or {}) do
+    if type(v) == 'table' then
+      for k2, v2 in pairs(v) do m[k .. '.' .. tostring(k2)] = v2 end
+    else
+      m[k] = v
+    end
+  end
+  s.modifiers = m
+  s.challenge = g.challenge or AZB.json.null
+  s.vouchers_in_shop = g.starting_params.vouchers_in_shop or AZB.json.null
+  s.boosters_in_shop = g.starting_params.boosters_in_shop or AZB.json.null
+  local POOLS = {Joker = true, Tarot = true, Planet = true, Spectral = true, Voucher = true}
+  s.locked = {__array = true}
+  for k, v in pairs(G.P_CENTERS) do
+    if v.unlocked == false and POOLS[v.set] then s.locked[#s.locked+1] = k end
+  end
+  table.sort(s.locked)
+  s.tags_locked = {__array = true}
+  for k, v in pairs(G.P_TAGS) do
+    if v.requires and not (G.P_CENTERS[v.requires] and G.P_CENTERS[v.requires].discovered) then s.tags_locked[#s.tags_locked+1] = k end
+  end
+  table.sort(s.tags_locked)
+end
+
+-- What the game may leave nil, written as null: a dump without the key is
+-- then refused.
+local NILS = {
+  'blind_on_deck', 'blind_selected', 'voucher', 'pack_cards', 'pack_choices', 'pack_interrupt', 'last_hand_played',
+  'last_tarot_planet', 'dollar_buffer', 'temp_reroll_cost', 'temp_handsize', 'hand_real_limit', 'joker_real_limit',
+  'consumable_real_limit', 'mail', 'consumeable_usage_total',
+}
+local BLIND_NILS = {'disabled', 'only_hand', 'discards_sub', 'hands_sub'}
+
+local function nulls(t, keys)
+  for _, k in ipairs(keys) do
+    if t[k] == nil then t[k] = AZB.json.null end
+  end
 end
 
 -- What a simulator built from the dump needs beyond the compared state
@@ -112,11 +161,11 @@ local function sim_state(s, g)
   s.blind_selected = g.round_resets.blind and g.round_resets.blind.name
   s.orbital_choices = {__array = true}
   for ante, c in pairs(g.orbital_choices or {}) do
-    s.orbital_choices[#s.orbital_choices+1] = {ante = ante, Small = c.Small, Big = c.Big, Boss = c.Boss}
+    s.orbital_choices[#s.orbital_choices+1] = {ante = ante, Small = c.Small or AZB.json.null, Big = c.Big or AZB.json.null, Boss = c.Boss or AZB.json.null}
   end
   table.sort(s.orbital_choices, function(a, b) return a.ante < b.ante end)
-  s.idol_card = {rank = g.current_round.idol_card.rank, suit = g.current_round.idol_card.suit, id = g.current_round.idol_card.id}
-  s.mail_card = {rank = g.current_round.mail_card.rank, id = g.current_round.mail_card.id}
+  s.idol_card = {rank = g.current_round.idol_card.rank, suit = g.current_round.idol_card.suit, id = g.current_round.idol_card.id or AZB.json.null}
+  s.mail_card = {rank = g.current_round.mail_card.rank, id = g.current_round.mail_card.id or AZB.json.null}
   s.hand_real_limit = G.hand and G.hand.config.real_card_limit
   s.joker_real_limit = G.jokers and G.jokers.config.real_card_limit
   s.consumable_real_limit = G.consumeables and G.consumeables.config.real_card_limit
@@ -128,7 +177,10 @@ local function sim_state(s, g)
     s.blind.only_hand = g.blind.only_hand or nil
     s.blind.discards_sub = g.blind.discards_sub
     s.blind.hands_sub = g.blind.hands_sub
+    nulls(s.blind, BLIND_NILS)
   end
+  rules_and_profile(s, g)
+  nulls(s, NILS)
 end
 
 function AZB.state_table()
@@ -211,7 +263,7 @@ function AZB.state_table()
   table.sort(uv)
   s.used_vouchers = uv
   s.tag_info = {__array = true}
-  for i, t in ipairs(g.tags) do s.tag_info[i] = {key = t.key, triggered = t.triggered, orbital = t.ability and t.ability.orbital_hand} end
+  for i, t in ipairs(g.tags) do s.tag_info[i] = {key = t.key, triggered = t.triggered, orbital = t.ability and t.ability.orbital_hand or AZB.json.null} end
   for k, v in pairs(g.hands) do
     s.hands[k] = {level = v.level, chips = v.chips, mult = v.mult, played = v.played, played_this_round = v.played_this_round, visible = v.visible}
   end

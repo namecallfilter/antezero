@@ -2,18 +2,19 @@
 
 use std::collections::BTreeMap;
 
+use crate::blind::BlindScaling;
 use crate::canon::JokerField;
 use crate::card::{AnyCard, Card, CardCore, Kind, Sticker};
 use crate::data::{
-	ALL_BLINDS, ALL_PLANETS, ALL_VOUCHERS, BlindKind, Center, Edition, Enhancement, HandType, Rank,
-	Seal, TagKind, Voucher,
+	ALL_BLINDS, ALL_PLANETS, ALL_TAGS, ALL_VOUCHERS, BlindKind, Center, Edition, Enhancement,
+	HandType, Rank, Seal, TagKind, Voucher,
 };
 use crate::game::{
 	Blind, BlindSelect, BlindSlot, Game, HandLevels, HandSort, PackSlot, Round, Shop, Tags,
 };
 use crate::json::Json;
 use crate::playing_card::PlayingCard;
-use crate::run::{History, Run};
+use crate::run::{History, Modifiers, Run};
 
 fn object<'key>(fields: impl IntoIterator<Item = (&'key str, Json)>) -> Json {
 	Json::Obj(
@@ -35,6 +36,10 @@ pub(crate) fn write(g: &Game) -> Json {
 		("back", g.setup.back.key().into()),
 		("stake", f64::from(u8::from(g.setup.stake)).into()),
 		("win_ante", f64::from(g.setup.win_ante).into()),
+		("modifiers", Json::Obj(modifiers(&g.setup.modifiers))),
+		("challenge", Json::Null),
+		("vouchers_in_shop", Json::Null),
+		("boosters_in_shop", Json::Null),
 		("rng", rng(g)),
 		("blind", blind(&g.blind)),
 		("hands", hands(&g.hands)),
@@ -53,6 +58,41 @@ pub(crate) fn write(g: &Game) -> Json {
 	shop(&g.shop, &mut fields);
 	tags(&g.tags, &mut fields);
 	object(fields)
+}
+
+/// `G.GAME.modifiers` as the dump writes it (a nested table's entries as
+/// `table.key`): what the game sets, and only that.
+pub(super) fn modifiers(m: &Modifiers) -> BTreeMap<String, Json> {
+	let mut out = BTreeMap::new();
+	for slot in BlindSlot::ALL {
+		if m.no_blind_reward[slot] {
+			out.insert(format!("no_blind_reward.{}", slot.name()), true.into());
+		}
+	}
+	match m.scaling {
+		BlindScaling::Base => {}
+		BlindScaling::Faster => _ = out.insert("scaling".into(), 2.0.into()),
+		BlindScaling::Fastest => _ = out.insert("scaling".into(), 3.0.into()),
+	}
+	for (key, on) in [
+		("enable_eternals_in_shop", m.enable_eternals_in_shop),
+		("enable_perishables_in_shop", m.enable_perishables_in_shop),
+		("enable_rentals_in_shop", m.enable_rentals_in_shop),
+		("no_interest", m.no_interest),
+	] {
+		if on {
+			out.insert(key.into(), true.into());
+		}
+	}
+	for (key, dollars) in [
+		("money_per_hand", m.money_per_hand),
+		("money_per_discard", m.money_per_discard),
+	] {
+		if let Some(d) = dollars {
+			out.insert(key.into(), d.into());
+		}
+	}
+	out
 }
 
 fn rng(g: &Game) -> Json {
@@ -181,6 +221,17 @@ fn history(h: &History, out: &mut Vec<(&str, Json)>) {
 		.map(|p| p.key())
 		.collect();
 	planets.sort_unstable();
+	let mut locked: Vec<&str> = Center::all_cards()
+		.filter(|&c| h.locked.contains(c))
+		.map(Center::key)
+		.collect();
+	locked.sort_unstable();
+	let mut tags_locked: Vec<&str> = ALL_TAGS
+		.iter()
+		.filter(|&&t| h.locked_tags.contains(t))
+		.map(|t| t.key())
+		.collect();
+	tags_locked.sort_unstable();
 	let usage = object([
 		("tarot", h.consumable_usage_tarot.into()),
 		("planet", h.consumable_usage_planet.into()),
@@ -196,6 +247,11 @@ fn history(h: &History, out: &mut Vec<(&str, Json)>) {
 			array(used_vouchers.into_iter().map(Json::from)),
 		),
 		("planets_used", array(planets.into_iter().map(Json::from))),
+		("locked", array(locked.into_iter().map(Json::from))),
+		(
+			"tags_locked",
+			array(tags_locked.into_iter().map(Json::from)),
+		),
 		("consumeable_usage_total", usage),
 		("gros_michel_extinct", h.gros_michel_extinct.into()),
 		(

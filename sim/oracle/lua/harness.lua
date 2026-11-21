@@ -13,9 +13,11 @@ local function esc(s)
     elseif c == '\n' then return '\\n' else return string.format('\\u%04x', c:byte()) end
   end))
 end
+-- What the game leaves nil, written as null (a table key cannot hold nil).
+json.null = setmetatable({}, {__tostring = function() return 'null' end})
 local function enc(v, out)
   local t = type(v)
-  if t == 'nil' then out[#out+1] = 'null'
+  if t == 'nil' or v == json.null then out[#out+1] = 'null'
   elseif t == 'boolean' then out[#out+1] = v and 'true' or 'false'
   elseif t == 'number' then
     if v ~= v then out[#out+1] = '"nan"'
@@ -450,8 +452,7 @@ local function card_info(c)
   local t = {
     key = c.config.center_key,
     sort_id = c.sort_id,
-    edition = edition_of(c),
-    seal = c.seal,
+    edition = edition_of(c) or json.null,
     debuff = c.debuff or false,
     cost = c.cost,
     sell_cost = c.sell_cost,
@@ -459,6 +460,7 @@ local function card_info(c)
   }
   if c.ability.set == 'Default' or c.ability.set == 'Enhanced' then
     t.card = c.config.card_key
+    t.seal = c.seal or json.null
     t.rank = c.base.id
     t.suit = c.base.suit
     t.bonus = c.ability.bonus
@@ -490,6 +492,48 @@ local function area_info(area)
     for i, c in ipairs(area.cards) do out[i] = card_info(c) end
   end
   return out
+end
+
+-- The run's rules beyond its deck and stake and what the profile keeps out
+-- of the pools (see the mod's state.lua; everything is unlocked here).
+local function rules_and_profile(s, g)
+  local m = {}
+  for k, v in pairs(g.modifiers or {}) do
+    if type(v) == 'table' then
+      for k2, v2 in pairs(v) do m[k .. '.' .. tostring(k2)] = v2 end
+    else
+      m[k] = v
+    end
+  end
+  s.modifiers = m
+  s.challenge = g.challenge or json.null
+  s.vouchers_in_shop = g.starting_params.vouchers_in_shop or json.null
+  s.boosters_in_shop = g.starting_params.boosters_in_shop or json.null
+  local POOLS = {Joker = true, Tarot = true, Planet = true, Spectral = true, Voucher = true}
+  s.locked = {__array = true}
+  for k, v in pairs(G.P_CENTERS) do
+    if v.unlocked == false and POOLS[v.set] then s.locked[#s.locked+1] = k end
+  end
+  table.sort(s.locked)
+  s.tags_locked = {__array = true}
+  for k, v in pairs(G.P_TAGS) do
+    if v.requires and not (G.P_CENTERS[v.requires] and G.P_CENTERS[v.requires].discovered) then s.tags_locked[#s.tags_locked+1] = k end
+  end
+  table.sort(s.tags_locked)
+end
+
+-- What the game may leave nil, written as null (as the mod's state.lua does).
+local NILS = {
+  'blind_on_deck', 'blind_selected', 'voucher', 'pack_cards', 'pack_choices', 'pack_interrupt', 'last_hand_played',
+  'last_tarot_planet', 'dollar_buffer', 'temp_reroll_cost', 'temp_handsize', 'hand_real_limit', 'joker_real_limit',
+  'consumable_real_limit', 'mail', 'consumeable_usage_total',
+}
+local BLIND_NILS = {'disabled', 'only_hand', 'discards_sub', 'hands_sub'}
+
+local function nulls(t, keys)
+  for _, k in ipairs(keys) do
+    if t[k] == nil then t[k] = json.null end
+  end
 end
 
 -- What a simulator built from the dump needs beyond the compared state
@@ -531,11 +575,11 @@ local function sim_state(s, g)
   s.blind_selected = g.round_resets.blind and g.round_resets.blind.name
   s.orbital_choices = {__array = true}
   for ante, c in pairs(g.orbital_choices or {}) do
-    s.orbital_choices[#s.orbital_choices+1] = {ante = ante, Small = c.Small, Big = c.Big, Boss = c.Boss}
+    s.orbital_choices[#s.orbital_choices+1] = {ante = ante, Small = c.Small or json.null, Big = c.Big or json.null, Boss = c.Boss or json.null}
   end
   table.sort(s.orbital_choices, function(a, b) return a.ante < b.ante end)
-  s.idol_card = {rank = g.current_round.idol_card.rank, suit = g.current_round.idol_card.suit, id = g.current_round.idol_card.id}
-  s.mail_card = {rank = g.current_round.mail_card.rank, id = g.current_round.mail_card.id}
+  s.idol_card = {rank = g.current_round.idol_card.rank, suit = g.current_round.idol_card.suit, id = g.current_round.idol_card.id or json.null}
+  s.mail_card = {rank = g.current_round.mail_card.rank, id = g.current_round.mail_card.id or json.null}
   s.hand_real_limit = G.hand and G.hand.config.real_card_limit
   s.joker_real_limit = G.jokers and G.jokers.config.real_card_limit
   s.consumable_real_limit = G.consumeables and G.consumeables.config.real_card_limit
@@ -547,7 +591,10 @@ local function sim_state(s, g)
     s.blind.only_hand = g.blind.only_hand or nil
     s.blind.discards_sub = g.blind.discards_sub
     s.blind.hands_sub = g.blind.hands_sub
+    nulls(s.blind, BLIND_NILS)
   end
+  rules_and_profile(s, g)
+  nulls(s, NILS)
 end
 
 function H.state()
@@ -626,7 +673,7 @@ function H.state()
   table.sort(uv)
   s.used_vouchers = uv
   s.tag_info = {__array = true}
-  for i, t in ipairs(g.tags) do s.tag_info[i] = {key = t.key, triggered = t.triggered, orbital = t.ability and t.ability.orbital_hand} end
+  for i, t in ipairs(g.tags) do s.tag_info[i] = {key = t.key, triggered = t.triggered, orbital = t.ability and t.ability.orbital_hand or json.null} end
   for k, v in pairs(g.hands) do
     s.hands[k] = {level = v.level, chips = v.chips, mult = v.mult, played = v.played, played_this_round = v.played_this_round, visible = v.visible}
   end

@@ -8,9 +8,11 @@ local function esc(s)
     elseif c == '\n' then return '\\n' else return string.format('\\u%04x', c:byte()) end
   end))
 end
+-- What the game leaves nil, written as null (a table key cannot hold nil).
+json.null = setmetatable({}, {__tostring = function() return 'null' end})
 local function enc(v, out)
   local t = type(v)
-  if t == 'nil' then out[#out+1] = 'null'
+  if t == 'nil' or v == json.null then out[#out+1] = 'null'
   elseif t == 'boolean' then out[#out+1] = v and 'true' or 'false'
   elseif t == 'number' then
     if v ~= v then out[#out+1] = '"nan"'
