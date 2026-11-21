@@ -282,6 +282,7 @@ function AZB.state_table()
     paused = G.SETTINGS.paused and true or false,
     smods_used_jokers = keys_of(g.used_jokers),
     smods_rng = extra_rng,
+    steamodded = SMODS ~= nil and SMODS.version ~= nil, -- (this file also dumps the vanilla oracle's game)
   }
   return s
 end

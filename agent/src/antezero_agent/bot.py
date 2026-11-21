@@ -101,7 +101,6 @@ def play_run(client, env, run: dict, model, cfg, dev, rs: RoundSearch | None, cr
 
     sim = az.Game(run["seed"], run["back"], int(run["stake"]), endless=cfg.env.endless)
     sim.allow_skip, sim.null_sorts = cfg.env.allow_skip, cfg.env.null_sorts  # the action set the policy was trained on
-    sim.steamodded = True  # the game runs Steamodded, whose xMult rounds differently
     steps, free = 0, 0  # free: the bot's rearranges in a row, which the policy is held to as in training
     expected = None  # (the game before the bot's last action, what the simulator expected after it)
     stale = True  # the game is to be read anew: at the start, and after a menu was open
@@ -124,6 +123,7 @@ def play_run(client, env, run: dict, model, cfg, dev, rs: RoundSearch | None, cr
             except ValueError as e:  # another mod's cards or rules, a challenge
                 print(f"[{run['seed']}] {e}", flush=True)
                 return "stopped: the simulator cannot play this run"
+            sim.steamodded = env.state()["az"]["steamodded"]  # whose ×Mult rounds otherwise than vanilla's
             sim.rearranges = free
             # The bot waits on the win screen: a won run it reads goes on in Endless Mode.
             sim.endless = sim.endless or sim.run_won

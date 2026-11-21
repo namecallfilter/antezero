@@ -815,7 +815,7 @@ class _BotGame:
         self.run, self.leave_at, self.pauses, self.menus, self.refuse = run, leave_at, pauses, menus, refuse
         self.player, self.deal, self.misread, self.win_polls = player, deal, misread, win_polls
         self.polls, self.notes, self.changed, self.free, self.interrupted, self.tries = 0, [], 0, 0, False, 0
-        self.reply = self.g.state_json()
+        self.refresh()
 
     def _menu(self):
         self.interrupted = True
@@ -838,7 +838,12 @@ class _BotGame:
         return {"active": active, "paused": paused, "interrupted": interrupted, "run": self.run, "search": True}
 
     def refresh(self):
-        self.reply = self.g.state_json()
+        d = json.loads(self.g.state_json())
+        d["az"] = {"steamodded": self.g.steamodded}  # what the mod adds
+        self.reply = json.dumps(d)
+
+    def state(self):
+        return json.loads(self.reply)
 
     def state_json(self):
         return self.misread(self.reply) if self.misread else self.reply
@@ -861,7 +866,7 @@ class _BotGame:
         self.g.step(code)
         if self.deal and self.deal(self.g, code):
             self.changed += 1
-        self.reply = self.g.state_json()
+        self.refresh()
         self.free = self.free + 1 if code.startswith(("move", "sort")) else 0  # the bot's rearranges in a row
 
 
@@ -878,6 +883,7 @@ def bot_game(monkeypatch):
     def checked(model, cfg, sim, dev):
         assert sim.canonical() == games[-1].g.canonical()
         assert sim.rearranges == games[-1].free
+        assert sim.steamodded == games[-1].g.steamodded  # the game's rounding of ×Mult
         return greedy(model, cfg, sim, dev)
 
     monkeypatch.setattr(bot, "greedy", checked)
@@ -958,6 +964,17 @@ def test_the_bot_reads_the_game_after_the_player_changed_it(bot_game):
     game = bot_game(BOT_RUN, pauses=range(2, 1000, 3), player=player)
     assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None) in ("lost the run", "won the run")
     assert game.changed > 1
+
+
+def test_the_bot_plays_the_rules_of_the_game_it_reads(bot_game):
+    from antezero_agent import bot
+
+    cfg, net = preset("smoke"), tiny()
+    for steamodded in (False, True):
+        g = az.Game(BOT_RUN["seed"], BOT_RUN["back"], BOT_RUN["stake"])
+        g.steamodded = steamodded
+        game = bot_game(BOT_RUN, g=g)
+        assert bot.play_run(game, game, BOT_RUN, net, cfg, "cpu", None, None) == "lost the run"
 
 
 def test_the_bot_decides_again_on_a_menu_opened_before_its_action(bot_game):
