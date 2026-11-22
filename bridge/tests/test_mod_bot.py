@@ -4,7 +4,7 @@ Steamodded's functions it works with: the run's options menu and its
 toggle, holding R, the run select's Play buttons, the save thread (writing
 to an in-memory disk), Steamodded's per-stake usage tables and deck wins.
 Around them stands a small model of the game (starting a run, its save
-step). Skipped where the game, its Lovely dump or Steamodded is not
+step, its clock). Skipped where the game, its Lovely dump or Steamodded is not
 installed."""
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ require = noop -- the save thread's
 os.execute = function(cmd) spawned[#spawned+1] = cmd return 0 end
 love = {
   timer = {getTime = function() return clock end},
-  update = noop,
+  update = function(dt) G:update(dt) end,
   filesystem = {
     getInfo = function(f) if disk[f] then return {} end end,
     read = function(f) return disk[f] end,
@@ -112,6 +112,13 @@ JSON = {decode = function(s) assert(s == 'agent', 'no antezero.json') return {co
 Game = {}
 function Game:delete_run() end
 function Game:main_menu() G.STAGE = G.STAGES.MAIN_MENU end
+-- The game's clock in a run: real time by dt, game time by dt times the
+-- Game Speed, the event queues by real time.
+function Game:update(dt)
+  G.TIMERS.REAL = G.TIMERS.REAL + dt
+  G.TIMERS.TOTAL = G.TIMERS.TOTAL + dt * G.SETTINGS.GAMESPEED
+  G.E_MANAGER:update(dt)
+end
 -- The game's own start of a run, as far as the profile and saves go.
 function Game:start_run(args)
   G.SAVED_GAME = nil
@@ -145,8 +152,8 @@ G = setmetatable({
   FUNCS = {start_run = function(e, args) G:delete_run() G:start_run(args) end},
   ARGS = {}, UIDEF = {run_setup = function() return {} end}, C = setmetatable({UI = setmetatable({}, {__index = function() return {} end})}, {__index = function() return {} end}),
   UIT = {T = 1, B = 2, C = 3, R = 4, O = 5, ROOT = 7}, ROOM = {T = {w = 20, h = 11}},
-  E_MANAGER = {add_event = noop, clear_queue = noop, queues = {base = {}}}, CONTROLLER = {locks = {}},
-  STAGES = {MAIN_MENU = 1, RUN = 2}, STAGE = 1, TIMERS = {TOTAL = 0}, ASSET_ATLAS = {},
+  E_MANAGER = {add_event = noop, clear_queue = noop, update = noop, queues = {base = {}}}, CONTROLLER = {locks = {}},
+  STAGES = {MAIN_MENU = 1, RUN = 2}, STAGE = 1, TIMERS = {TOTAL = 0, REAL = 0}, ASSET_ATLAS = {},
   SETTINGS = {profile = 1, tutorial_complete = true, GAMESPEED = 4, current_setup = 'New Run', paused = false},
   PROFILES = {{last_choices = {deck_choice = 'b_red', stake_choice = 'stake_white'}, MEMORY = {stake = 1, deck = 'Red Deck'},
                high_scores = {current_streak = {amt = 4}}, career_stats = {c_wins = 2},
@@ -620,6 +627,27 @@ def test_the_bot_waits_on_the_win_screen_and_plays_on_in_endless_mode(game):
     G.OVERLAY_MENU = MENU -- a menu in Endless Mode
     AZB.bot.tick()
     assert(poll().paused and AZB.bot.line:find('paused'), AZB.bot.line)
+    """)
+
+
+def test_raising_the_game_speed_never_slows_the_bot(game):
+    game.run(_game_file("engine/object.lua") + "\n" + _game_file("engine/event.lua"), "events")
+    game.run("""
+    G.E_MANAGER = EventManager()
+    play('b_red')
+    bot_toggle(true)
+    SMODS.current_mod.config.speed = 16
+    -- frames until the game is through a hand's events: steps one after another, then a wait
+    local function frames(gamespeed)
+      G.SETTINGS.GAMESPEED = gamespeed
+      local done, n = false, 0
+      for _ = 1, 20 do G.E_MANAGER:add_event(Event({})) end
+      G.E_MANAGER:add_event(Event({trigger = 'after', delay = 1, func = function() done = true return true end}))
+      repeat love.update(1 / 60); n = n + 1 until done or n == 100
+      return n
+    end
+    local slow, fast = frames(1), frames(4)
+    assert(fast <= slow, fast .. ' frames at Game Speed 4, ' .. slow .. ' at 1')
     """)
 
 

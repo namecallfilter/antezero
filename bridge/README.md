@@ -29,11 +29,13 @@ the dump as `canon` reads it, and against what the simulator expected its
 last action to do (but for what the game draws from its pools, which a
 profile's locked cards change), and stops on a difference; an action decided
 before the player opened a menu is refused, and decided again. The bot plays
-on a fixed 1/60 s clock at game speed 1 (the bot's speed setting is the
-number of such updates per 1/60 s) and skips the tutorial, which is saved as
-the player left it. At a win it waits on the win screen: Endless Mode lets it
-play on, New Run and Main Menu end the run as usual. From Endless ante 39 the
-game's blind sizes overflow, and the bot hands the run back.
+on a fixed clock of 1/60 s updates, each a frame of the game at 60 fps with
+the player's Game Speed applied (the bot's speed setting is the number of
+such updates per 1/60 s, as many as a frame has time for) and skips the
+tutorial, which is saved as the player left it. At a win it waits on the win
+screen: Endless Mode lets it play on, New Run and Main Menu end the run as
+usual. From Endless ante 39 the game's blind sizes overflow, and the bot hands
+the run back.
 
 With "Bot runs count" off (the default) the run stops counting when the bot
 takes over, for the rest of it, even after it is handed back: the saved run
