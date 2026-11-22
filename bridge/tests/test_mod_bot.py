@@ -153,7 +153,7 @@ G = setmetatable({
   ARGS = {}, UIDEF = {run_setup = function() return {} end}, C = setmetatable({UI = setmetatable({}, {__index = function() return {} end})}, {__index = function() return {} end}),
   UIT = {T = 1, B = 2, C = 3, R = 4, O = 5, ROOT = 7}, ROOM = {T = {w = 20, h = 11}},
   E_MANAGER = {add_event = noop, clear_queue = noop, update = noop, queues = {base = {}}}, CONTROLLER = {locks = {}},
-  STAGES = {MAIN_MENU = 1, RUN = 2}, STAGE = 1, TIMERS = {TOTAL = 0, REAL = 0}, ASSET_ATLAS = {},
+  STAGES = {MAIN_MENU = 1, RUN = 2}, STAGE = 1, TIMERS = {TOTAL = 0, REAL = 0}, ASSET_ATLAS = {}, I = {CARD = {}},
   SETTINGS = {profile = 1, tutorial_complete = true, GAMESPEED = 4, current_setup = 'New Run', paused = false},
   PROFILES = {{last_choices = {deck_choice = 'b_red', stake_choice = 'stake_white'}, MEMORY = {stake = 1, deck = 'Red Deck'},
                high_scores = {current_streak = {amt = 4}}, career_stats = {c_wins = 2},
@@ -648,6 +648,24 @@ def test_raising_the_game_speed_never_slows_the_bot(game):
     end
     local slow, fast = frames(1), frames(4)
     assert(fast <= slow, fast .. ' frames at Game Speed 4, ' .. slow .. ' at 1')
+    """)
+
+
+def test_the_cards_of_a_continued_run_have_numbers_of_their_own_while_the_bot_plays(game):
+    game.run("""
+    play('b_red')
+    -- continued after a restart: the game's counter started over below the run's numbers
+    local seven, forty = {sort_id = 7}, {sort_id = 40}
+    G.I.CARD = {seven, forty, {sort_id = 12}, {sort_id = 40}, {sort_id = 7}}
+    G.sort_id = 12
+    bot_toggle(true)
+    local seen = {}
+    for _, c in ipairs(G.I.CARD) do
+      assert(not seen[c.sort_id], 'two cards numbered ' .. c.sort_id)
+      assert(c.sort_id <= G.sort_id, 'a new card would be numbered ' .. G.sort_id + 1)
+      seen[c.sort_id] = true
+    end
+    assert(seven.sort_id == 7 and forty.sort_id == 40, 'the older cards keep their numbers')
     """)
 
 

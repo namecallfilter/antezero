@@ -187,8 +187,26 @@ local function refusal()
   if G.STATE == G.STATES.GAME_OVER then return {'The run is over'} end
 end
 
+-- The game numbers cards from a counter it does not save (G.sort_id), so a
+-- run continued after a restart gives new cards the numbers of cards it
+-- already has, and the simulator tells cards apart by number: the newer of
+-- two cards with one number gets a new one, and the counter goes past them all.
+local function renumber()
+  local seen, top = {}, G.sort_id or 0
+  for _, c in ipairs(G.I.CARD) do top = math.max(top, c.sort_id or 0) end
+  for _, c in ipairs(G.I.CARD) do -- oldest first
+    if c.sort_id and seen[c.sort_id] then
+      top = top + 1
+      c.sort_id = top
+    end
+    if c.sort_id then seen[c.sort_id] = true end
+  end
+  G.sort_id = top
+end
+
 local function take_over()
   protect()
+  renumber()
   if not G.SETTINGS.tutorial_complete and not B.tutorial then
     B.tutorial = {G.SETTINGS.tutorial_complete, G.SETTINGS.tutorial_progress}
     G.SETTINGS.tutorial_complete, G.SETTINGS.tutorial_progress = true, nil
