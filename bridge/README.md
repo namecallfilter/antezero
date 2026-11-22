@@ -24,7 +24,11 @@ it back, and it is off at the start of every run. A challenge run is the
 player's alone. The run stays an ordinary run on the player's profile, with
 the cards it has unlocked and discovered: before every decision the agent
 rebuilds its simulator from the game's state dump (`az_state`, `sim::dump`),
-so whatever the game holds is what the bot plays. It checks that copy against
+so whatever the game holds is what the bot plays. The simulator tells cards
+apart by the numbers the game gives them, which the game counts from a
+counter it does not save: in a run continued after a restart, new cards take
+the numbers of cards already in it, so the newer of two cards with one number
+gets a new one when the bot takes over. It checks that copy against
 the dump as `canon` reads it, and against what the simulator expected its
 last action to do (but for what the game draws from its pools, which a
 profile's locked cards change), and stops on a difference; an action decided
