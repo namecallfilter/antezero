@@ -83,8 +83,15 @@ pub(crate) fn potential(g: &SimGame, w_blind: f32, w_score: f32) -> f32 {
 /// return plus `gamma^T * Phi(s_T)`, the discounted shaping potential of the
 /// final state. With `terminal_phi = false` Phi *is* zeroed there (classic
 /// shaping: exactly P(win)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RewardMode {
+	Shaping,
+	Blinds,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Reward {
+	mode: RewardMode,
 	gamma: f32,
 	r_win: f32,
 	r_endless: f32,
@@ -96,7 +103,10 @@ struct Reward {
 
 impl Reward {
 	fn potential(&self, g: &SimGame) -> f32 {
-		potential(g, self.w_blind, self.w_score)
+		match self.mode {
+			RewardMode::Shaping => potential(g, self.w_blind, self.w_score),
+			RewardMode::Blinds => 0.0,
+		}
 	}
 
 	fn true_reward(&self, blinds_before: u32, won_before: bool, g: &SimGame) -> f32 {
@@ -111,6 +121,35 @@ impl Reward {
 		}
 		if g.flow.phase == Phase::GameOver || g.is_stuck() {
 			r -= self.r_loss;
+		}
+		r
+	}
+
+	#[expect(
+		clippy::cast_possible_truncation,
+		clippy::cast_sign_loss,
+		reason = "`skips` is a non-negative integer count"
+	)]
+	fn blinds_reward(
+		blinds_before: u32, skips_before: f64, won_before: bool, deferred_skips: &mut u32,
+		g: &SimGame,
+	) -> f32 {
+		let delta_cleared = g.run.blinds_cleared.saturating_sub(blinds_before);
+		let delta_skips = (g.run.skips - skips_before).max(0.0).round() as u32;
+		let delta_beaten = delta_cleared.saturating_sub(delta_skips);
+		let mut r = 0.0f32;
+		if delta_skips > 0 {
+			*deferred_skips += delta_skips;
+		}
+		if delta_beaten > 0 {
+			r += num::feat(f64::from(delta_beaten + *deferred_skips));
+			*deferred_skips = 0;
+		}
+		if g.run_won() && !won_before {
+			r += num::feat(g.round.chips.max(1.0).log10());
+		}
+		if (g.flow.phase == Phase::GameOver || g.is_stuck()) && g.blind.chips > 0.0 {
+			r += num::feat((g.round.chips / g.blind.chips).clamp(0.0, 1.0));
 		}
 		r
 	}
@@ -213,6 +252,7 @@ struct Slot {
 	steps: u32,
 	ret: f32,
 	phi: f32,
+	deferred_skips: u32,
 	resets: u64,
 	invalid: u64,
 	origin: Origin,
@@ -265,6 +305,7 @@ impl Slot {
 			ops: Vec::with_capacity(obs::MAX_OPS),
 			steps: 0,
 			ret: 0.0,
+			deferred_skips: 0,
 			resets: 0,
 			invalid: 0,
 			origin: Origin::Fresh,
@@ -279,6 +320,7 @@ impl Slot {
 		self.steps = 0;
 		self.ret = 0.0;
 		self.phi = reward.potential(&self.g);
+		self.deferred_skips = 0;
 	}
 
 	/// Uniform in [0, 1) from a hash of `seed`, the env `i`, its game count
@@ -297,6 +339,7 @@ impl Slot {
 		let (cfg, rw) = (ctx.cfg, ctx.cfg.reward);
 		let mut res = StepOut::default();
 		let blinds_before = self.g.run.blinds_cleared;
+		let skips_before = self.g.run.skips;
 		let won_before = self.g.run_won();
 		let was_ante_start = ante_start(&self.g, cfg.endless);
 		let a = usize::try_from(choice.op)
@@ -344,7 +387,16 @@ impl Slot {
 			true
 		};
 		let g = &self.g;
-		let r_true = rw.true_reward(blinds_before, won_before, g);
+		let r_true = match rw.mode {
+			RewardMode::Shaping => rw.true_reward(blinds_before, won_before, g),
+			RewardMode::Blinds => Reward::blinds_reward(
+				blinds_before,
+				skips_before,
+				won_before,
+				&mut self.deferred_skips,
+				g,
+			),
+		};
 		let terminal = g.is_terminal();
 		let end = if terminal {
 			Some(End::Terminal)
@@ -832,7 +884,7 @@ impl VecEnv {
 		reason = "pyo3 extracts `backs` as an owned `Vec<String>`, which is only read"
 	)]
 	#[new]
-	#[pyo3(signature = (num_envs, backs = vec!["b_red".to_string()], stakes = vec![1], seed = 0, endless = false, max_ante = 16, step_limit = 5000, gamma = 0.999, r_win = 1.0, r_endless = 0.0, r_loss = 0.0, w_blind = 0.04, w_score = 0.02, threads = 0, play_candidates = 0, deck_tokens = false, snapshot_prob = 0.0, snapshot_min_ante = 2, allow_skip = true, build_previews = true, terminal_phi = true, order_gain = true, order_label_rate = 0.0, practice_prob = 0.0, practice_eternal = false, null_sorts = true, obs_v2 = false, max_rearranges = obs::MAX_REARRANGES))]
+	#[pyo3(signature = (num_envs, backs = vec!["b_red".to_string()], stakes = vec![1], seed = 0, endless = false, max_ante = 16, step_limit = 5000, gamma = 0.999, r_win = 1.0, r_endless = 0.0, r_loss = 0.0, w_blind = 0.04, w_score = 0.02, threads = 0, play_candidates = 0, deck_tokens = false, snapshot_prob = 0.0, snapshot_min_ante = 2, allow_skip = true, build_previews = true, terminal_phi = true, order_gain = true, order_label_rate = 0.0, practice_prob = 0.0, practice_eternal = false, null_sorts = true, obs_v2 = false, max_rearranges = obs::MAX_REARRANGES, reward_mode = "shaping"))]
 	fn new(
 		py: Python<'_>, num_envs: usize, backs: Vec<String>, stakes: Vec<u8>, seed: u64,
 		endless: bool, max_ante: i32, step_limit: u32, gamma: f32, r_win: f32, r_endless: f32,
@@ -840,7 +892,7 @@ impl VecEnv {
 		deck_tokens: bool, snapshot_prob: f32, snapshot_min_ante: i32, allow_skip: bool,
 		build_previews: bool, terminal_phi: bool, order_gain: bool, order_label_rate: f32,
 		practice_prob: f32, practice_eternal: bool, null_sorts: bool, obs_v2: bool,
-		max_rearranges: u8,
+		max_rearranges: u8, reward_mode: &str,
 	) -> PyResult<VecEnv> {
 		let bad = |msg: String| Err(PyValueError::new_err(msg));
 		if num_envs == 0 {
@@ -878,7 +930,17 @@ impl VecEnv {
 			snapshot_min_ante,
 			practice_prob,
 		)?;
+		let mode = match reward_mode {
+			"shaping" => RewardMode::Shaping,
+			"blinds" => RewardMode::Blinds,
+			_ => {
+				return bad(format!(
+					"reward_mode must be 'shaping' or 'blinds', got {reward_mode:?}"
+				));
+			}
+		};
 		let reward = Reward {
+			mode,
 			gamma,
 			r_win,
 			r_endless,

@@ -1220,3 +1220,59 @@ def test_obs_v2_and_max_rearranges(tmp_path):
     m_v2, cfg_v2, _ = load_model(tmp_path / "smoke" / "last.pt")
     assert cfg_v2.model.obs_v2
     assert m_v2.glob_lin.in_features == az.GLOB_FLOAT_V2
+
+
+def test_blinds_reward_mode_deferred_skip_and_partial_loss():
+    import math
+    from antezero_agent.train import build_optimizer, schedule, update_kl_controller
+
+    # 1. Blinds reward mode: skip pays 0 immediately, then +2 when next blind is beaten; loss pays partial credit.
+    env = az.VecEnv(1, seed=1, reward_mode="blinds")
+    skip_op = next(i for i in range(int(env.n_ops[0])) if env.ops[0, i, 0] == 1)  # OpKind::SkipBlind = 1
+    rew, done, _ = env.step(np.array([skip_op], dtype=np.int32), np.zeros(1, dtype=np.uint32), np.zeros(1, dtype=np.int32))
+    assert rew[0] == 0.0 and not done[0]
+    sel_op = next(i for i in range(int(env.n_ops[0])) if env.ops[0, i, 0] == 0)  # OpKind::SelectBlind = 0
+    rew, done, _ = env.step(np.array([sel_op], dtype=np.int32), np.zeros(1, dtype=np.uint32), np.zeros(1, dtype=np.int32))
+    assert rew[0] == 0.0 and not done[0]
+
+    # Step until round ends (win or loss) and check reward is > 0 (either +2 for beating blind after skip, or partial loss credit).
+    total = 0.0
+    for _ in range(30):
+        op_idx = 0
+        # Prefer PlayTop (kind 21) or Play (kind 3) to score chips
+        for i in range(int(env.n_ops[0])):
+            if env.ops[0, i, 0] in (21, 3):
+                op_idx = i
+                break
+        cards = int(env.ops[0, op_idx, 5]) or 1
+        rew, done, _ = env.step(np.array([op_idx], dtype=np.int32), np.array([cards], dtype=np.uint32), np.zeros(1, dtype=np.int32))
+        total += float(rew[0])
+        if total > 0:
+            break
+    assert total > 0.0
+
+    # 2. Run95 preset, Run95Net, Muon + Adam split optimizer, exp schedule, KL controller
+    cfg = preset("run95")
+    cfg.validate()
+    assert cfg.model.arch == "run95" and cfg.model.obs_v2
+    assert len(cfg.env.backs) == 15 and cfg.env.stakes == [8]
+    assert cfg.env.reward_mode == "blinds" and cfg.env.endless and cfg.env.max_ante == 16
+    assert cfg.ppo.optimizer == "muon" and cfg.ppo.gamma == 1.0 and cfg.ppo.kl_controller
+
+    from antezero_agent.models import Run95Net, build_model
+
+    m = build_model(cfg.model)
+    assert isinstance(m, Run95Net)
+    opt = build_optimizer(m, cfg, torch.device("cpu"))
+    assert len(opt.opts) == 2
+
+    kl_ctl = {"m": 1.0, "ema": None}
+    lr0, _ = schedule(cfg, 0, 1000, kl_ctl)
+    lr800, _ = schedule(cfg, 800, 1000, kl_ctl)
+    assert math.isclose(lr0, cfg.ppo.lr, rel_tol=1e-5)
+    assert cfg.ppo.lr_final < lr800 < cfg.ppo.lr
+    update_kl_controller(cfg, 2000, 0.01, kl_ctl)
+    assert kl_ctl["m"] < 1.0
+    kl_ctl = {"m": 1.0, "ema": None}
+    update_kl_controller(cfg, 2000, 0.0, kl_ctl)
+    assert kl_ctl["m"] > 1.0

@@ -10,6 +10,7 @@ import torch
 
 from .config import Config
 from .model import Net
+from .models import build_model
 
 
 def pick_device(name: str) -> torch.device:
@@ -63,6 +64,7 @@ def make_env(cfg: Config, seed: int | None = None, num_envs: int | None = None, 
         order_label_rate=e.order_label_rate,
         obs_v2=e.obs_v2,
         max_rearranges=e.max_rearranges,
+        reward_mode=e.reward_mode,
     )
     kw.update(over)
     return az.VecEnv(num_envs or e.num_envs, **kw)
@@ -105,7 +107,7 @@ def read_checkpoint(path: str | Path) -> dict:
 def load_model(path: str | Path, device="cpu") -> tuple[Net, Config, dict]:
     ck = read_checkpoint(path)
     cfg = Config.from_dict(ck["config"])
-    model = Net(cfg.model, ck["model"].get("fx"))
+    model = build_model(cfg.model, ck["model"].get("fx"))
     model.load_state_dict(ck["model"])
     meta = {k: ck[k] for k in ("update", "steps")}
     return model.to(device).eval(), cfg, meta

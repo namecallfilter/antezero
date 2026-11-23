@@ -30,11 +30,13 @@ from pathlib import Path
 import antezero_sim as az
 import numpy as np
 import torch
+import torch.nn as nn
 
 from .collect import Collector
 from .config import Config, parse_overrides, preset
 from .critic import Critic, Learner, critic_state
 from .model import GAIN, MAX_CARDS, Net, Obs, count_params, obs_from_numpy
+from .models import build_model
 from .runtime import make_env, pick_device, read_checkpoint, save_checkpoint
 from .stats import wilson
 
@@ -245,13 +247,81 @@ def _log_writer(f, path: Path, fields: list[str] = LOG_FIELDS) -> csv.DictWriter
     return w
 
 
-def schedule(cfg: Config, update: int, n_updates: int):
+class Optimizers:
+    """Several optimizers stepped as one (param_groups, state_dict, step, zero_grad)."""
+
+    def __init__(self, *opts):
+        self.opts = opts
+
+    @property
+    def param_groups(self):
+        return [g for o in self.opts for g in o.param_groups]
+
+    def step(self):
+        for o in self.opts:
+            o.step()
+
+    def zero_grad(self, set_to_none: bool = False):
+        for o in self.opts:
+            o.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return [o.state_dict() for o in self.opts]
+
+    def load_state_dict(self, d):
+        for o, s in zip(self.opts, d):
+            o.load_state_dict(s)
+
+
+def muon_params(model: nn.Module, cfg: Config) -> list[nn.Parameter]:
+    """2-D hidden matrices optimized by Muon (excludes output heads and, when embed_adam, embedding tables)."""
+    table_ids = {id(m.weight) for m in model.modules() if isinstance(m, nn.Embedding)}
+    heads = ("op_score.", "ptr_stop.", "value.")
+    return [
+        p
+        for n, p in model.named_parameters()
+        if p.ndim == 2 and not n.startswith(heads) and "emb" not in n and not (cfg.ppo.embed_adam and id(p) in table_ids)
+    ]
+
+
+def build_optimizer(model: nn.Module, cfg: Config, device: torch.device):
+    p = cfg.ppo
+    if p.optimizer == "adamw":
+        return torch.optim.AdamW(model.parameters(), lr=p.lr, weight_decay=p.weight_decay, eps=1e-5)
+    hidden = muon_params(model, cfg)
+    h_ids = {id(q) for q in hidden}
+    rest = [q for q in model.parameters() if id(q) not in h_ids]
+    fast = {"fused": True} if device.type == "cuda" else {}
+    adam = torch.optim.Adam(rest, lr=p.lr, eps=1e-5, **fast)
+    if not hidden:
+        return Optimizers(adam)
+    muon = torch.optim.Muon(hidden, lr=p.lr, weight_decay=p.muon_wd, adjust_lr_fn="match_rms_adamw")
+    return Optimizers(muon, adam)
+
+
+def update_kl_controller(cfg: Config, update: int, kl: float, kl_ctl: dict) -> None:
+    p = cfg.ppo
+    if p.target_kl > 0 and not math.isnan(kl):
+        kl_ctl["ema"] = kl if kl_ctl["ema"] is None else (1 - p.kl_ema) * kl_ctl["ema"] + p.kl_ema * kl
+        if update >= p.kl_start:
+            if kl_ctl["ema"] > p.kl_high * p.target_kl:
+                kl_ctl["m"] *= 1 - p.kl_step
+            elif kl_ctl["ema"] < p.kl_low * p.target_kl:
+                kl_ctl["m"] = min(p.kl_max_factor, kl_ctl["m"] * (1 + p.kl_step))
+
+
+def schedule(cfg: Config, update: int, n_updates: int, kl_ctl: dict | None = None):
     p = cfg.ppo
     frac = min(1.0, update / max(1, n_updates))
-    if update < p.warmup_updates:
+    if p.warmup_updates > 0 and update < p.warmup_updates:
         lr = p.lr * (update + 1) / p.warmup_updates
+    elif p.lr_schedule == "exp":
+        tau = -p.lr_decay_updates / math.log(max(1e-6, p.lr_final / max(1e-6, p.lr - p.lr_final)))
+        lr = p.lr_final + (p.lr - p.lr_final) * math.exp(-update / max(1.0, tau))
     else:
         lr = p.lr_final + 0.5 * (p.lr - p.lr_final) * (1 + math.cos(math.pi * frac))
+    if kl_ctl is not None:
+        lr *= kl_ctl["m"]
     ent = p.ent_coef + (p.ent_coef_final - p.ent_coef) * frac
     return lr, ent
 
@@ -327,8 +397,8 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     log_path.touch()
 
     torch.manual_seed(cfg.env.seed)
-    model = Net(cfg.model, ck["model"].get("fx") if ck is not None else None).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.ppo.lr, weight_decay=cfg.ppo.weight_decay, eps=1e-5)
+    model = build_model(cfg.model, ck["model"].get("fx") if ck is not None else None).to(device)
+    opt = build_optimizer(model, cfg, device)
     critic = learner = None  # not compiled: it would share (and fill) the policy encoder's Dynamo cache
     if cfg.ppo.critic:  # built before a resumed RNG state is restored (its init draws from it)
         state = ck["critic"] if ck is not None and "critic" in ck else critic_state(cfg.ppo.critic)
@@ -341,12 +411,15 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
         if device.type == "cuda":
             critic.encoder.half()  # ~4x faster, values within ~1e-3 (its inputs are float16-rounded already)
     start_update, steps = 0, 0
+    kl_ctl = {"m": 1.0, "ema": None}
     # Outcomes of the latest fresh episodes on the top stake (curriculum).
     top = deque(maxlen=cfg.env.curriculum_min_episodes)
     if ck is not None:
         model.load_state_dict(ck["model"])
         opt.load_state_dict(ck["opt"])
         start_update, steps = ck["update"], ck["steps"]
+        if "kl_ctl" in ck:
+            kl_ctl = ck["kl_ctl"]
         top.extend(ck.get("curriculum", []))
         if "torch_rng" in ck:
             torch.set_rng_state(ck["torch_rng"])
@@ -360,7 +433,7 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     autocast = lambda: torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp)  # noqa: E731
 
     def save(update: int):
-        extra = {"curriculum": list(top), "torch_rng": torch.get_rng_state()}
+        extra = {"curriculum": list(top), "kl_ctl": kl_ctl, "torch_rng": torch.get_rng_state()}
         if torch.cuda.is_available():
             extra["cuda_rng"] = torch.cuda.get_rng_state_all()
         if critic is not None:
@@ -402,7 +475,7 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
         (run_dir / "config.json").write_text(cfg.to_json())
         for update in range(start_update, stop_at):
             t0 = time.perf_counter()
-            lr, ent_coef = schedule(cfg, update, n_updates)
+            lr, ent_coef = schedule(cfg, update, n_updates, kl_ctl if cfg.ppo.kl_controller else None)
             for g in opt.param_groups:
                 g["lr"] = lr
             top_stake = max(cfg.env.stakes)
@@ -582,8 +655,10 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
                     for v, s in zip((kls, clipfracs, pls, vls, ents), torch.stack(parts).mean(0).tolist()):
                         v.append(s)
                 # Judged per epoch, so one noisy minibatch does not cut the update short.
-                if cfg.ppo.target_kl and _mean(kls[-cfg.ppo.minibatches :]) > 1.5 * cfg.ppo.target_kl:
+                if not cfg.ppo.kl_controller and cfg.ppo.target_kl and _mean(kls[-cfg.ppo.minibatches :]) > 1.5 * cfg.ppo.target_kl:
                     break
+            if cfg.ppo.kl_controller:
+                update_kl_controller(cfg, update, _mean(kls), kl_ctl)
             dt = time.perf_counter() - t0
             row = {
                 "update": update + 1,
@@ -653,7 +728,7 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--preset", default="base", choices=["smoke", "cpu", "base", "large"])
+    ap.add_argument("--preset", default="base", choices=["smoke", "cpu", "base", "large", "run95"])
     ap.add_argument("--name", default=None)
     ap.add_argument("--set", nargs="*", default=[], help="overrides, e.g. ppo.lr=1e-4 env.backs=b_red,b_blue")
     ap.add_argument("--resume", default=None)
