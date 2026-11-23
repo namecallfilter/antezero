@@ -243,6 +243,9 @@ class Config:
     eval_every: int = 200
     eval_episodes: int = 256
     run_dir: str = "agent/runs"
+    wandb: str = ""
+    wandb_entity: str = "ksprague-n-a"
+    wandb_id: str = ""
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2)
