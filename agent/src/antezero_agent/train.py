@@ -47,7 +47,7 @@ class Rollout:
     ops (33.0 of the 33.9 KB per state) live in host memory instead, and
     :meth:`obs` gathers them there."""
 
-    def __init__(self, T: int, N: int, device: torch.device, obs_on_cpu: bool = False):
+    def __init__(self, T: int, N: int, device: torch.device, obs_on_cpu: bool = False, glob_float: int = az.GLOB_FLOAT):
         z = lambda *s, dt: torch.zeros(*s, dtype=dt, device=device)  # noqa: E731
         self.host = obs_on_cpu and device.type == "cuda"
         # Pageable: torch rounds pinned blocks up to a power of two (tok_f: 11.7 -> 16 GiB at 4,096 x 128).
@@ -55,7 +55,7 @@ class Rollout:
         self.tok_i = big(T, N, az.MAX_TOKENS, az.TOK_INT, dt=torch.int16)
         self.tok_f = big(T, N, az.MAX_TOKENS, az.TOK_FLOAT, dt=torch.float32)
         self.glob_i = z(T, N, az.GLOB_INT, dt=torch.int16)
-        self.glob_f = z(T, N, az.GLOB_FLOAT, dt=torch.float32)
+        self.glob_f = z(T, N, glob_float, dt=torch.float32)
         self.ops = big(T, N, az.MAX_OPS, az.OP_INT, dt=torch.int32)
         self.ops_f = big(T, N, az.MAX_OPS, az.OP_FLOAT, dt=torch.float32)
         self.n_ops = z(T, N, dt=torch.int16)
@@ -383,7 +383,8 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     new_env = lambda seed: Collector(cfg, model, device, seed, fast, value_of, critic if fast == 2 else None) if fast else make_env(cfg, seed=seed)  # noqa: E731
     env = new_env(cfg.env.seed + 1_000_003 * start_update)
     N, T = cfg.env.num_envs, cfg.ppo.rollout_len
-    roll = Rollout(T, N, device, cfg.ppo.rollout_obs_on_cpu)
+    glob_float = az.GLOB_FLOAT_V2 if cfg.model.obs_v2 else az.GLOB_FLOAT
+    roll = Rollout(T, N, device, cfg.ppo.rollout_obs_on_cpu, glob_float=glob_float)
     # The schedule spans the whole run; `max_updates` only stops early.
     n_updates = cfg.ppo.total_steps // (N * T)
     stop_at = n_updates if max_updates is None else min(n_updates, start_update + max_updates)

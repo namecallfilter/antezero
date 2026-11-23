@@ -37,6 +37,8 @@ class ModelConfig:
     bf16_encoder: bool = False
     # Read what each item does from the table of effects.py; off = a table of zeros, for A/B controls.
     effects: bool = True
+    # Extended observation v2 (GLOB_FLOAT_V2: adds last_hand_score/chips/mult/blind_share).
+    obs_v2: bool = False
 
 
 @dataclass
@@ -105,6 +107,10 @@ class EnvConfig:
     # trained policy spent a sixth of its steps on such sorts, two before most
     # plays that would not clear the blind.
     null_sorts: bool = True
+    # Extended observation v2 (GLOB_FLOAT_V2).
+    obs_v2: bool = False
+    # Maximum consecutive free reorders (hand moves / sorts, joker moves).
+    max_rearranges: int = 2
     # Stake curriculum: the next stake is added once the 95% Wilson lower
     # bound of the win rate over the latest `curriculum_min_episodes` fresh
     # episodes on the top stake (since the last change) reaches the target.
@@ -278,6 +284,8 @@ class Config:
                 "env.practice_prob with env.snapshot_prob needs env.snapshot_min_ante > 3",
             ),
             (p.aux_order >= 0.0 and (not p.aux_order or e.order_label_rate > 0.0), "ppo.aux_order must be >= 0 and needs env.order_label_rate > 0"),
+            (self.model.obs_v2 == e.obs_v2, "model.obs_v2 and env.obs_v2 must match"),
+            (0 <= e.max_rearranges <= 255, "env.max_rearranges must be in 0..=255"),
         ]
         for ok, msg in checks:
             if not ok:

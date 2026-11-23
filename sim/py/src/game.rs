@@ -39,6 +39,8 @@ pub(crate) struct Game {
 	pub(crate) allow_skip: bool,
 	/// Whether they offer sorts that change nothing.
 	pub(crate) null_sorts: bool,
+	/// Maximum consecutive free reorders offered before another action is required.
+	pub(crate) max_rearranges: u8,
 }
 
 impl From<SimGame> for Game {
@@ -51,6 +53,7 @@ impl From<SimGame> for Game {
 			previews: Vec::new(),
 			allow_skip: true,
 			null_sorts: true,
+			max_rearranges: obs::MAX_REARRANGES,
 		}
 	}
 }
@@ -61,6 +64,7 @@ fn options_of(game: &Game, candidates: usize) -> PyResult<OpOptions> {
 		candidates,
 		allow_skip: game.allow_skip,
 		null_sorts: game.null_sorts,
+		max_rearranges: game.max_rearranges,
 	})
 }
 
@@ -75,6 +79,7 @@ impl Clone for Game {
 			previews: self.previews.clone(),
 			allow_skip: self.allow_skip,
 			null_sorts: self.null_sorts,
+			max_rearranges: self.max_rearranges,
 		}
 	}
 }
@@ -132,23 +137,24 @@ impl Game {
 	/// `play_candidates` (at most `MAX_CANDIDATES`) scored plays, with
 	/// `build_previews` the build previews of shops, packs and blind select,
 	/// and with `order_gain` the gain column of the joker-move ops.
-	#[pyo3(signature = (play_candidates = 0, deck_tokens = false, build_previews = true, order_gain = true))]
+	#[pyo3(signature = (play_candidates = 0, deck_tokens = false, build_previews = true, order_gain = true, obs_v2 = false))]
 	#[expect(
 		clippy::fn_params_excessive_bools,
 		reason = "the Python API takes the flags, by position or by keyword; pyo3 maps each Python flag to a `bool`"
 	)]
 	fn encode<'py>(
 		&mut self, py: Python<'py>, play_candidates: usize, deck_tokens: bool,
-		build_previews: bool, order_gain: bool,
+		build_previews: bool, order_gain: bool, obs_v2: bool,
 	) -> PyResult<Bound<'py, PyDict>> {
 		let options = ObsOptions {
 			ops: options_of(self, play_candidates)?,
 			deck_tokens,
 			previews: build_previews,
 			order_gain,
+			obs_v2,
 		};
 		let r = py.detach(|| {
-			let mut r = ObsRow::default();
+			let mut r = ObsRow::new(obs_v2);
 			r.rows()
 				.write(&mut self.g, options, &mut self.ops, &mut self.previews);
 			r

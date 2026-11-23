@@ -28,12 +28,12 @@ from .runtime import make_env
 _INT32 = ("tok_i", "glob_i", "ops", "n_ops", "n_tokens", "n_hand")
 
 
-def _shapes(n: int) -> dict[str, tuple[int, ...]]:
+def _shapes(n: int, glob_float: int = az.GLOB_FLOAT) -> dict[str, tuple[int, ...]]:
     return {
         "tok_i": (n, az.MAX_TOKENS, az.TOK_INT),
         "tok_f": (n, az.MAX_TOKENS, az.TOK_FLOAT),
         "glob_i": (n, az.GLOB_INT),
-        "glob_f": (n, az.GLOB_FLOAT),
+        "glob_f": (n, glob_float),
         "ops": (n, az.MAX_OPS, az.OP_INT),
         "ops_f": (n, az.MAX_OPS, az.OP_FLOAT),
         "n_ops": (n,),
@@ -46,11 +46,11 @@ class _Upload:
     """The device buffers are rewritten for every chunk; stream order protects their readers,
     and the action copy-back syncs every step before the pinned stagings are reused."""
 
-    def __init__(self, n: int, device, floor: int = MAX_HAND, chunks: int = 1):
+    def __init__(self, n: int, device, floor: int = MAX_HAND, chunks: int = 1, glob_float: int = az.GLOB_FLOAT):
         """``floor``: the fewest token slots sent (32, as the plain loop's encoder runs, keeps acting bitwise equal to it)."""
         self.n, self.floor = n, floor
         self.h, self.d = [{} for _ in range(chunks)], {}
-        for k, s in _shapes(n).items():
+        for k, s in _shapes(n, glob_float).items():
             dt = torch.int32 if k in _INT32 else torch.float32
             for h in self.h:
                 h[k] = torch.empty(int(np.prod(s)), dtype=dt, pin_memory=True)
@@ -133,7 +133,8 @@ class Collector:
         self.parts = [slice(h * nb, (h + 1) * nb) for h in range(halves)]
         self.envs = [make_env(cfg, seed=seed + 7_000_001 * h, num_envs=nb) for h in range(halves)]
         self.chunk = nb // cfg.ppo.act_chunks  # envs per policy batch (ppo.act_chunks)
-        self.up = _Upload(self.chunk, device, MAX_HAND if cfg.ppo.act_chunks == 1 else 1, cfg.ppo.act_chunks)
+        glob_float = az.GLOB_FLOAT_V2 if cfg.model.obs_v2 else az.GLOB_FLOAT
+        self.up = _Upload(self.chunk, device, MAX_HAND if cfg.ppo.act_chunks == 1 else 1, cfg.ppo.act_chunks, glob_float=glob_float)
         self.act = _GraphAct(model, self.up, (cfg.ppo.explore_redeem, cfg.ppo.explore_buy), critic)
         self.a = torch.empty(3, nb, dtype=torch.int32, pin_memory=True)  # a half's actions, in the order they were picked
         self.acts = [np.empty((3, nb), np.int32) for _ in self.parts]  # per half: one steps while the other is picked for

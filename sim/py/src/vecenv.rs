@@ -523,12 +523,12 @@ struct ObsGuards<'py> {
 }
 
 impl ObsArrays {
-	fn zeros(py: Python<'_>, n: usize) -> ObsArrays {
+	fn zeros(py: Python<'_>, n: usize, glob_float: usize) -> ObsArrays {
 		ObsArrays {
 			tok_i: PyArray3::zeros(py, rows_of(n, TOK_I_SHAPE), /* is_fortran= */ false).unbind(),
 			tok_f: PyArray3::zeros(py, rows_of(n, TOK_F_SHAPE), /* is_fortran= */ false).unbind(),
 			glob_i: PyArray2::zeros(py, [n, obs::GLOB_INT], /* is_fortran= */ false).unbind(),
-			glob_f: PyArray2::zeros(py, [n, obs::GLOB_FLOAT], /* is_fortran= */ false).unbind(),
+			glob_f: PyArray2::zeros(py, [n, glob_float], /* is_fortran= */ false).unbind(),
 			ops: PyArray3::zeros(py, rows_of(n, OPS_SHAPE), /* is_fortran= */ false).unbind(),
 			ops_f: PyArray3::zeros(py, rows_of(n, OPS_F_SHAPE), /* is_fortran= */ false).unbind(),
 			n_ops: PyArray1::zeros(py, [n], /* is_fortran= */ false).unbind(),
@@ -537,12 +537,14 @@ impl ObsArrays {
 		}
 	}
 
-	fn borrow<'py>(&self, py: Python<'py>, n: usize) -> PyResult<ObsGuards<'py>> {
+	fn borrow<'py>(
+		&self, py: Python<'py>, n: usize, glob_float: usize,
+	) -> PyResult<ObsGuards<'py>> {
 		Ok(ObsGuards {
 			tok_i: borrow(&self.tok_i, py, &rows_of(n, TOK_I_SHAPE))?,
 			tok_f: borrow(&self.tok_f, py, &rows_of(n, TOK_F_SHAPE))?,
 			glob_i: borrow(&self.glob_i, py, &[n, obs::GLOB_INT])?,
-			glob_f: borrow(&self.glob_f, py, &[n, obs::GLOB_FLOAT])?,
+			glob_f: borrow(&self.glob_f, py, &[n, glob_float])?,
 			ops: borrow(&self.ops, py, &rows_of(n, OPS_SHAPE))?,
 			ops_f: borrow(&self.ops_f, py, &rows_of(n, OPS_F_SHAPE))?,
 			n_ops: borrow(&self.n_ops, py, &[n])?,
@@ -555,12 +557,12 @@ impl ObsArrays {
 impl ObsGuards<'_> {
 	/// The rows of every env (the shapes were checked, so there is one per
 	/// env).
-	fn rows(&mut self) -> PyResult<impl IndexedParallelIterator<Item = Rows<'_>>> {
+	fn rows(&mut self, glob_float: usize) -> PyResult<impl IndexedParallelIterator<Item = Rows<'_>>> {
 		let rows = slice(&mut self.tok_i)?
 			.par_chunks_mut(row_len(TOK_I_SHAPE))
 			.zip(slice(&mut self.tok_f)?.par_chunks_mut(row_len(TOK_F_SHAPE)))
 			.zip(slice(&mut self.glob_i)?.par_chunks_mut(obs::GLOB_INT))
-			.zip(slice(&mut self.glob_f)?.par_chunks_mut(obs::GLOB_FLOAT))
+			.zip(slice(&mut self.glob_f)?.par_chunks_mut(glob_float))
 			.zip(slice(&mut self.ops)?.par_chunks_mut(row_len(OPS_SHAPE)))
 			.zip(slice(&mut self.ops_f)?.par_chunks_mut(row_len(OPS_F_SHAPE)))
 			.zip(slice(&mut self.n_ops)?.par_iter_mut())
@@ -735,12 +737,13 @@ fn step_all(
 	env: &mut VecEnv, py: Python<'_>, choices: Option<Choices<'_>>,
 ) -> PyResult<Vec<StepOut>> {
 	let n = env.slots.len();
-	let mut cur = env.cur.borrow(py, n)?;
-	let mut fin = env.fin.borrow(py, n)?;
+	let glob_float = env.cfg.obs.glob_float();
+	let mut cur = env.cur.borrow(py, n, glob_float)?;
+	let mut fin = env.fin.borrow(py, n, glob_float)?;
 	let mut aux_kind = borrow(&env.aux_kind, py, &[n])?;
 	let mut aux_dest = borrow(&env.aux_dest, py, &[n, obs::ORDER_JOKERS])?;
-	let rows = cur.rows()?;
-	let final_rows = fin.rows()?;
+	let rows = cur.rows(glob_float)?;
+	let final_rows = fin.rows(glob_float)?;
 	let (dests, _) = slice(&mut aux_dest)?.as_chunks_mut::<{ obs::ORDER_JOKERS }>();
 	let labels = slice(&mut aux_kind)?.iter_mut().zip(dests);
 	let cfg = env.cfg;
@@ -829,14 +832,15 @@ impl VecEnv {
 		reason = "pyo3 extracts `backs` as an owned `Vec<String>`, which is only read"
 	)]
 	#[new]
-	#[pyo3(signature = (num_envs, backs = vec!["b_red".to_string()], stakes = vec![1], seed = 0, endless = false, max_ante = 16, step_limit = 5000, gamma = 0.999, r_win = 1.0, r_endless = 0.0, r_loss = 0.0, w_blind = 0.04, w_score = 0.02, threads = 0, play_candidates = 0, deck_tokens = false, snapshot_prob = 0.0, snapshot_min_ante = 2, allow_skip = true, build_previews = true, terminal_phi = true, order_gain = true, order_label_rate = 0.0, practice_prob = 0.0, practice_eternal = false, null_sorts = true))]
+	#[pyo3(signature = (num_envs, backs = vec!["b_red".to_string()], stakes = vec![1], seed = 0, endless = false, max_ante = 16, step_limit = 5000, gamma = 0.999, r_win = 1.0, r_endless = 0.0, r_loss = 0.0, w_blind = 0.04, w_score = 0.02, threads = 0, play_candidates = 0, deck_tokens = false, snapshot_prob = 0.0, snapshot_min_ante = 2, allow_skip = true, build_previews = true, terminal_phi = true, order_gain = true, order_label_rate = 0.0, practice_prob = 0.0, practice_eternal = false, null_sorts = true, obs_v2 = false, max_rearranges = obs::MAX_REARRANGES))]
 	fn new(
 		py: Python<'_>, num_envs: usize, backs: Vec<String>, stakes: Vec<u8>, seed: u64,
 		endless: bool, max_ante: i32, step_limit: u32, gamma: f32, r_win: f32, r_endless: f32,
 		r_loss: f32, w_blind: f32, w_score: f32, threads: usize, play_candidates: usize,
 		deck_tokens: bool, snapshot_prob: f32, snapshot_min_ante: i32, allow_skip: bool,
 		build_previews: bool, terminal_phi: bool, order_gain: bool, order_label_rate: f32,
-		practice_prob: f32, practice_eternal: bool, null_sorts: bool,
+		practice_prob: f32, practice_eternal: bool, null_sorts: bool, obs_v2: bool,
+		max_rearranges: u8,
 	) -> PyResult<VecEnv> {
 		let bad = |msg: String| Err(PyValueError::new_err(msg));
 		if num_envs == 0 {
@@ -893,10 +897,12 @@ impl VecEnv {
 					candidates: play_candidates,
 					allow_skip,
 					null_sorts,
+					max_rearranges,
 				})?,
 				deck_tokens,
 				previews: build_previews,
 				order_gain,
+				obs_v2,
 			},
 			order_label_rate,
 			snapshot_prob,
@@ -931,8 +937,8 @@ impl VecEnv {
 			episodes: Vec::new(),
 			reservoirs: Reservoirs::default(),
 			offered: 0,
-			cur: ObsArrays::zeros(py, num_envs),
-			fin: ObsArrays::zeros(py, num_envs),
+			cur: ObsArrays::zeros(py, num_envs, cfg.obs.glob_float()),
+			fin: ObsArrays::zeros(py, num_envs, cfg.obs.glob_float()),
 			aux_kind: PyArray1::from_vec(py, vec![-1; num_envs]).unbind(),
 			aux_dest: PyArray2::zeros(py, aux_shape, /* is_fortran= */ false).unbind(),
 		};

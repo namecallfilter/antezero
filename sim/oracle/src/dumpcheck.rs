@@ -131,6 +131,8 @@ fn excused(g: &Game) -> Game {
 	g.areas.limits.consumables.real = 0.0;
 	g.blind.triggered = false;
 	g.run.last_hand_score = 0.0;
+	g.run.last_hand_chips = 0.0;
+	g.run.last_hand_mult = 0.0;
 	for tag in &mut g.tags.held {
 		tag.id = 0;
 	}

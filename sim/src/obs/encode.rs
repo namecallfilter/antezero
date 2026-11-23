@@ -3,8 +3,8 @@ use std::ops::Range;
 
 use super::layout::{SLOT_VOCAB, TokInts, phase_id, shown_hand};
 use super::{
-	BuildPreview, GLOB_FLOAT, ItemZone, Layout, MAX_TOKENS, ObsMut, TOK_FLOAT, TOK_INT,
-	TOK_PREVIEW, Zone, build_preview, center,
+	BuildPreview, GLOB_FLOAT, GLOB_FLOAT_V2, ItemZone, Layout, MAX_TOKENS, ObsMut, TOK_FLOAT,
+	TOK_INT, TOK_PREVIEW, Zone, build_preview, center,
 };
 use crate::blind::blind_amount;
 use crate::card::{Ability, AnyCard, Card, CardCore, CardLike, Kind};
@@ -692,6 +692,16 @@ fn global_floats(g: &Game, gf: &mut [f32], pv: Option<&BuildPreview>) {
 		if let Some(i) = card_index(card) {
 			gf[G_DISCARD + i] += 0.5;
 		}
+	}
+	if gf.len() >= GLOB_FLOAT_V2 {
+		gf[GLOB_FLOAT] = signed_log(g.run.last_hand_score);
+		gf[GLOB_FLOAT + 1] = signed_log(g.run.last_hand_chips);
+		gf[GLOB_FLOAT + 2] = signed_log(g.run.last_hand_mult);
+		gf[GLOB_FLOAT + 3] = if g.blind.chips > 0.0 {
+			num::feat((g.run.last_hand_score / g.blind.chips).min(4.0))
+		} else {
+			0.0
+		};
 	}
 }
 

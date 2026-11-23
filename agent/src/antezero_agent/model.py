@@ -147,7 +147,8 @@ class Net(nn.Module):
         self.tok_emb = nn.ModuleList(nn.Embedding(v, d) for v in TOK_VOCAB)
         self.tok_lin = nn.Linear(az.TOK_FLOAT, d)
         self.glob_emb = nn.ModuleList(nn.Embedding(v, d) for v in GLOB_VOCAB)
-        self.glob_lin = nn.Linear(az.GLOB_FLOAT, d)
+        glob_dim = az.GLOB_FLOAT_V2 if cfg.obs_v2 else az.GLOB_FLOAT
+        self.glob_lin = nn.Linear(glob_dim, d)
         self.in_norm = nn.LayerNorm(d)
         layer = nn.TransformerEncoderLayer(
             d, cfg.n_heads, cfg.ff_mult * d, cfg.dropout, activation="gelu", batch_first=True, norm_first=True

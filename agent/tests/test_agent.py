@@ -1186,3 +1186,37 @@ def test_the_bot_command_keeps_its_arguments_through_cmd(tmp_path):
     cmd = command_line([sys.executable, "-c", script, str(ckpt), str(out)])
     subprocess.run(f'start "AnteZero bot" /b /wait {cmd}', shell=True, check=True)  # as bot.lua starts it
     assert json.loads(out.read_text()) == [str(ckpt), str(out)]
+
+
+def test_obs_v2_and_max_rearranges(tmp_path):
+    from pathlib import Path
+
+    g = az.Game("OBSV2PY")
+    g.step("select")
+    g.step("play 1")
+    o1 = g.encode(obs_v2=False)
+    o2 = g.encode(obs_v2=True)
+    assert o1["glob_f"].shape == (az.GLOB_FLOAT,)
+    assert o2["glob_f"].shape == (az.GLOB_FLOAT_V2,)
+    assert np.array_equal(o2["glob_f"][: az.GLOB_FLOAT], o1["glob_f"])
+    assert np.all(o2["glob_f"][az.GLOB_FLOAT :] > 0)
+
+    env = az.VecEnv(2, seed=1, obs_v2=True, max_rearranges=5)
+    assert env.glob_f.shape == (2, az.GLOB_FLOAT_V2)
+
+    v02 = Path(__file__).resolve().parents[2] / "antezero-v0.2.0.pt"
+    if v02.exists():
+        m_v1, cfg_v1, _ = load_model(v02)
+        assert not cfg_v1.model.obs_v2
+        assert m_v1.glob_lin.in_features == az.GLOB_FLOAT
+
+    cfg = preset("smoke")
+    cfg.model.obs_v2 = True
+    cfg.env.obs_v2 = True
+    cfg.env.max_rearranges = 4
+    cfg.run_dir = str(tmp_path)
+    row = train(cfg)
+    assert np.isfinite(row["policy_loss"]) and np.isfinite(row["value_loss"])
+    m_v2, cfg_v2, _ = load_model(tmp_path / "smoke" / "last.pt")
+    assert cfg_v2.model.obs_v2
+    assert m_v2.glob_lin.in_features == az.GLOB_FLOAT_V2

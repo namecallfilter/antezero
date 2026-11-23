@@ -58,6 +58,18 @@ pub(crate) struct ObsOptions {
 	pub previews: bool,
 	/// The gain column of the joker-move ops (`obs::order_gain`).
 	pub order_gain: bool,
+	/// Extended `obs_v2` global features (`GLOB_FLOAT_V2`).
+	pub obs_v2: bool,
+}
+
+impl ObsOptions {
+	pub(crate) fn glob_float(self) -> usize {
+		if self.obs_v2 {
+			obs::GLOB_FLOAT_V2
+		} else {
+			obs::GLOB_FLOAT
+		}
+	}
 }
 
 impl Rows<'_> {
@@ -117,6 +129,17 @@ impl Default for ObsRow {
 }
 
 impl ObsRow {
+	pub fn new(obs_v2: bool) -> ObsRow {
+		ObsRow {
+			obs: if obs_v2 {
+				ObsBuf::new_v2()
+			} else {
+				ObsBuf::new()
+			},
+			..ObsRow::default()
+		}
+	}
+
 	pub fn rows(&mut self) -> Rows<'_> {
 		Rows {
 			obs: self.obs.as_mut(),

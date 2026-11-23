@@ -354,6 +354,8 @@ fn read_run(j: &Json, state: State) -> Result<Run, DumpError> {
 		won: flag(j, "won")?,
 		win_notified: flag(j, "win_notified")?,
 		last_hand_score: 0.0,
+		last_hand_chips: 0.0,
+		last_hand_mult: 0.0,
 	})
 }
 

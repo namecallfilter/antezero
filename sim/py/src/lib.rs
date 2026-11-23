@@ -27,6 +27,7 @@ fn antezero_sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
 	m.add("TOK_FLOAT", obs::TOK_FLOAT)?;
 	m.add("GLOB_INT", obs::GLOB_INT)?;
 	m.add("GLOB_FLOAT", obs::GLOB_FLOAT)?;
+	m.add("GLOB_FLOAT_V2", obs::GLOB_FLOAT_V2)?;
 	m.add("MAX_OPS", obs::MAX_OPS)?;
 	m.add("OP_INT", obs::OP_INT)?;
 	m.add("OP_FLOAT", obs::OP_FLOAT)?;

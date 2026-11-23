@@ -243,6 +243,9 @@ impl<'game> Order<'game> {
 /// jokers, the reorder ops on offer, nothing face down and no Ceremonial
 /// Dagger.
 pub fn order_gain(g: &Game, ops: &mut [Op]) {
+	if !ops.iter().any(|o| o.kind == OpKind::MoveJoker) {
+		return;
+	}
 	let Some(Op {
 		kind: OpKind::PlayTop,
 		cards: Some(top),
