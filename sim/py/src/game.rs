@@ -199,8 +199,9 @@ impl Game {
 	/// Replaces the run with the one in `state`, a state dump of the real
 	/// game (the mod's `az_state`, or `state_json`) taken at a decision
 	/// point; this game's settings (`endless`, `steamodded`, `allow_skip`,
-	/// `null_sorts`) stay, and no free rearranges have been made (see `rearranges`).
-	/// `ValueError` if the dump is not one the simulator can take.
+	/// `null_sorts`, `max_rearranges`) stay, and no free rearranges have been
+	/// made (see `rearranges`). `ValueError` if the dump is not one the
+	/// simulator can take.
 	fn load_state(&mut self, py: Python<'_>, state: &str) -> PyResult<()> {
 		let mut g = py
 			.detach(|| {
@@ -308,6 +309,17 @@ impl Game {
 	#[setter]
 	fn set_null_sorts(&mut self, v: bool) {
 		self.null_sorts = v;
+	}
+
+	/// Maximum consecutive free reorders offered by `encode` and `step_factored`.
+	#[getter]
+	fn max_rearranges(&self) -> u8 {
+		self.max_rearranges
+	}
+
+	#[setter]
+	fn set_max_rearranges(&mut self, v: u8) {
+		self.max_rearranges = v;
 	}
 
 	/// Whether ×Mult is rounded like Steamodded (`mult + mult * (x - 1)`),

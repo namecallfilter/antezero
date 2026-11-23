@@ -149,6 +149,11 @@ class Collector:
     def invalid_actions(self) -> int:
         return sum(e.invalid_actions() for e in self.envs)
 
+    def pop_interval_stats(self) -> dict:
+        from .interval_log import merge_interval_stats
+
+        return merge_interval_stats([e.pop_interval_stats() for e in self.envs])
+
     def last_obs(self) -> list[Obs]:
         return [obs_from_numpy(e, self.dev) for e in self.envs]
 

@@ -41,6 +41,8 @@ class ModelConfig:
     obs_v2: bool = False
     # Policy architecture: "antezero" (default Net) or "run95" (Run95Net).
     arch: str = "antezero"
+    # Action head: "factored" (default 3-part head) or "hand_builder".
+    action_head: str = "factored"
     # Optional path to RLBalatro text_embeddings_{d}_v2.pt ("" = disabled, "auto" = match d_model).
     embed_from: str = ""
 
@@ -117,6 +119,9 @@ class EnvConfig:
     max_rearranges: int = 2
     # Reward scheme: "shaping" (antezero default) or "blinds" (Run 95).
     reward_mode: str = "shaping"
+    # External start pool of .bal recordings (directory with index.jsonl + recordings/).
+    start_pool: str = ""
+    start_frac: float = 0.0
     # Stake curriculum: the next stake is added once the 95% Wilson lower
     # bound of the win rate over the latest `curriculum_min_episodes` fresh
     # episodes on the top stake (since the last change) reaches the target.
@@ -241,6 +246,7 @@ class Config:
     ppo: PPOConfig = field(default_factory=PPOConfig)
     device: str = "auto"
     log_every: int = 1
+    log_interval_updates: int = 1000
     save_every: int = 50
     eval_every: int = 200
     eval_episodes: int = 256
@@ -298,9 +304,12 @@ class Config:
             (p.critic_learn in (0, 1, 2) and (not p.critic_learn or bool(p.critic)), "ppo.critic_learn is 0, 1 or 2 and needs ppo.critic"),
             (0.0 <= e.order_label_rate <= 1.0, "env.order_label_rate must be in [0, 1]"),
             (
-                0.0 <= e.snapshot_prob and 0.0 <= e.practice_prob and e.snapshot_prob + e.practice_prob <= 1.0,
-                "env.snapshot_prob and env.practice_prob must be >= 0 and sum to at most 1",
+                0.0 <= e.snapshot_prob and 0.0 <= e.practice_prob and 0.0 <= e.start_frac
+                and e.snapshot_prob + e.practice_prob + e.start_frac <= 1.0,
+                "env.snapshot_prob, env.practice_prob and env.start_frac must be >= 0 and sum to at most 1",
             ),
+            (e.start_frac == 0.0 or bool(e.start_pool), "env.start_frac > 0 needs env.start_pool"),
+            (self.log_interval_updates >= 0, "log_interval_updates must be >= 0"),
             (
                 not (e.practice_prob and e.snapshot_prob) or e.snapshot_min_ante > 3,
                 "env.practice_prob with env.snapshot_prob needs env.snapshot_min_ante > 3",
@@ -309,6 +318,7 @@ class Config:
             (self.model.obs_v2 == e.obs_v2, "model.obs_v2 and env.obs_v2 must match"),
             (0 <= e.max_rearranges <= 255, "env.max_rearranges must be in 0..=255"),
             (self.model.arch in ("antezero", "run95"), "model.arch must be 'antezero' or 'run95'"),
+            (self.model.action_head in ("factored", "hand_builder"), "model.action_head must be 'factored' or 'hand_builder'"),
             (e.reward_mode in ("shaping", "blinds"), "env.reward_mode must be 'shaping' or 'blinds'"),
             (p.optimizer in ("adamw", "muon"), "ppo.optimizer must be 'adamw' or 'muon'"),
             (p.lr_schedule in ("cosine", "exp"), "ppo.lr_schedule must be 'cosine' or 'exp'"),
@@ -366,7 +376,9 @@ def preset(name: str) -> Config:
         c.env.endless = True
         c.env.max_ante = 16
         c.env.step_limit = 3000
-        c.env.snapshot_prob = 0.2
+        c.env.snapshot_prob = 0.0
+        c.env.start_pool = "pools/human_gold_v2_ante6"
+        c.env.start_frac = 0.2
         c.env.reward_mode = "blinds"
         c.env.obs_v2 = True
         c.env.deck_tokens = True

@@ -65,6 +65,8 @@ def make_env(cfg: Config, seed: int | None = None, num_envs: int | None = None, 
         obs_v2=e.obs_v2,
         max_rearranges=e.max_rearranges,
         reward_mode=e.reward_mode,
+        start_pool=e.start_pool,
+        start_frac=e.start_frac,
     )
     kw.update(over)
     return az.VecEnv(num_envs or e.num_envs, **kw)

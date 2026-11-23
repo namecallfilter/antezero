@@ -37,6 +37,7 @@ import torch.nn as nn
 from .collect import Collector
 from .config import Config, parse_overrides, preset
 from .critic import Critic, Learner, critic_state
+from .interval_log import IntervalLogger
 from .model import GAIN, MAX_CARDS, Net, Obs, count_params, obs_from_numpy
 from .models import build_model, load_text_embeddings
 from .runtime import make_env, pick_device, read_checkpoint, save_checkpoint
@@ -278,11 +279,15 @@ class Optimizers:
 def muon_params(model: nn.Module, cfg: Config) -> list[nn.Parameter]:
     """2-D hidden matrices optimized by Muon (excludes output heads and, when embed_adam, embedding tables)."""
     table_ids = {id(m.weight) for m in model.modules() if isinstance(m, nn.Embedding)}
-    heads = ("op_score.", "ptr_stop.", "value.")
+    heads = ("op_score.", "ptr_stop.", "value.", "fx_lin.")
     return [
         p
         for n, p in model.named_parameters()
-        if p.ndim == 2 and not n.startswith(heads) and "emb" not in n and not (cfg.ppo.embed_adam and id(p) in table_ids)
+        if p.ndim == 2
+        and not n.startswith(heads)
+        and not any(f".{h}" in n for h in heads)
+        and "emb" not in n
+        and not (cfg.ppo.embed_adam and id(p) in table_ids)
     ]
 
 
@@ -386,7 +391,7 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     torch.set_float32_matmul_precision("high")
     run_dir = Path(cfg.run_dir) / cfg.name
     ck = read_checkpoint(resume) if resume else None
-    if ck is None and run_dir.exists() and any(run_dir.iterdir()):
+    if ck is None and (run_dir / "last.pt").exists():
         raise FileExistsError(f"{run_dir} already holds a run: choose another --name, or --resume it")
     if ck is not None:
         old = Config.from_dict(ck["config"])
@@ -438,7 +443,13 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     autocast = lambda: torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp)  # noqa: E731
 
     def save(update: int):
-        extra = {"curriculum": list(top), "kl_ctl": kl_ctl, "torch_rng": torch.get_rng_state()}
+        extra = {
+            "curriculum": list(top),
+            "kl_ctl": kl_ctl,
+            "torch_rng": torch.get_rng_state(),
+            "interval_logger": interval_logger.state_dict(),
+            "combo_recent": [[d, s_, list(q)] for (d, s_), q in combo_recent.items()],
+        }
         if torch.cuda.is_available():
             extra["cuda_rng"] = torch.cuda.get_rng_state_all()
         if critic is not None:
@@ -508,6 +519,13 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
         for o in getattr(opt, "opts", [opt])
     ]
     combo_recent: dict[tuple[str, int], deque[int]] = {}
+    interval_logger = IntervalLogger(run_dir, cfg.env.backs, cfg.env.stakes)
+    if ck is not None:
+        interval_logger.load_state_dict(ck.get("interval_logger"))
+        if interval_logger.last_flushed_update == 0:
+            interval_logger.last_flushed_update = start_update
+        for d, s_, q in ck.get("combo_recent", ()):
+            combo_recent[(str(d), int(s_))] = deque((int(x) for x in q), maxlen=200)
     stop_requested = False
     prev_sigterm = signal.getsignal(signal.SIGTERM)
 
@@ -531,6 +549,7 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
 
                     def on_episodes(new_eps):
                         stats.add(new_eps)
+                        interval_logger.add_episodes(new_eps)
                         top.extend(bool(x[5]) for x in new_eps if not x[10] and x[3] == top_stake)
                         for x in new_eps:
                             if not x[10]:
@@ -581,11 +600,11 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
                     sweep = critic is not None and not (fast and env.act.critic is not None)
                     if cfg.ppo.recompute_logp or sweep:
                         # Slices of states sorted by token count, each at its longest token and op lists (one GPU sync).
-                        order = roll.n_tokens.flatten().argsort(stable=True).view(-1, mb)
+                        order = roll.n_tokens.flatten().argsort(stable=True).view(-1, mb // cfg.ppo.grad_accum)
                         lens = torch.stack([roll.n_tokens.flatten()[order].amax(1), roll.n_ops.flatten()[order].amax(1)], -1).clamp(min=1).tolist()
                         order_cpu = order.cpu() if roll.host else None
                         with torch.no_grad(), autocast():
-                            for k in range(cfg.ppo.minibatches):
+                            for k in range(len(order)):
                                 idx = order[k]
                                 # The critic alone reads no ops.
                                 o = roll.obs(idx, order_cpu[k] if roll.host else None, lens[k][0], lens[k][1] if cfg.ppo.recompute_logp else 0)
@@ -775,6 +794,8 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
                             top.clear()
                             (run_dir / "config.json").write_text(cfg.to_json())
                     completed = update + 1
+                    if cfg.log_interval_updates and completed % cfg.log_interval_updates == 0:
+                        interval_logger.flush(completed, steps, env, wb=wb)
                     if cfg.save_every and completed % cfg.save_every == 0:
                         save(completed)
                         # Every saved checkpoint is kept (an average of them beats the last one), whether or not it is
@@ -799,6 +820,8 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
                         if (run_dir / "STOP").exists():
                             (run_dir / "STOP").unlink()
                         break
+            if cfg.log_interval_updates and completed > interval_logger.last_flushed_update:
+                interval_logger.flush(completed, steps, env, wb=wb)
             save(completed)
             if completed >= n_updates and not stop_requested:
                 print("done", flush=True)

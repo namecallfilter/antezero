@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..config import ModelConfig
-from ..model import GLOB_VOCAB, MAX_HAND, NEG, Net, Obs, TOK_VOCAB, bits
+from ..model import GLOB_VOCAB, MAX_HAND, Net, Obs, TOK_VOCAB
 
 
 class Run95Net(Net):
@@ -29,15 +29,16 @@ class Run95Net(Net):
         glob_dim = az.GLOB_FLOAT_V2 if cfg.obs_v2 else az.GLOB_FLOAT
         self.readout = nn.Parameter(torch.zeros(d))
         self.glob_mlp = nn.Sequential(nn.Linear(glob_dim, 2 * d), nn.GELU(), nn.Linear(2 * d, d))
-        nn.init.zeros_(self.op_score[2].weight)
-        nn.init.zeros_(self.ptr_q0[2].weight)
-        nn.init.zeros_(self.ptr_stop.weight)
+        if hasattr(self.action_head, "zero_init_outputs"):
+            self.action_head.zero_init_outputs()
 
     def encode(self, o: Obs, T: int | None = None, O: int | None = None):
         T = T or max(int(o.n_tokens.max().item()), MAX_HAND, 1)
         O = O or o.ops.shape[1]
         ti, tf = o.tok_i[:, :T], o.tok_f[:, :T]
-        x = self.tok_lin(tf) + self.fx_lin(self.fx[ti[..., 1].clamp(0, az.N_CENTERS - 1)])
+        x = self.tok_lin(tf)
+        if self.cfg.effects:
+            x = x + self.fx_lin(self.fx[ti[..., 1].clamp(0, az.N_CENTERS - 1)])
         for k, emb in enumerate(self.tok_emb):
             x = x + emb(ti[..., k].clamp(0, TOK_VOCAB[k] - 1))
         g = self.glob_mlp(o.glob_f)
@@ -53,27 +54,5 @@ class Run95Net(Net):
             h = self.encoder(h, src_key_padding_mask=pad)
         h = self.out_norm(h.float())
         cls, tok = h[:, 0], F.pad(h[:, 2:], (0, 0, 0, max(0, MAX_HAND - T)))
-        T = tok.shape[1]
-        ops = o.ops[:, :O]
-        kind = ops[..., 0].clamp(0, az.N_OPS_KINDS - 1)
-        tgt = ops[..., 1]
-        tgt_h = torch.gather(tok, 1, tgt.clamp(0, T - 1).unsqueeze(-1).expand(-1, -1, tok.shape[-1]))
-        tgt_h = tgt_h * (tgt >= 0).unsqueeze(-1)
-        feats = torch.stack(
-            [
-                ops[..., 2].float() / 5,
-                ops[..., 3].float() / 5,
-                ops[..., 6].float() / 10,
-                bits(ops[..., 4]).sum(-1).float() / 10,
-                bits(ops[..., 5]).sum(-1).float(),
-            ],
-            -1,
-        )
-        feats = torch.cat([feats, o.ops_f[:, :O]], -1)
-        req = bits(ops[..., 5], MAX_HAND).to(tok.dtype)
-        cards_h = torch.einsum("boj,bjd->bod", req, tok[:, :MAX_HAND]) / req.sum(-1, keepdim=True).clamp(min=1)
-        op_e = self.op_kind(kind) + self.op_tgt(tgt_h) + self.op_feat(feats) + self.op_cards(cards_h)
-        logits = self.op_score(torch.cat([op_e, cls.unsqueeze(1).expand(-1, O, -1)], -1)).squeeze(-1)
-        valid = torch.arange(O, device=ops.device)[None] < o.n_ops[:, None]
-        logits = logits.masked_fill(~valid, NEG)
+        op_e, logits = self.action_head.score_ops(cls, tok, o, O)
         return cls, tok, op_e, logits

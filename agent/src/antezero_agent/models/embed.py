@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import antezero_sim as az
 import torch
 
-from ..model import Net
+if TYPE_CHECKING:
+    from ..model import Net
 
 _DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 

@@ -10,6 +10,8 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod game;
+mod interval;
+mod pool;
 mod rows;
 mod vecenv;
 

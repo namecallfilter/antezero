@@ -155,13 +155,13 @@ fn gains(capped: f64, base: f64) -> bool {
 }
 
 /// Whether single joker moves are scored: a round with 2 to `ORDER_JOKERS`
-/// jokers and the reorder ops on offer, nothing face down (the previews
-/// would reveal it), no Ceremonial Dagger (it destroys its right neighbour
-/// when a blind is selected).
-fn eligible(flow: Flow, areas: &Areas) -> bool {
+/// jokers and the reorder ops on offer (`can_reorder`), nothing face down
+/// (the previews would reveal it), no Ceremonial Dagger (it destroys its
+/// right neighbour when a blind is selected).
+fn eligible(flow: Flow, areas: &Areas, can_reorder: bool) -> bool {
 	flow.phase == Phase::Round
 		&& (2..=ORDER_JOKERS).contains(&areas.jokers.len())
-		&& flow.rearranges < MAX_REARRANGES
+		&& can_reorder
 		&& !hidden_scoring_state(areas)
 		&& !areas.owns_joker(Joker::Ceremonial)
 }
@@ -192,8 +192,10 @@ impl<'game> Order<'game> {
 	/// `samples` scenarios instead. `None` if moves are not scored in `g`
 	/// (see [`eligible`]), the play is not legal or it already reaches the
 	/// chips still needed.
-	fn new(g: &'game Game, mask: CardMask, samples: usize) -> Option<Order<'game>> {
-		if !eligible(g.flow, &g.areas) {
+	fn new(
+		g: &'game Game, mask: CardMask, samples: usize, can_reorder: bool,
+	) -> Option<Order<'game>> {
+		if !eligible(g.flow, &g.areas, can_reorder) {
 			return None;
 		}
 		let need = g.blind.chips - g.round.chips;
@@ -254,7 +256,7 @@ pub fn order_gain(g: &Game, ops: &mut [Op]) {
 	else {
 		return;
 	};
-	let Some(mut order) = Order::new(g, top.required, 1) else {
+	let Some(mut order) = Order::new(g, top.required, 1, /* can_reorder= */ true) else {
 		return;
 	};
 	// Each joker's first move in the list that leaves nothing else changed is its best.
@@ -280,7 +282,8 @@ pub fn order_gain(g: &Game, ops: &mut [Op]) {
 /// play already reaches the chips still needed.
 #[must_use]
 pub fn order_label(g: &Game, mask: CardMask) -> Option<[u8; ORDER_JOKERS]> {
-	let mut order = Order::new(g, mask, PREVIEW_SAMPLES)?;
+	let can_reorder = g.flow.rearranges < MAX_REARRANGES;
+	let mut order = Order::new(g, mask, PREVIEW_SAMPLES, can_reorder)?;
 	let mut dest = [0u8; ORDER_JOKERS];
 	let mut best = None;
 	for &Gain { capped, mv } in &order.moves {
