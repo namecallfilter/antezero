@@ -346,7 +346,17 @@ def preset(name: str) -> Config:
         c.ppo.minibatches = 16
         c.ppo.lr = 2e-4
     elif name == "run95":
-        c.model = ModelConfig(arch="run95", obs_v2=True, d_model=256, n_layers=6, n_heads=8, ff_mult=4, embed_from="auto")
+        c.model = ModelConfig(
+            arch="run95",
+            obs_v2=True,
+            d_model=256,
+            n_layers=6,
+            n_heads=8,
+            ff_mult=4,
+            bf16_encoder=True,
+            effects=False,
+            embed_from="auto",
+        )
         c.env.backs = [
             "b_red", "b_blue", "b_yellow", "b_green", "b_black",
             "b_magic", "b_nebula", "b_ghost", "b_abandoned", "b_checkered",
@@ -359,6 +369,10 @@ def preset(name: str) -> Config:
         c.env.snapshot_prob = 0.2
         c.env.reward_mode = "blinds"
         c.env.obs_v2 = True
+        c.env.deck_tokens = True
+        c.env.play_candidates = 0
+        c.env.build_previews = False
+        c.env.order_gain = False
         c.env.num_envs = 512
         c.ppo.total_steps = 1_966_080_000
         c.ppo.rollout_len = 128
@@ -388,6 +402,7 @@ def preset(name: str) -> Config:
         c.ppo.kl_step = 0.03
         c.ppo.kl_max_factor = 2.0
         c.ppo.kl_ema = 0.1
+        c.ppo.compile = True
     else:
         raise ValueError(f"unknown preset {name!r}")
     return c
