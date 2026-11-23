@@ -41,6 +41,8 @@ class ModelConfig:
     obs_v2: bool = False
     # Policy architecture: "antezero" (default Net) or "run95" (Run95Net).
     arch: str = "antezero"
+    # Optional path to RLBalatro text_embeddings_{d}_v2.pt ("" = disabled, "auto" = match d_model).
+    embed_from: str = ""
 
 
 @dataclass
@@ -344,7 +346,7 @@ def preset(name: str) -> Config:
         c.ppo.minibatches = 16
         c.ppo.lr = 2e-4
     elif name == "run95":
-        c.model = ModelConfig(arch="run95", obs_v2=True, d_model=256, n_layers=6, n_heads=8, ff_mult=4)
+        c.model = ModelConfig(arch="run95", obs_v2=True, d_model=256, n_layers=6, n_heads=8, ff_mult=4, embed_from="auto")
         c.env.backs = [
             "b_red", "b_blue", "b_yellow", "b_green", "b_black",
             "b_magic", "b_nebula", "b_ghost", "b_abandoned", "b_checkered",

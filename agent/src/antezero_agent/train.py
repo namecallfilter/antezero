@@ -38,7 +38,7 @@ from .collect import Collector
 from .config import Config, parse_overrides, preset
 from .critic import Critic, Learner, critic_state
 from .model import GAIN, MAX_CARDS, Net, Obs, count_params, obs_from_numpy
-from .models import build_model
+from .models import build_model, load_text_embeddings
 from .runtime import make_env, pick_device, read_checkpoint, save_checkpoint
 from .stats import wilson
 
@@ -400,6 +400,9 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
 
     torch.manual_seed(cfg.env.seed)
     model = build_model(cfg.model, ck["model"].get("fx") if ck is not None else None).to(device)
+    if ck is None and cfg.model.embed_from:
+        tables = load_text_embeddings(model, cfg.model.embed_from, device)
+        print(f"[antezero] embeddings from {cfg.model.embed_from}: {', '.join(tables)}", flush=True)
     opt = build_optimizer(model, cfg, device)
     critic = learner = None  # not compiled: it would share (and fill) the policy encoder's Dynamo cache
     if cfg.ppo.critic:  # built before a resumed RNG state is restored (its init draws from it)
