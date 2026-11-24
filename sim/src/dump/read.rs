@@ -356,6 +356,7 @@ fn read_run(j: &Json, state: State) -> Result<Run, DumpError> {
 		last_hand_score: 0.0,
 		last_hand_chips: 0.0,
 		last_hand_mult: 0.0,
+		earned: 0.0,
 	})
 }
 

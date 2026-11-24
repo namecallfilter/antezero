@@ -35,6 +35,9 @@ pub(crate) fn shuffle_area<C: CardLike>(cards: &mut [C], rng: &mut PseudoRandom,
 #[inline]
 pub(crate) fn ease_dollars(run: &mut Run, d: f64) {
 	run.dollars += d;
+	if d > 0.0 {
+		run.earned += d;
+	}
 }
 
 /// `ease_discard(mod)` (applied immediately).

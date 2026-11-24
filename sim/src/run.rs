@@ -279,6 +279,7 @@ pub struct Run {
 	pub last_hand_score: f64,
 	pub last_hand_chips: f64,
 	pub last_hand_mult: f64,
+	pub earned: f64,
 }
 
 impl Default for Run {
@@ -305,6 +306,7 @@ impl Default for Run {
 			last_hand_score: 0.0,
 			last_hand_chips: 0.0,
 			last_hand_mult: 0.0,
+			earned: 0.0,
 		}
 	}
 }

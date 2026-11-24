@@ -11,6 +11,7 @@
 
 pub mod actions;
 mod areas;
+pub mod balatro;
 mod blind;
 mod calculate_joker;
 pub mod canon;
