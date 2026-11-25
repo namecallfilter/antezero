@@ -1,5 +1,6 @@
-//! `VecEnv`: many auto-resetting games stepped in parallel, with the reward
-//! shaping and the reservoirs of ante starts the episodes restart from.
+//! `VecEnv`: many auto-resetting games stepped in parallel. One env's
+//! stepping, its reward shaping and the reservoirs of ante starts the
+//! episodes restart from are in `slot`.
 
 use numpy::{PyArray1, PyArray2, PyArray3, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
@@ -7,21 +8,16 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 use sim::data::Back;
 use sim::obs::{self, OpOptions};
-use sim::rng::splitmix64;
 use sim::{Stake, num};
 
 use crate::game::{Game, parse_back};
 use crate::rows::{ObsArrays, ObsOptions, borrow, op_options, slice};
 use crate::slot::{
-	Cfg, Choices, End, Episode, PRACTICE_ANTES, Reservoirs, Reward, Slot, Snapshot, StepCtx,
-	StepOut, make_game, run_number,
+	Cfg, Choices, End, Episode, PRACTICE_ANTES, Reservoirs, Reward, Slot, StepCtx, StepOut,
+	make_game, run_number,
 };
 
-/// Snapshots kept for restarts, per pool (a pool follows the current
-/// policy's state distribution).
-const RESERVOIR: usize = 4096;
-/// The probability that an ante start is offered to its reservoir, where it
-/// replaces a random entry once the reservoir is full.
+/// The probability that an ante start is offered to its reservoir.
 const OFFER: f32 = 0.25;
 
 /// An [`Episode`] as Python receives it: `(slot, seed, back, stake, ante,
@@ -67,7 +63,8 @@ pub struct VecEnv {
 	pool: rayon::ThreadPool,
 	episodes: Vec<Episode>,
 	reservoirs: Reservoirs,
-	offered: u64,
+	/// Choices that were illegal and replaced by a fallback.
+	invalid: u64,
 	cur: ObsArrays,
 	fin: ObsArrays,
 	aux_kind: Py<PyArray1<i8>>,
@@ -164,18 +161,12 @@ fn step_all(
 		}
 	}
 	for r in &mut out {
+		env.invalid += u64::from(r.invalid);
 		if let Some(ep) = r.episode.take() {
 			env.episodes.push(ep);
 		}
-		if let Some(Snapshot { pool, game }) = r.snapshot.take() {
-			env.offered += 1;
-			let reservoir = &mut env.reservoirs[pool];
-			if reservoir.len() < RESERVOIR {
-				reservoir.push(*game);
-			} else {
-				let k = num::pick(splitmix64(env.offered ^ env.base_seed), RESERVOIR);
-				reservoir[k] = *game;
-			}
+		if let Some(snapshot) = r.snapshot.take() {
+			env.reservoirs.offer(snapshot, env.base_seed);
 		}
 	}
 	Ok(out)
@@ -308,7 +299,7 @@ impl VecEnv {
 			pool,
 			episodes: Vec::new(),
 			reservoirs: Reservoirs::default(),
-			offered: 0,
+			invalid: 0,
 			cur: ObsArrays::zeros(py, num_envs),
 			fin: ObsArrays::zeros(py, num_envs),
 			aux_kind: PyArray1::from_vec(py, vec![-1; num_envs]).unbind(),
@@ -394,13 +385,13 @@ impl VecEnv {
 	}
 
 	fn antes<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i32>> {
-		PyArray1::from_vec(py, self.slots.iter().map(|s| s.game().run.ante).collect())
+		PyArray1::from_vec(py, self.slots.iter().map(Slot::ante).collect())
 	}
 
 	/// Number of composite actions that were illegal and replaced by a
 	/// fallback (should stay ~0 with correct masking).
 	fn invalid_actions(&self) -> u64 {
-		self.slots.iter().map(Slot::invalid_actions).sum()
+		self.invalid
 	}
 
 	/// A snapshot of env `i` as a `Game` (with the env's `allow_skip` and
@@ -410,7 +401,7 @@ impl VecEnv {
 			.slots
 			.get(i)
 			.ok_or_else(|| PyValueError::new_err("index out of range"))?;
-		let mut game = Game::from(s.game().clone());
+		let mut game = Game::from(s.game_copy());
 		game.allow_skip = self.cfg.obs.ops.allow_skip;
 		game.null_sorts = self.cfg.obs.ops.null_sorts;
 		Ok(game)
