@@ -472,7 +472,7 @@ impl Slot {
 
 /// Per-key stream states (`G.GAME.pseudorandom`) plus the run seed.
 ///
-/// Stored as an open-addressing table of [`Slot`]s so cloning a snapshot
+/// Stored as an open-addressing table of `Slot`s so cloning a snapshot
 /// copies one contiguous buffer.
 #[derive(Debug)]
 pub struct PseudoRandom {
