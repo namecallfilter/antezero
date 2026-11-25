@@ -1,5 +1,7 @@
 //! Cached build previews and per-item deltas (buying, picking, redeeming, or
-//! selling an item on the same sampled hands as the base build).
+//! selling an item): an item's preview repeats the build preview with the
+//! item applied to a copy, on the first [`PREVIEW_ITEM_HANDS`] of the same
+//! sampled hands (paired with the base).
 
 use std::hash::{Hash, Hasher};
 use std::{array, iter};

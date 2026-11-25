@@ -1,7 +1,7 @@
 //! Port of `Card:calculate_joker(context)` (card.lua) dispatch and Blueprint /
 //! Brainstorm copying. What each joker does in a context is in
-//! [`scoring`](super::scoring), [`card_scoring`](super::card_scoring), and
-//! [`lifecycle`](super::lifecycle), in the Lua's evaluation order, because
+//! [`scoring`], [`card_scoring`](super::card_scoring), and
+//! [`lifecycle`], in the Lua's evaluation order, because
 //! the order of RNG draws and of state mutations is observable.
 
 use super::effect::{Effect, LifecycleCtx, Scoring, ScoringCtx};

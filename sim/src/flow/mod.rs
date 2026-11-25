@@ -1,5 +1,7 @@
-//! Round flow: card movement/copying, per-state updates, flow events, and
-//! blind/play/discard entry points.
+//! Round flow: blind select, new round, drawing, play / discard and the
+//! per-state updates (`state_events.lua`, `button_callbacks.lua`, game.lua
+//! `update_*`), with the card movement and copying they share. The end of
+//! the round is in `round`.
 
 mod actions;
 mod cards;

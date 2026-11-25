@@ -1,6 +1,10 @@
 //! Joker contexts of hand scoring: before, repetitions, the joker pass
 //! (`main` / other jokers), after, and card destruction. Per-card
 //! (`context.individual`) effects live in [`super::card_scoring`].
+//!
+//! `Card:calculate_joker` is an if-chain over the joker's name, so only
+//! the checks of the joker at hand ever run: here a joker's checks for a
+//! context are its `match` arms, in the chain's order.
 
 use super::card_scoring::{individual_held, individual_played};
 use super::effect::{
