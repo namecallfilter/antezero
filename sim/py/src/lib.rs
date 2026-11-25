@@ -11,6 +11,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod game;
 mod rows;
+mod slot;
 mod vecenv;
 
 use pyo3::prelude::*;
