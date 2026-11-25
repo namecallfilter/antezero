@@ -3,7 +3,7 @@
 
 mod defs;
 mod primitives;
-mod sets;
+pub(crate) mod sets;
 
 pub(crate) use defs::ENHANCED_BASE;
 pub use defs::{
@@ -13,8 +13,7 @@ pub use defs::{
 pub use primitives::{
 	Edition, Enhancement, HandBase, HandType, P_CARDS_SORTED, PackKind, Rank, Seal, Suit,
 };
-pub use sets::{CenterSet, HandSet, PlanetSet, VoucherSet};
-pub(crate) use sets::{SuitSet, TagSet};
+pub(crate) use sets::{CenterSet, HandSet, PlanetSet, SuitSet, TagSet, VoucherSet};
 
 pub use crate::data_gen::{
 	ALL_BACKS, ALL_BLINDS, ALL_BOOSTERS, ALL_JOKERS, ALL_PLANETS, ALL_SPECTRALS, ALL_TAGS,

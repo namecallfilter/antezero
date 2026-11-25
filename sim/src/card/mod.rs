@@ -4,7 +4,7 @@
 mod any;
 mod item;
 mod lifecycle;
-mod mask;
+pub(crate) mod mask;
 mod playing_card;
 
 pub use any::{AnyCard, CardLike};
@@ -15,6 +15,6 @@ pub(crate) use lifecycle::{
 	remove_from_deck, remove_owned, set_cost_all, set_debuff_joker, set_edition, set_enhancement,
 	shatter_or_dissolve, unmark_used,
 };
-pub use mask::{CardMask, Indices};
+pub(crate) use mask::CardMask;
 pub(crate) use playing_card::{CanonKey, CardFace, canon_key};
 pub use playing_card::{HandSort, PlayingCard, SuitTest, UNIQUE_ID_SCALE};
