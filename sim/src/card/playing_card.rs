@@ -199,7 +199,7 @@ impl PlayingCard {
 
 	/// What `sort` orders the hand by, without the tie-break between cards
 	/// that look the same.
-	pub(crate) fn sort_key(&self, sort: HandSort) -> f64 {
+	fn sort_key(&self, sort: HandSort) -> f64 {
 		let mut mult = if sort == HandSort::Suit { 1000.0 } else { 1.0 };
 		if self.is_stone() {
 			mult = -1000.0;
