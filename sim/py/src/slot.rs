@@ -1,7 +1,7 @@
 //! Per-env episode stepping, reward shaping, seeding, and ante-start snapshot
 //! reservoirs used by `VecEnv`.
 
-use std::ops::{Index, IndexMut, RangeInclusive};
+use std::ops::RangeInclusive;
 
 use sim::data::{ALL_JOKERS, ALL_PLANETS, Back};
 use sim::game::{BlindSlot, BlindStatus, Game as SimGame, Phase};
@@ -135,6 +135,9 @@ const GIFT_LEVELS: f64 = 3.0;
 /// Keeps the label sampling apart from the snapshot offers (the same hash
 /// otherwise).
 const LABEL_SALT: u64 = 0x6f72_6465_725f_6c62;
+/// Snapshots kept for restarts, per pool (a pool follows the current
+/// policy's state distribution).
+const RESERVOIR: usize = 4096;
 
 /// Run `slot`'s seed index after `resets` resets of a `VecEnv` of `n_slots`
 /// envs started from `base_seed`.
@@ -146,7 +149,7 @@ pub(crate) fn run_number(base_seed: u64, resets: u64, n_slots: u64, slot: usize)
 
 /// A pool of ante starts that episodes restart from.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Pool {
+enum Pool {
 	/// Late ante starts (`snapshot_min_ante` on), restarted from as they are.
 	Late,
 	/// Early ante starts (`PRACTICE_ANTES`), restarted from with a gift.
@@ -158,6 +161,8 @@ pub(crate) enum Pool {
 pub(crate) struct Reservoirs {
 	late: Vec<SimGame>,
 	practice: Vec<SimGame>,
+	/// Snapshots offered so far.
+	offered: u64,
 }
 
 impl Reservoirs {
@@ -165,24 +170,27 @@ impl Reservoirs {
 	pub(crate) fn len(&self) -> usize {
 		self.late.len() + self.practice.len()
 	}
-}
 
-impl Index<Pool> for Reservoirs {
-	type Output = Vec<SimGame>;
+	/// Keeps `snapshot` in the reservoir of its pool, where it replaces a
+	/// random entry once the reservoir is full.
+	pub(crate) fn offer(&mut self, snapshot: Snapshot, base_seed: u64) {
+		self.offered += 1;
+		let reservoir = match snapshot.pool {
+			Pool::Late => &mut self.late,
+			Pool::Practice => &mut self.practice,
+		};
+		if reservoir.len() < RESERVOIR {
+			reservoir.push(*snapshot.game);
+		} else {
+			let k = num::pick(splitmix64(self.offered ^ base_seed), RESERVOIR);
+			reservoir[k] = *snapshot.game;
+		}
+	}
 
-	fn index(&self, pool: Pool) -> &Vec<SimGame> {
+	fn pool(&self, pool: Pool) -> &[SimGame] {
 		match pool {
 			Pool::Late => &self.late,
 			Pool::Practice => &self.practice,
-		}
-	}
-}
-
-impl IndexMut<Pool> for Reservoirs {
-	fn index_mut(&mut self, pool: Pool) -> &mut Vec<SimGame> {
-		match pool {
-			Pool::Late => &mut self.late,
-			Pool::Practice => &mut self.practice,
 		}
 	}
 }
@@ -204,7 +212,6 @@ pub(crate) struct Slot {
 	ret: f32,
 	phi: f32,
 	resets: u64,
-	invalid: u64,
 	origin: Origin,
 	/// Recent build previews (reused while the build is unchanged).
 	previews: Vec<BuildPreview>,
@@ -256,7 +263,6 @@ impl Slot {
 			steps: 0,
 			ret: 0.0,
 			resets: 0,
-			invalid: 0,
 			origin: Origin::Fresh,
 			previews: Vec::new(),
 		}
@@ -278,14 +284,14 @@ impl Slot {
 		self.install(g, Origin::Fresh, &cfg.reward);
 	}
 
-	/// The game as it stands.
-	pub(crate) fn game(&self) -> &SimGame {
-		&self.g
+	/// The ante the game is in.
+	pub(crate) fn ante(&self) -> i32 {
+		self.g.run.ante
 	}
 
-	/// Number of choices that were illegal and replaced by a fallback.
-	pub(crate) fn invalid_actions(&self) -> u64 {
-		self.invalid
+	/// A copy of the game as it stands.
+	pub(crate) fn game_copy(&self) -> SimGame {
+		self.g.clone()
 	}
 
 	/// Writes the observation of the game to `row`, and keeps its ops to
@@ -328,7 +334,7 @@ impl Slot {
 		let a = if let Some(a) = a {
 			Some(a)
 		} else {
-			self.invalid += 1;
+			res.invalid = true;
 			obs::fallback(&self.g, &self.ops)
 		};
 		// The known state without a legal action (the game's own pack softlock) is
@@ -443,8 +449,8 @@ pub(crate) enum End {
 
 /// An ante start to offer the reservoir of its pool.
 pub(crate) struct Snapshot {
-	pub(crate) pool: Pool,
-	pub(crate) game: Box<SimGame>,
+	pool: Pool,
+	game: Box<SimGame>,
 }
 
 #[derive(Default)]
@@ -452,6 +458,8 @@ pub(crate) struct StepOut {
 	/// The shaped reward.
 	pub(crate) reward: f32,
 	pub(crate) end: Option<End>,
+	/// The choice was illegal and replaced by a fallback.
+	pub(crate) invalid: bool,
 	pub(crate) episode: Option<Episode>,
 	pub(crate) snapshot: Option<Snapshot>,
 	/// The joker-order label of the play taken (`obs::order_label`), if
@@ -482,8 +490,8 @@ fn start(
 	} else {
 		None
 	};
-	if let Some(pool) = pool.filter(|&pool| !reservoirs[pool].is_empty()) {
-		let from = &reservoirs[pool];
+	if let Some(pool) = pool.filter(|&pool| !reservoirs.pool(pool).is_empty()) {
+		let from = reservoirs.pool(pool);
 		let mut g = from[num::pick(splitmix64(n ^ 0xa11), from.len())].clone();
 		g.resample_hidden(&seed_string(n));
 		configure(&mut g, cfg);
