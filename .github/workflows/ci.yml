@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    # The oracle's bindings to the game's lua51.dll only compile on Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --component clippy --no-self-update
+      - run: rustup toolchain install nightly --profile minimal --component rustfmt --no-self-update
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +nightly fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo doc --no-deps -p sim
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo test --workspace
+
+  python:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          # The cache would be the 2 GB torch wheel, which downloads as fast as it restores.
+          enable-cache: false
+      - uses: Swatinem/rust-cache@v2
+      - run: uv sync --all-packages --locked
+      - run: uv run --no-sync pytest agent/tests bridge/tests
