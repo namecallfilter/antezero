@@ -1,5 +1,6 @@
-//! Shop state, buying/selling/rerolling, voucher redemption, and booster
-//! packs.
+//! The shop and `G.FUNCS.use_card` (`button_callbacks.lua`,
+//! `UI_definitions.lua` `create_card_for_shop`), voucher redemption (card.lua
+//! `redeem`), and booster packs.
 
 mod packs;
 mod state;
