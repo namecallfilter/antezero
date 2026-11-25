@@ -103,12 +103,21 @@ fn check_rates(
 	Ok(())
 }
 
-/// Steps every env with its choice (or none, to only observe) and writes the
-/// observations and, of a step, the labels. Every array is borrowed before
-/// any env changes, so a failed borrow leaves the envs as they were.
-fn step_all(
-	env: &mut VecEnv, py: Python<'_>, choices: Option<Choices<'_>>,
-) -> PyResult<Vec<StepOut>> {
+/// What `step_all` does to the envs before it writes their observations.
+#[derive(Clone, Copy)]
+enum Change<'a> {
+	/// Nothing.
+	Observe,
+	/// Every env takes its choice.
+	Step(Choices<'a>),
+	/// The env `slot` starts over on a copy of `game`.
+	SetGame { slot: usize, game: &'a Game },
+}
+
+/// Applies `change` to the envs and writes the observations and, of a step,
+/// the labels. Every array is borrowed before any env changes, so a failed
+/// borrow leaves the envs as they were.
+fn step_all(env: &mut VecEnv, py: Python<'_>, change: Change<'_>) -> PyResult<Vec<StepOut>> {
 	let n = env.slots.len();
 	let mut cur = env.cur.borrow(py, n)?;
 	let mut fin = env.fin.borrow(py, n)?;
@@ -131,6 +140,14 @@ fn step_all(
 		} else {
 			0.0
 		},
+	};
+	let choices = match change {
+		Change::Observe => None,
+		Change::Step(choices) => Some(choices),
+		Change::SetGame { slot, game } => {
+			env.slots[slot].set_game(game.g.clone(), &cfg);
+			None
+		}
 	};
 	let slots = &mut env.slots;
 	let pool = &env.pool;
@@ -327,7 +344,7 @@ impl VecEnv {
 
 	/// Re-encodes every observation.
 	fn observe(&mut self, py: Python<'_>) -> PyResult<()> {
-		step_all(self, py, None)?;
+		step_all(self, py, Change::Observe)?;
 		Ok(())
 	}
 
@@ -354,7 +371,7 @@ impl VecEnv {
 		if choices.op.len() != n || choices.cards.len() != n || choices.dest.len() != n {
 			return Err(PyValueError::new_err(format!("expected {n} actions")));
 		}
-		let res = step_all(self, py, Some(choices))?;
+		let res = step_all(self, py, Change::Step(choices))?;
 		let rew = PyArray1::from_vec(py, res.iter().map(|r| r.reward).collect());
 		let done = PyArray1::from_vec(py, res.iter().map(|r| r.end.is_some()).collect());
 		let truncated = res.iter().map(|r| r.end == Some(End::Truncated)).collect();
@@ -409,19 +426,19 @@ impl VecEnv {
 
 	/// Replaces env `i`'s game (e.g. for evaluation on fixed seeds) with a
 	/// copy of `game` that follows this env's `endless` and `allow_skip`
-	/// settings. The game must not be over.
+	/// settings. The game must not be over. If the call fails, the env keeps
+	/// its game.
 	fn set_game(&mut self, py: Python<'_>, i: usize, game: &Game) -> PyResult<()> {
 		if game.g.is_terminal() {
 			return Err(PyValueError::new_err(
 				"set_game needs a game that is not over",
 			));
 		}
-		let s = self
-			.slots
-			.get_mut(i)
-			.ok_or_else(|| PyValueError::new_err("index out of range"))?;
-		s.set_game(game.g.clone(), &self.cfg);
-		self.observe(py)
+		if i >= self.slots.len() {
+			return Err(PyValueError::new_err("index out of range"));
+		}
+		step_all(self, py, Change::SetGame { slot: i, game })?;
+		Ok(())
 	}
 
 	#[getter]
