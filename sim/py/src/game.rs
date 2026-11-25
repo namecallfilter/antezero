@@ -12,7 +12,7 @@ use sim::{Action, CardMask, Stake, canon, json};
 use crate::rows::{
 	OPS_F_SHAPE, OPS_SHAPE, ObsOptions, ObsRow, TOK_F_SHAPE, TOK_I_SHAPE, op_options,
 };
-use crate::vecenv;
+use crate::slot;
 
 pub(crate) fn parse_back(key: &str) -> PyResult<Back> {
 	match Back::from_key(key) {
@@ -264,7 +264,7 @@ impl Game {
 	/// `terminal_phi=False`).
 	#[pyo3(signature = (w_blind = 0.04, w_score = 0.02))]
 	fn potential(&self, w_blind: f32, w_score: f32) -> f32 {
-		vecenv::potential(&self.g, w_blind, w_score)
+		slot::potential(&self.g, w_blind, w_score)
 	}
 
 	#[getter]
