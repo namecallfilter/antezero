@@ -195,6 +195,26 @@ def env_game_skip_offered(g) -> bool:
     return 1 in d["ops"][: int(d["n_ops"]), 0]
 
 
+def test_a_failed_set_game_leaves_the_env_as_it_was():
+    """set_game takes the game and then writes its observation: if the
+    arrays cannot be written, the env must keep its old game, not hold one
+    that its observation does not show."""
+    env = az.VecEnv(2, threads=1)
+    seeds, rows = [env.game(i).seed for i in range(2)], env.tok_i.copy()
+    g = az.Game("REPLACED")
+    g.step_index(0)
+    env.tok_i.flags.writeable = False
+    with pytest.raises(ValueError, match="observation array is in use"):
+        env.set_game(1, g)
+    env.tok_i.flags.writeable = True
+    assert [env.game(i).seed for i in range(2)] == seeds
+    env.observe()
+    assert np.array_equal(env.tok_i, rows)
+    env.set_game(1, g)
+    assert env.game(1).seed == "REPLACED" and env.game(0).seed == seeds[0]
+    assert np.array_equal(env.tok_i[0], rows[0]) and not np.array_equal(env.tok_i[1], rows[1])
+
+
 # A real game (bridge, Steamodded) that diverged by one chip: Pair of Queens,
 # Half Joker, Banner with 4 discards, Ramen at x1.93 -> 150 x 42.46.
 RAMEN_GAME = (
