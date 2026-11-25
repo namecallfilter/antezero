@@ -6,8 +6,8 @@ use super::parse::{
 	state_of_name, text, whole,
 };
 use super::read_cards::{any_cards, cards, playing_cards};
-use crate::areas::{Hand, HandSort, Limit, Limits};
-use crate::card::Kind;
+use crate::areas::{Hand, Limit, Limits};
+use crate::card::{HandSort, Kind};
 use crate::data::{
 	Back, BlindKind, CenterSet, Enhancement, HandSet, HandType, PackKind, Planet, PlanetSet, Rank,
 	Suit, TagKind, TagSet, Voucher, VoucherSet,

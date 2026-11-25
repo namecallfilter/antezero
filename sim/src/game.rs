@@ -5,8 +5,9 @@ use std::ops::{Index, IndexMut};
 use std::slice;
 
 use crate::actions::{self, Action, ActionError};
-pub use crate::areas::{Area, Areas, Hand, HandSort, Limit, Limits};
+pub use crate::areas::{Area, Areas, Hand, Limit, Limits};
 use crate::card::CardMask;
+pub use crate::card::HandSort;
 use crate::data::{Back, HandType};
 use crate::dump::{self, DumpError};
 use crate::event::EventQueue;

@@ -1,8 +1,7 @@
 //! The card areas: `G.deck`, `G.hand`, `G.play`, `G.discard`, `G.jokers`,
 //! `G.consumeables`, the shop's areas and `G.pack_cards`.
 
-pub use crate::card::HandSort;
-use crate::card::{AnyCard, Card, CardLike, Kind, PlayingCard};
+use crate::card::{AnyCard, Card, CardLike, HandSort, Kind, PlayingCard};
 use crate::data::Joker;
 use crate::hand_eval::EvalFlags;
 use crate::rng::PseudoRandom;

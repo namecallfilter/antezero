@@ -175,7 +175,7 @@ fn hash_parts(card: Option<(Kind, &Ability)>, key: CanonKey, core: &CardCore, h:
 	(a.to_do, a.eternal(), a.perishable(), a.rental).hash(h);
 }
 
-pub(super) fn hash_card(c: &Card, h: &mut impl Hasher) {
+fn hash_card(c: &Card, h: &mut impl Hasher) {
 	hash_parts(Some((c.kind, &c.ab)), card_canon_key(c), &c.core, h);
 }
 
@@ -185,7 +185,7 @@ pub(super) fn card_hash(c: &Card) -> u64 {
 	h.finish()
 }
 
-pub(super) fn playing_card_hash(c: &PlayingCard) -> u64 {
+fn playing_card_hash(c: &PlayingCard) -> u64 {
 	let mut h = SipHasher13::new();
 	hash_parts(None, canon_key(c), &c.core, &mut h);
 	h.finish()
