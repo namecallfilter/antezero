@@ -20,7 +20,7 @@ const _: () = assert!(
 );
 
 /// The center id of a card that is not a playing card.
-pub(crate) fn of_kind(k: Kind) -> i32 {
+pub(super) fn of_kind(k: Kind) -> i32 {
 	of(k.center())
 }
 

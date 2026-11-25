@@ -2,9 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::blind::BlindScaling;
 use crate::canon::JokerField;
-use crate::card::{AnyCard, Card, CardCore, Kind, Sticker};
+use crate::card::{AnyCard, Card, CardCore, Kind, PlayingCard, Sticker};
 use crate::data::{
 	ALL_BLINDS, ALL_PLANETS, ALL_TAGS, ALL_VOUCHERS, BlindKind, Center, Edition, Enhancement,
 	HandType, Rank, Seal, TagKind, Voucher,
@@ -13,7 +12,7 @@ use crate::game::{
 	Blind, BlindSelect, BlindSlot, Game, HandLevels, HandSort, PackSlot, Round, Shop, Tags,
 };
 use crate::json::Json;
-use crate::playing_card::PlayingCard;
+use crate::round::BlindScaling;
 use crate::run::{History, Modifiers, Run, StartingParams};
 
 fn object<'key>(fields: impl IntoIterator<Item = (&'key str, Json)>) -> Json {
@@ -63,7 +62,7 @@ pub(crate) fn write(g: &Game) -> Json {
 
 /// What of `G.GAME.starting_params` holds after the run's start, as the
 /// dump writes it (without Steamodded's play and discard limits).
-pub(super) fn starting_params(p: &StartingParams) -> Json {
+fn starting_params(p: &StartingParams) -> Json {
 	object(vec![
 		("ante_scaling", p.ante_scaling.into()),
 		("no_faces", p.no_faces.into()),

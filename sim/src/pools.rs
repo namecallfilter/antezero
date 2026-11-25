@@ -1,18 +1,15 @@
 //! Pools and seeded sampling (`common_events.lua`).
 
-use crate::card::{Card, Kind};
-use crate::card_lifecycle;
-use crate::card_lifecycle::Pricing;
+use crate::card;
+use crate::card::{Card, Kind, PlayingCard, Pricing};
 use crate::data::{
 	ALL_BLINDS, ALL_BOOSTERS, ALL_JOKERS, ALL_PLANETS, ALL_SPECTRALS, ALL_TAGS, ALL_TAROTS,
-	ALL_VOUCHERS, BlindKind, Booster, Boss, Center, Edition, Enhancement, Joker, P_CARDS_SORTED,
-	Planet, PoolFlag, RARITY_POOL_1, RARITY_POOL_2, RARITY_POOL_3, RARITY_POOL_4, Rank, Rarity,
-	Spectral, Suit, TagKind, Tarot, Voucher,
+	ALL_VOUCHERS, BlindKind, Booster, Boss, Center, CenterSet, Edition, Enhancement, Joker,
+	P_CARDS_SORTED, Planet, PoolFlag, RARITY_POOL_1, RARITY_POOL_2, RARITY_POOL_3, RARITY_POOL_4,
+	Rank, Rarity, Spectral, Suit, TagKind, Tarot, Voucher,
 };
-use crate::enum_sets::CenterSet;
-use crate::event_queue::EditionTiming;
+use crate::event::EditionTiming;
 use crate::game::{Area, Areas, BlindSelect, CardSet, Game, HandLevels};
-use crate::playing_card::PlayingCard;
 use crate::rng::{Key, PseudoRandom};
 use crate::run::{History, Modifiers, Run};
 use crate::shop::Shop;
@@ -446,7 +443,7 @@ pub(crate) fn create_card(g: &mut Game, spec: NewCard) -> Card {
 			})
 		}
 	};
-	let mut card = card_lifecycle::make_card(g, kind);
+	let mut card = card::make_card(g, kind);
 	if card.kind.is_consumable() && area != Area::PackCards {
 		g.events.materialize(1.0);
 	}
@@ -469,7 +466,7 @@ pub(crate) fn create_card(g: &mut Game, spec: NewCard) -> Card {
 		if e.is_none() {
 			Pricing::new(g.shop.discount_percent, &g.areas.jokers).set_cost(&mut card, None);
 		} else {
-			card_lifecycle::set_edition(
+			card::set_edition(
 				&mut card,
 				e,
 				None,
@@ -503,7 +500,7 @@ pub(crate) fn create_playing_card(
 	};
 	let k = run.key_append_ante("front", append);
 	let (suit, rank) = random_front(rng, &k);
-	card_lifecycle::make_playing_card(areas, run.hands_played, discount_percent, suit, rank, enh)
+	card::make_playing_card(areas, run.hands_played, discount_percent, suit, rank, enh)
 }
 
 /// `pseudorandom_element(G.P_CARDS, pseudoseed(key))`: a random playing-card
@@ -525,7 +522,7 @@ pub(crate) fn create_owned(g: &mut Game, spec: NewCard<OwnedArea>) {
 		area: area.into(),
 		append,
 	});
-	card_lifecycle::add_to_deck(g, &mut c);
+	card::add_to_deck(g, &mut c);
 	match area {
 		OwnedArea::Jokers => g.areas.jokers.push(c),
 		OwnedArea::Consumables => g.areas.consumables.push(c),

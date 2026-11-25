@@ -5,18 +5,16 @@
 use std::collections::BTreeMap;
 
 use crate::areas::Cards;
-use crate::card::{AnyCard, Card, CardCore, Kind, Sticker};
+use crate::card::{AnyCard, Card, CardCore, Kind, PlayingCard, Sticker};
 use crate::data::{
 	ALL_VOUCHERS, BlindKind, Center, Edition, HandType, Joker, Seal, TagKind, Voucher,
 };
 use crate::game::{
 	Area, Areas, Blind, BlindSelect, BlindSlot, Game, Hand, HandLevels, HandSort, Tag,
 };
-use crate::packs::PackState;
-use crate::playing_card::PlayingCard;
 use crate::round::Round;
 use crate::run::{History, Run};
-use crate::shop::Shop;
+use crate::shop::{PackState, Shop};
 
 /// The canonical state: every compared value by its dotted path, as text.
 pub type Canon = BTreeMap<String, String>;

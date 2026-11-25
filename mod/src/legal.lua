@@ -1,5 +1,5 @@
 -- Legal sim action codes at the current decision point: a port of
--- Game::check / Game::legal_actions in sim/src/actions.rs, evaluated on the
+-- Game::check / Game::legal_actions in sim/src/actions/check.rs, evaluated on the
 -- live game. Consumable usability calls the game's own
 -- Card:can_use_consumeable() with each candidate selection temporarily set
 -- as G.hand.highlighted. Like the sim, move_joker/move_hand/sort are legal
@@ -95,7 +95,7 @@ local function can_use_with(c, m)
   return ok and res and true or false
 end
 
--- Port of consumable_usable in sim/src/actions.rs (area-independent parts
+-- Port of consumable_usable in sim/src/actions/check.rs (area-independent parts
 -- are inside can_use_consumeable itself).
 local function usable_masks(c)
   local out = {}

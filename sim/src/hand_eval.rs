@@ -4,10 +4,8 @@
 //! cards; the game always re-sorts the scoring hand by table position, so
 //! membership is all that matters downstream.
 
-use crate::areas::HandSort;
-use crate::data::{HandType, Rank, Suit};
-use crate::enum_sets::HandSet;
-use crate::playing_card::{PlayingCard, SuitTest};
+use crate::card::{HandSort, PlayingCard, SuitTest};
+use crate::data::{HandSet, HandType, Rank, Suit};
 
 /// The most cards [`evaluate`] takes: one bit of a `u8` mask per card.
 pub const MAX_EVAL_CARDS: usize = 8;
