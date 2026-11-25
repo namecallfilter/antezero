@@ -6,21 +6,22 @@ use std::slice;
 
 use crate::actions::{self, Action, ActionError};
 pub use crate::areas::{Area, Areas, Hand, HandSort, Limit, Limits};
-pub use crate::blind::BlindScaling;
-use crate::card_mask::CardMask;
-use crate::data::{ALL_BLINDS, Back, BlindKind, HandType, TagKind};
+use crate::card::CardMask;
+use crate::data::{Back, HandType};
 use crate::dump::{self, DumpError};
-use crate::enum_sets::HandSet;
-use crate::event_queue::EventQueue;
+use crate::event::EventQueue;
 use crate::inject::{self, Inject};
 use crate::json::Json;
-pub use crate::packs::{OpenPack, PackState};
 use crate::rng::PseudoRandom;
-pub use crate::round::{IdolCard, MailRank, Round};
-pub use crate::run::{History, Modifiers, Run, Setup, Stake, StartingParams};
-pub use crate::shop::{BOOSTER_SLOTS, PackSlot, Shop};
-pub use crate::tags::{OrbitalChoices, Tags};
-use crate::{hidden, run, scoring};
+pub use crate::round::{
+	Blind, BlindScaling, BlindSelect, BlindSlot, BlindStatus, BossesUsed, IdolCard, MailRank,
+	PerBlind, Round, SkipTags,
+};
+pub use crate::run::{
+	History, Modifiers, OrbitalChoices, Run, Setup, Stake, StartingParams, Tag, Tags,
+};
+pub use crate::shop::{BOOSTER_SLOTS, OpenPack, PackSlot, PackState, Shop};
+use crate::{round, run};
 
 /// Decision points exposed to the agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -129,130 +130,6 @@ impl State {
 	}
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BlindStatus {
-	Select,
-	Upcoming,
-	Current,
-	Defeated,
-	Skipped,
-}
-
-impl BlindStatus {
-	/// Every status, in the order above.
-	pub const ALL: [BlindStatus; 5] = [
-		BlindStatus::Select,
-		BlindStatus::Upcoming,
-		BlindStatus::Current,
-		BlindStatus::Defeated,
-		BlindStatus::Skipped,
-	];
-
-	#[must_use]
-	pub fn name(self) -> &'static str {
-		match self {
-			BlindStatus::Select => "Select",
-			BlindStatus::Upcoming => "Upcoming",
-			BlindStatus::Current => "Current",
-			BlindStatus::Defeated => "Defeated",
-			BlindStatus::Skipped => "Skipped",
-		}
-	}
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BlindSlot {
-	Small = 0,
-	Big = 1,
-	Boss = 2,
-}
-
-impl BlindSlot {
-	pub const ALL: [BlindSlot; 3] = [BlindSlot::Small, BlindSlot::Big, BlindSlot::Boss];
-
-	#[must_use]
-	pub fn of(kind: BlindKind) -> BlindSlot {
-		match kind {
-			BlindKind::Small => BlindSlot::Small,
-			BlindKind::Big => BlindSlot::Big,
-			_ => BlindSlot::Boss,
-		}
-	}
-
-	#[must_use]
-	pub fn name(self) -> &'static str {
-		match self {
-			BlindSlot::Small => "Small",
-			BlindSlot::Big => "Big",
-			BlindSlot::Boss => "Boss",
-		}
-	}
-}
-
-/// One value for each blind of an ante.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct PerBlind<T>(pub(crate) [T; BlindSlot::ALL.len()]);
-
-impl<T: Copy> PerBlind<T> {
-	/// `value` for every blind.
-	#[must_use]
-	pub fn all(value: T) -> PerBlind<T> {
-		PerBlind([value; BlindSlot::ALL.len()])
-	}
-}
-
-impl<T> PerBlind<T> {
-	/// The values, from the small blind to the boss.
-	pub fn iter(&self) -> slice::Iter<'_, T> {
-		self.0.iter()
-	}
-}
-
-impl<'table, T> IntoIterator for &'table PerBlind<T> {
-	type IntoIter = slice::Iter<'table, T>;
-	type Item = &'table T;
-
-	fn into_iter(self) -> slice::Iter<'table, T> {
-		self.iter()
-	}
-}
-
-impl<T> Index<BlindSlot> for PerBlind<T> {
-	type Output = T;
-
-	#[inline]
-	fn index(&self, slot: BlindSlot) -> &T {
-		&self.0[slot as usize]
-	}
-}
-
-impl<T> IndexMut<BlindSlot> for PerBlind<T> {
-	#[inline]
-	fn index_mut(&mut self, slot: BlindSlot) -> &mut T {
-		&mut self.0[slot as usize]
-	}
-}
-
-/// The tags for skipping the ante's small and big blind
-/// (`G.GAME.round_resets.blind_tags`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SkipTags {
-	pub small: Option<TagKind>,
-	pub big: Option<TagKind>,
-}
-
-impl SkipTags {
-	/// The tag for skipping the blind at `slot`: the boss has none.
-	#[must_use]
-	pub fn of(self, slot: BlindSlot) -> Option<TagKind> {
-		match slot {
-			BlindSlot::Small => self.small,
-			BlindSlot::Big => self.big,
-			BlindSlot::Boss => None,
-		}
-	}
-}
-
 /// `G.GAME.hands`: every poker hand's level and play counts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HandLevels(pub(crate) [HandLevel; HandType::ALL.len()]);
@@ -338,66 +215,6 @@ pub struct HandLevel {
 	pub visible: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Tag {
-	pub kind: TagKind,
-	pub triggered: bool,
-	pub orbital_hand: Option<HandType>,
-	pub id: u32,
-}
-
-/// The active blind (`G.GAME.blind`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Blind {
-	pub kind: Option<BlindKind>,
-	pub chips: f64,
-	pub dollars: f64,
-	pub mult: f64,
-	pub disabled: bool,
-	pub triggered: bool,
-	pub prepped: bool,
-	/// The Eye: hands already played this round.
-	pub eye_hands: HandSet,
-	/// The Mouth: the only allowed hand.
-	pub only_hand: Option<HandType>,
-	pub discards_sub: f64,
-	pub hands_sub: f64,
-}
-
-impl Default for Blind {
-	/// No blind (`G.GAME.blind` before one is set).
-	fn default() -> Blind {
-		Blind {
-			kind: None,
-			chips: 0.0,
-			dollars: 0.0,
-			mult: 0.0,
-			disabled: false,
-			triggered: false,
-			prepped: true,
-			eye_hands: HandSet::default(),
-			only_hand: None,
-			discards_sub: 0.0,
-			hands_sub: 0.0,
-		}
-	}
-}
-
-impl Blind {
-	/// Whether the blind is a boss (`G.GAME.blind.boss`).
-	#[inline]
-	#[must_use]
-	pub fn is_boss(&self) -> bool {
-		self.kind.is_some_and(BlindKind::is_boss)
-	}
-
-	#[inline]
-	#[must_use]
-	pub fn active(&self, k: BlindKind) -> bool {
-		self.kind == Some(k) && !self.disabled
-	}
-}
-
 /// The sets of the cards other than playing cards that `create_card` can
 /// sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -416,75 +233,6 @@ impl CardSet {
 			CardSet::Planet => "Planet",
 			CardSet::Spectral => "Spectral",
 		}
-	}
-}
-
-/// How often each blind has been the boss (`G.GAME.bosses_used`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BossesUsed([u32; ALL_BLINDS.len()]);
-
-impl Index<BlindKind> for BossesUsed {
-	type Output = u32;
-
-	#[inline]
-	fn index(&self, blind: BlindKind) -> &u32 {
-		&self.0[blind as usize]
-	}
-}
-
-impl IndexMut<BlindKind> for BossesUsed {
-	#[inline]
-	fn index_mut(&mut self, blind: BlindKind) -> &mut u32 {
-		&mut self.0[blind as usize]
-	}
-}
-
-/// The ante's blinds (`G.GAME.round_resets`' blind fields).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BlindSelect {
-	pub states: PerBlind<BlindStatus>,
-	/// The ante's boss.
-	pub boss: BlindKind,
-	pub skip_tags: SkipTags,
-	pub boss_rerolled: bool,
-	pub selected: Option<BlindKind>,
-	pub on_deck: Option<BlindSlot>,
-	pub bosses_used: BossesUsed,
-}
-
-impl Default for BlindSelect {
-	fn default() -> BlindSelect {
-		BlindSelect {
-			states: PerBlind([
-				BlindStatus::Select,
-				BlindStatus::Upcoming,
-				BlindStatus::Upcoming,
-			]),
-			boss: BlindKind::Small,
-			skip_tags: SkipTags::default(),
-			boss_rerolled: false,
-			selected: None,
-			on_deck: None,
-			bosses_used: BossesUsed::default(),
-		}
-	}
-}
-
-impl BlindSelect {
-	/// The ante's blind in `slot`.
-	#[must_use]
-	pub fn kind(&self, slot: BlindSlot) -> BlindKind {
-		match slot {
-			BlindSlot::Small => BlindKind::Small,
-			BlindSlot::Big => BlindKind::Big,
-			BlindSlot::Boss => self.boss,
-		}
-	}
-
-	/// The blind the "select" button refers to.
-	#[must_use]
-	pub fn on_deck_kind(&self) -> Option<BlindKind> {
-		self.on_deck.map(|slot| self.kind(slot))
 	}
 }
 
@@ -636,7 +384,7 @@ impl Game {
 	/// frame (Steel / Stone tallies, Stencil, Swashbuckler, Temperance, ...).
 	/// Observers call it before reading a state.
 	pub fn update_derived(&mut self) {
-		scoring::update_derived(&mut self.areas, self.run.skips);
+		round::update_derived(&mut self.areas, self.run.skips);
 	}
 
 	/// Replaces everything a player cannot know with a fresh sample, keeping
@@ -649,7 +397,7 @@ impl Game {
 	/// only, not on the hidden arrangement it replaces.
 	/// For determinized search and for restarting from snapshots.
 	pub fn resample_hidden(&mut self, seed: &str) {
-		hidden::resample(
+		run::resample(
 			&mut self.areas,
 			&self.run,
 			&self.history,

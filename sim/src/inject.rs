@@ -7,17 +7,16 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::actions::{Operands, ParseError};
-use crate::card::{Card, CardLike, Kind};
-use crate::card_lifecycle::Pricing;
+use crate::card::{Card, CardLike, Kind, Pricing};
 use crate::data::{
 	ALL_JOKERS, ALL_PLANETS, ALL_SPECTRALS, ALL_TAROTS, ALL_VOUCHERS, Edition, Enhancement, Joker,
 	Planet, Rank, Seal, Spectral, Suit, Tarot, Voucher,
 };
-use crate::event_queue::EditionTiming;
+use crate::event::EditionTiming;
 use crate::game::{Area, Areas, Game};
 use crate::pools::OwnedArea;
 use crate::shop::VoucherSource;
-use crate::{card_lifecycle, event_queue, shop};
+use crate::{card, event, shop};
 
 /// A scenario injection applied identically to both engines.
 ///
@@ -110,7 +109,7 @@ impl Inject {
 
 /// See [`Game::inject`].
 pub(crate) fn inject(g: &mut Game, i: Inject) {
-	event_queue::begin_action(&mut g.rng, &mut g.events);
+	event::begin_action(&mut g.rng, &mut g.events);
 	match i {
 		Inject::Joker {
 			joker,
@@ -134,7 +133,7 @@ pub(crate) fn inject(g: &mut Game, i: Inject) {
 			edition,
 			seal,
 		} => {
-			let mut c = card_lifecycle::make_playing_card(
+			let mut c = card::make_playing_card(
 				&mut g.areas,
 				g.run.hands_played,
 				g.shop.discount_percent,
@@ -167,15 +166,15 @@ pub(crate) fn inject(g: &mut Game, i: Inject) {
 			shop::apply_voucher(&mut g.round, &mut g.events, voucher, VoucherSource::Deck);
 		}
 	}
-	event_queue::run_queue(g);
+	event::run_queue(g);
 }
 
 /// An injected joker or consumable: made, materialized and added to the
 /// deck, with its edition, on its way into `area`.
 fn make_owned_card(g: &mut Game, kind: Kind, edition: Option<Edition>, area: OwnedArea) -> Card {
-	let mut c = card_lifecycle::make_card(g, kind);
+	let mut c = card::make_card(g, kind);
 	g.events.materialize(1.0);
-	card_lifecycle::add_to_deck(g, &mut c);
+	card::add_to_deck(g, &mut c);
 	give_edition(
 		&mut c,
 		edition,
@@ -195,7 +194,7 @@ fn give_edition(
 ) {
 	if edition.is_some() {
 		let pricing = Pricing::new(discount_percent, &areas.jokers);
-		card_lifecycle::set_edition(c, edition, Some(area), pricing, &mut areas.limits);
+		card::set_edition(c, edition, Some(area), pricing, &mut areas.limits);
 	}
 }
 

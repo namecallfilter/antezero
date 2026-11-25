@@ -1,6 +1,5 @@
 //! Build previews: outside rounds (shops, packs, blind select), the scoring
-//! capacity of the current build against the coming blinds, and what a shop
-//! or pack item would add to it.
+//! capacity of the current build against the coming blinds.
 //!
 //! Like the play candidates, everything is estimated on worlds derived from
 //! visible state only: the playing cards the player knows (deck, hand and
@@ -8,54 +7,31 @@
 //! seed taken from the ante and round, a hand is dealt against the blind
 //! (its boss effects included) and scored with a reseeded RNG. The best play
 //! of each of `PREVIEW_HANDS` sampled hands (over the `PREVIEW_PLAYS` plays
-//! with the highest joker-free estimate) gives the capacity; an item's
-//! preview repeats this with the item applied to a copy, on the first
-//! `PREVIEW_ITEM_HANDS` of the same hands (paired with the base).
+//! with the highest joker-free estimate) gives the capacity; see
+//! [`super::preview_items`] for item deltas on the same hands.
 //!
 //! Jokers are previewed in a canonical order (additive effects before
 //! multiplicative ones, then by content: see `virtual_round`), so the
 //! preview measures the build, not its current arrangement, and moving
 //! jokers around does not change (or recompute) it.
 
-use std::hash::{Hash, Hasher};
-use std::{array, iter};
-
-use super::candidates::{kicker_plays, rough_score, shortlist};
-use super::digest::{
-	SipHasher13, blinds_done, canon_key, card_hash, hand_digest, reads_money, state_key,
-};
+use super::candidates::{PREVIEW_PLAYS, kicker_plays, rough_score, shortlist};
+use super::digest::{card_hash, hand_digest};
 use super::layout::shown_hand;
-use super::{ItemZone, Zone};
 use crate::actions::Action;
-use crate::calculate_joker::LifecycleCtx;
-use crate::card::{AnyCard, Card, CardLike, Kind};
-use crate::card_mask::CardMask;
-use crate::data::{BlindKind, Edition, HandType, Joker, Spectral};
-use crate::enum_sets::HandSet;
+use crate::card::{Card, CardLike, CardMask, Kind, canon_key};
+use crate::data::{BlindKind, Edition, HandSet, HandType, Joker};
 use crate::event::Event;
 use crate::flow::FlowEvent;
-use crate::game::{Areas, BlindSelect, BlindSlot, BlindStatus, Game, Hand, Phase, Scratch, State};
-use crate::joker_lifecycle::JokerEvent;
+use crate::game::{Areas, BlindSlot, BlindStatus, Game, Hand, Phase, Scratch, State};
+use crate::joker::{JokerEvent, LifecycleCtx};
 use crate::rng::{self, Key, PseudoRandom};
-use crate::shop::VoucherSource;
-use crate::{actions, areas, blind, calculate_joker, card_lifecycle, flow, num, shop};
+use crate::{actions, areas, flow, joker, num, round};
 
 /// Hands a build preview (shops, packs, blind select) samples per blind.
 pub const PREVIEW_HANDS: usize = 4;
-/// Plays a build preview simulates per hand (the best by a cheap joker-free
-/// estimate).
-pub const PREVIEW_PLAYS: usize = 6;
-/// Recent build previews kept per env (a shop visit returns to the same
-/// build after joker moves, rerolls and packs).
-pub const PREVIEW_CACHE: usize = 4;
-
-/// Hands (of `PREVIEW_HANDS`) an item is previewed on (the first ones; the
-/// next blind is previewed on as many).
-pub const PREVIEW_ITEM_HANDS: usize = 1;
-/// Token float columns of an item's preview (see [`ItemPreview::to_columns`]).
-pub const PREVIEW_TOK: usize = 4;
 /// The bound of the previews' log-ratio features (a capacity's
-/// [`Capacity::log_ratio`], an item's [`ItemPreview::gain`]): they lie in
+/// [`Capacity::log_ratio`], an item's [`ItemPreview::gain`](super::ItemPreview::gain)): they lie in
 /// `-PREVIEW_LOG_MAX..=PREVIEW_LOG_MAX`.
 pub const PREVIEW_LOG_MAX: f64 = 4.0;
 /// The cap of the previews' capacity-ratio features ([`Capacity::ratio_feat`]).
@@ -96,68 +72,14 @@ impl Capacity {
 	}
 }
 
-/// An item's build preview: the build with the item acquired (a joker:
-/// sold) against the boss, on the same hands as without it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ItemPreview {
-	/// Log of the capacity with the item over without, within
-	/// [`PREVIEW_LOG_MAX`].
-	pub gain: f32,
-	/// The capacity ratio with the item ([`Capacity::ratio_feat`]).
-	pub ratio: f32,
-	/// The clear fraction with the item.
-	pub p_clear: f32,
-}
-
-impl ItemPreview {
-	/// Its token columns: gain, ratio, clear fraction and a 1 marking a
-	/// previewed item (an item without a preview has zeros there).
-	#[must_use]
-	pub fn to_columns(self) -> [f32; PREVIEW_TOK] {
-		[self.gain, self.ratio, self.p_clear, 1.0]
-	}
-
-	/// The preview a token's preview columns hold, or `None` if they do not
-	/// mark one (see [`ItemPreview::to_columns`]).
-	#[must_use]
-	pub fn from_columns(columns: [f32; PREVIEW_TOK]) -> Option<ItemPreview> {
-		let [gain, ratio, p_clear, mark] = columns;
-		(mark == 1.0).then_some(ItemPreview {
-			gain,
-			ratio,
-			p_clear,
-		})
-	}
-}
-
 /// One sampled hand against the boss: its best score, the plays ranked for
 /// it (reused by item previews that deal the same hand) and a digest of its
 /// cards.
 #[derive(Clone, Debug, PartialEq)]
-struct Sample {
-	best: f64,
-	plays: Vec<CardMask>,
-	digest: u64,
-}
-
-/// The capacity of a build against this ante's boss and against the next
-/// blind to play (the same blind when the boss is next), plus what is
-/// needed to preview items on the same sampled hands and a cache of the
-/// item previews already computed for this build.
-#[derive(Clone, Debug, PartialEq)]
-pub struct BuildPreview {
-	key: u64,
-	seeds: [u64; PREVIEW_HANDS],
-	pub boss: BlindKind,
-	pub next: BlindKind,
-	pub cap_boss: Capacity,
-	pub cap_next: Capacity,
-	samples: Vec<Sample>,
-	/// What a hand is worth in a round against the boss over its best play
-	/// alone (below 1 against The Eye and The Mouth): item previews, made on
-	/// single hands, are put on the same scale.
-	round_share: f64,
-	items: Vec<(u64, Option<ItemPreview>)>,
+pub(super) struct Sample {
+	pub(super) best: f64,
+	pub(super) plays: Vec<CardMask>,
+	pub(super) digest: u64,
 }
 
 // A preview renumbers the cards it orders (the game breaks ties by id) into
@@ -176,21 +98,9 @@ fn renumber(cards: &mut [impl CardLike], base: u32) {
 	}
 }
 
-fn next_blind(blind_select: &BlindSelect) -> BlindKind {
-	BlindSlot::ALL
-		.into_iter()
-		.find(|&slot| {
-			!matches!(
-				blind_select.states[slot],
-				BlindStatus::Defeated | BlindStatus::Skipped
-			)
-		})
-		.map_or(blind_select.boss, |slot| blind_select.kind(slot))
-}
-
 /// `x` clamped to `lo..=hi` as a feature; NaN, which a ratio of two
 /// overflowed (infinite) scores in endless mode gives, is 0.
-fn clamped_feat(x: f64, lo: f64, hi: f64) -> f32 {
+pub(super) fn clamped_feat(x: f64, lo: f64, hi: f64) -> f32 {
 	if x.is_nan() {
 		0.0
 	} else {
@@ -249,7 +159,7 @@ fn multiplies(c: &Card) -> bool {
 /// Applies the numeric effects of the queued events (hands, discards, hand
 /// size, ante) and drops the rest: a copy that previews a round never runs
 /// its animations.
-fn settle(v: &mut Game) {
+pub(super) fn settle(v: &mut Game) {
 	loop {
 		let pending = v.events.take_pending();
 		if pending.is_empty() {
@@ -269,7 +179,7 @@ fn settle(v: &mut Game) {
 					v.round.hands_left += 3.0;
 					v.round.discards_left = 0.0;
 				}
-				Event::Joker(JokerEvent::ChicotOuter) => blind::disable_blind(v),
+				Event::Joker(JokerEvent::ChicotOuter) => round::disable_blind(v),
 				_ => {}
 			}
 		}
@@ -335,7 +245,7 @@ pub fn virtual_round(mut v: Game, blind: BlindKind, seed: u64) -> Game {
 	v.blind_select.states[BlindSlot::of(blind)] = BlindStatus::Current;
 	v.blind_select.selected = Some(blind);
 	v.round.facing_blind = true;
-	blind::set_blind(&mut v, Some(blind));
+	round::set_blind(&mut v, Some(blind));
 	settle(&mut v);
 	// The round-start joker effects that are certain: Burglar trades the
 	// discards for three hands, Chicot disables the boss. (The others
@@ -347,7 +257,7 @@ pub fn virtual_round(mut v: Game, blind: BlindKind, seed: u64) -> Game {
 			v.areas.jokers[i].kind,
 			Kind::Joker(Joker::Burglar | Joker::Chicot)
 		) {
-			calculate_joker::calc_joker(&mut v, i, LifecycleCtx::SettingBlind {
+			joker::calc_joker(&mut v, i, LifecycleCtx::SettingBlind {
 				boss: blind.is_boss(),
 			});
 		}
@@ -377,7 +287,7 @@ pub fn virtual_round(mut v: Game, blind: BlindKind, seed: u64) -> Game {
 		v.areas.hand.cards.push(c);
 	}
 	v.areas.hand.sort();
-	blind::drawn_to_hand(&mut v);
+	round::drawn_to_hand(&mut v);
 	place_copies(&mut v);
 	v
 }
@@ -466,7 +376,7 @@ fn place_copies(v: &mut Game) {
 	renumber(&mut v.areas.jokers, PREVIEW_JOKER_IDS);
 }
 
-fn rank_plays(v: &Game) -> Vec<CardMask> {
+pub(super) fn rank_plays(v: &Game) -> Vec<CardMask> {
 	let flags = v.areas.eval_flags();
 	let nh = shown_hand(&v.areas.hand.cards).len();
 	let forced = actions::forced_mask(&v.areas.hand.cards);
@@ -492,7 +402,7 @@ fn rank_plays(v: &Game) -> Vec<CardMask> {
 	out
 }
 
-fn best_of(scratch: &mut Scratch, v: &Game, plays: &[CardMask]) -> f64 {
+pub(super) fn best_of(scratch: &mut Scratch, v: &Game, plays: &[CardMask]) -> f64 {
 	plays
 		.iter()
 		.filter_map(|&m| scratch.copy(v, &v.rng).preview_play(m).ok())
@@ -509,7 +419,9 @@ pub fn capacity(g: &Game, blind: BlindKind, seeds: &[u64]) -> Capacity {
 	capacity_samples(g, blind, seeds).0
 }
 
-fn capacity_samples(g: &Game, blind: BlindKind, seeds: &[u64]) -> (Capacity, Vec<Sample>) {
+pub(super) fn capacity_samples(
+	g: &Game, blind: BlindKind, seeds: &[u64],
+) -> (Capacity, Vec<Sample>) {
 	let (mut hands, mut chips) = (0.0, 0.0);
 	// The Eye and The Mouth are previewed on whole rounds of the sampled hands,
 	// which are kept; otherwise one copy of the game is refreshed for each.
@@ -644,270 +556,4 @@ fn mouth_round(scratch: &mut Scratch, rounds: &mut [Game]) -> f64 {
 		}
 	}
 	best
-}
-
-/// Makes the preview of `g` the front of `cache` (this env's recent
-/// previews): a cached preview of the same build is moved there and reused
-/// (with its item previews), otherwise a new one is computed and inserted
-/// (the cache keeps `PREVIEW_CACHE` entries). Returns that preview, or
-/// `None` outside shops, packs and blind select (nothing is previewed
-/// there).
-pub fn build_preview<'cache>(
-	g: &Game, cache: &'cache mut Vec<BuildPreview>,
-) -> Option<&'cache mut BuildPreview> {
-	if !matches!(g.flow.phase, Phase::Shop | Phase::Pack | Phase::BlindSelect) {
-		return None;
-	}
-	let key = state_key(g);
-	if let Some(i) = cache.iter().position(|p| p.key == key) {
-		cache[..=i].rotate_right(1);
-		return cache.first_mut();
-	}
-	// The boss and the hands played so far (both visible, both fixed while a
-	// shop is open) make the sampled hands differ between games: seeded from
-	// the ante and round alone, every game with the same cards previewed its
-	// items on the same hand.
-	let base = {
-		let mut h = SipHasher13::new();
-		(
-			g.run.ante,
-			g.run.round,
-			blinds_done(g.blind_select.states),
-			g.blind_select.boss,
-		)
-			.hash(&mut h);
-		for l in &g.hands {
-			l.played.to_bits().hash(&mut h);
-		}
-		h.finish()
-	};
-	let seeds: [u64; PREVIEW_HANDS] =
-		array::from_fn(|k| rng::splitmix64(base ^ (num::index64(k) + 1)));
-	let boss = g.blind_select.boss;
-	let next = next_blind(&g.blind_select);
-	let (cap_boss, samples) = capacity_samples(g, boss, &seeds);
-	let cap_next = if next == boss {
-		cap_boss
-	} else {
-		capacity(g, next, &seeds[..PREVIEW_ITEM_HANDS])
-	};
-	let free = samples.iter().map(|s| s.best).sum::<f64>() / num::float(samples.len());
-	let round_share = if free > 0.0 {
-		cap_boss.mean / free
-	} else {
-		1.0
-	};
-	cache.insert(0, BuildPreview {
-		key,
-		seeds,
-		boss,
-		next,
-		cap_boss,
-		cap_next,
-		samples,
-		round_share,
-		items: Vec::new(),
-	});
-	cache.truncate(PREVIEW_CACHE);
-	cache.first_mut()
-}
-
-/// The reaction of every `j` owned to what a preview just did: the growth
-/// that comes with using a planet (Constellation) or selling a card (Campfire).
-fn react(v: &mut Game, j: Joker, ctx: LifecycleCtx) {
-	for i in 0..v.areas.jokers.len() {
-		if v.areas.jokers[i].kind == Kind::Joker(j) {
-			calculate_joker::calc_joker(v, i, ctx);
-		}
-	}
-}
-
-/// Adds a bought, picked or redeemed card to the build: jokers join the
-/// joker area, planets and Black Hole are used, vouchers are redeemed. Other
-/// consumables are not previewed (`None`).
-fn acquire(v: &mut Game, mut c: Card) -> Option<()> {
-	match c.kind {
-		Kind::Joker(_) => {
-			card_lifecycle::add_to_deck(v, &mut c);
-			v.areas.jokers.push(c);
-		}
-		Kind::Planet(p) => {
-			v.hands.level_up(p.hand(), 1.0);
-			react(v, Joker::Constellation, LifecycleCtx::UsingConsumeable {
-				kind: c.kind,
-				hanged_glass: 0,
-			});
-		}
-		Kind::Spectral(Spectral::BlackHole) => {
-			for h in HandType::ALL {
-				v.hands.level_up(h, 1.0);
-			}
-		}
-		Kind::Voucher(vc) => {
-			v.history.used_vouchers.insert(vc);
-			shop::apply_voucher(&mut v.round, &mut v.events, vc, VoucherSource::Redeemed);
-		}
-		_ => return None,
-	}
-	Some(())
-}
-
-/// The hash of the item at `index` of `zone`, and whether its preview reads
-/// the money; `None` if there is no item or it is a playing card, which is
-/// never previewed.
-fn item_digest(areas: &Areas, zone: ItemZone, index: usize) -> Option<(u64, bool)> {
-	let of_card = |c: &Card| (card_hash(c), reads_money(c));
-	let of_any = |c: &AnyCard| match c {
-		AnyCard::Playing(_) => None,
-		AnyCard::Card(c) => Some(of_card(c)),
-	};
-	match zone {
-		ItemZone::ShopCard => areas.shop_jokers.get(index).and_then(of_any),
-		ItemZone::ShopVoucher => areas.shop_vouchers.get(index).map(of_card),
-		ItemZone::Pack => areas.pack_cards.get(index).and_then(of_any),
-		ItemZone::Joker => areas.jokers.get(index).map(of_card),
-		ItemZone::Consumable => areas.consumables.get(index).map(of_card),
-	}
-}
-
-/// A copy of `g` with the item at `index` of `zone` acquired (shop card:
-/// bought, consumables used at once; pack card: picked; voucher: redeemed;
-/// consumable: used; joker: sold), money effects included, or `None` if the
-/// item is not previewed.
-fn with_item(g: &Game, zone: ItemZone, index: usize) -> Option<Game> {
-	let mut v = g.clone();
-	match zone {
-		ItemZone::ShopCard => {
-			let AnyCard::Card(c) = v.areas.shop_jokers.remove(index) else {
-				return None;
-			};
-			v.run.dollars -= c.core.cost;
-			acquire(&mut v, c)?;
-		}
-		ItemZone::Pack => {
-			let AnyCard::Card(c) = v.areas.pack_cards.remove(index) else {
-				return None;
-			};
-			acquire(&mut v, c)?;
-		}
-		ItemZone::Consumable => {
-			let c = v.areas.consumables.remove(index);
-			acquire(&mut v, c)?;
-		}
-		ItemZone::ShopVoucher => {
-			let c = v.areas.shop_vouchers.remove(index);
-			v.run.dollars -= c.core.cost;
-			acquire(&mut v, c)?;
-		}
-		ItemZone::Joker => {
-			let mut c = v.areas.jokers.remove(index);
-			card_lifecycle::remove_from_deck(
-				&mut v.areas.limits,
-				&mut v.run,
-				&mut v.round,
-				&mut v.shop,
-				&mut v.events,
-				&mut c,
-			);
-			v.run.dollars += c.core.sell_cost;
-			react(&mut v, Joker::Campfire, LifecycleCtx::SellingCard);
-		}
-	}
-	settle(&mut v);
-	Some(v)
-}
-
-impl BuildPreview {
-	/// Token features of the item at `index` of `zone` (shop cards, pack
-	/// cards, vouchers, consumables, jokers): log of the capacity with the
-	/// item acquired (jokers: sold) over without, against the boss on the
-	/// same hands; the capacity ratio and clear fraction with it; and a 1
-	/// marking a previewed item. `None` for items without a preview (their
-	/// columns stay zero). Results are cached per item.
-	pub fn item_feats(&mut self, g: &Game, zone: ItemZone, index: usize) -> Option<ItemPreview> {
-		debug_assert_eq!(
-			state_key(g),
-			self.key,
-			"item_feats needs a state of the build this preview was made for"
-		);
-		let (card_hash, money) = item_digest(&g.areas, zone, index)?;
-		let item_key = {
-			let mut hasher = SipHasher13::new();
-			// A money joker's own preview reads the money (`state_key` leaves it out).
-			(
-				Zone::from(zone).id(),
-				index,
-				card_hash,
-				money.then(|| g.run.dollars.to_bits()),
-			)
-				.hash(&mut hasher);
-			hasher.finish()
-		};
-		if let Some((_, feats)) = self.items.iter().find(|(k, _)| *k == item_key) {
-			return *feats;
-		}
-		let Some(after) = with_item(g, zone, index) else {
-			self.items.push((item_key, None));
-			return None;
-		};
-		let changes_ante = after.run.ante != g.run.ante;
-		let n = PREVIEW_ITEM_HANDS.min(self.samples.len());
-		let (mut sum, mut base, mut clear, mut hands, mut chips, mut share) = (
-			0.0,
-			0.0,
-			0usize,
-			self.cap_boss.hands,
-			self.cap_boss.chips,
-			1.0,
-		);
-		let mut scratch = Scratch::default();
-		// The item's game for each hand, moved into the last one.
-		let worlds = iter::repeat_n(after, n).zip(self.seeds.iter().zip(&self.samples));
-		for (game, (&seed, sample)) in worlds {
-			let world = virtual_round(game, self.boss, seed);
-			let best = if hand_digest(&world.areas, &world.blind, &world.hands) == sample.digest {
-				best_of(&mut scratch, &world, &sample.plays)
-			} else {
-				best_of(&mut scratch, &world, &rank_plays(&world))
-			};
-			// The boss's rule on the round, unless the item disables the boss.
-			share = if world.blind.disabled {
-				1.0
-			} else {
-				self.round_share
-			};
-			hands = world.round.hands_left;
-			chips = world.blind.chips;
-			sum += best;
-			base += sample.best;
-			clear += usize::from(hands * best * share >= chips);
-		}
-		let n = num::float(n.max(1));
-		let with = Capacity {
-			mean: sum / n * share,
-			hands,
-			chips,
-			p_clear: num::float(clear) / n,
-		};
-		// The change of capacity (hands x score), so Grabber and Troubadour count; over the target when the item
-		// moves this boss's own target (Chicot). Hieroglyph and Petroglyph lower the ante instead: the run's last
-		// boss is as far as before, so their gain is what they cost (the ratio column shows the nearer target).
-		let target = if changes_ante {
-			1.0
-		} else {
-			self.cap_boss.chips.max(1.0) / chips.max(1.0)
-		};
-		let feats = ItemPreview {
-			gain: clamped_feat(
-				((with.hands * sum / n + 1.0) / (self.cap_boss.hands * base / n + 1.0) * target)
-					.ln(),
-				-PREVIEW_LOG_MAX,
-				PREVIEW_LOG_MAX,
-			),
-			ratio: with.ratio_feat(),
-			p_clear: num::feat(with.p_clear),
-		};
-		self.items.push((item_key, Some(feats)));
-		Some(feats)
-	}
 }

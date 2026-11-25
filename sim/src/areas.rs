@@ -1,12 +1,12 @@
 //! The card areas: `G.deck`, `G.hand`, `G.play`, `G.discard`, `G.jokers`,
 //! `G.consumeables`, the shop's areas and `G.pack_cards`.
 
-use crate::card::{AnyCard, Card, CardLike, Kind};
+pub use crate::card::HandSort;
+use crate::card::{AnyCard, Card, CardLike, Kind, PlayingCard};
 use crate::data::Joker;
 use crate::hand_eval::EvalFlags;
-use crate::playing_card::PlayingCard;
 use crate::rng::PseudoRandom;
-use crate::{calculate_joker, num};
+use crate::{card, num};
 
 /// A card area (`G.jokers`, `G.hand`, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,13 +88,6 @@ impl Pile {
 			Pile::Discard => "discard",
 		}
 	}
-}
-
-/// How `G.hand` sorts (`G.hand.config.sort`: 'desc' by rank or 'suit desc').
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum HandSort {
-	Rank,
-	Suit,
 }
 
 /// `G.hand`: the cards held, the hand size and the sort order.
@@ -432,7 +425,7 @@ impl Areas {
 	#[inline]
 	#[must_use]
 	pub fn has_joker(&self, j: Joker) -> bool {
-		calculate_joker::has_joker(&self.jokers, j)
+		card::has_joker(&self.jokers, j)
 	}
 
 	/// Whether a `j` is in the joker area, debuffed or not.

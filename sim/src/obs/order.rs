@@ -12,7 +12,7 @@
 
 use super::candidates::{PlayPreview, Scenarios, preview_in};
 use super::{MAX_REARRANGES, OP_ORDER_GAIN, Op, OpKind, PREVIEW_SAMPLES, hidden_scoring_state};
-use crate::card_mask::CardMask;
+use crate::card::CardMask;
 use crate::data::Joker;
 use crate::game::{Areas, Flow, Game, Phase, Scratch};
 use crate::num;

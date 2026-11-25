@@ -2,11 +2,10 @@
 
 use std::hash::{Hash, Hasher};
 
-use crate::card::{Ability, Card, CardCore, Kind};
+use crate::card::{Ability, CanonKey, Card, CardCore, CardFace, Kind, PlayingCard, canon_key};
 use crate::data::{Edition, Enhancement, Joker, Suit, Voucher};
 use crate::game::{Areas, Blind, BlindSlot, BlindStatus, Game, HandLevels, HandSort, PerBlind};
 use crate::num;
-use crate::playing_card::PlayingCard;
 
 /// SipHash-1-3 with a zero key over the bytes written: what
 /// `DefaultHasher::new()` computes today. The digests seed the previews'
@@ -103,58 +102,7 @@ pub(super) fn blinds_done(states: PerBlind<BlindStatus>) -> [bool; BlindSlot::AL
 	BlindSlot::ALL.map(|slot| matches!(states[slot], BlindStatus::Defeated | BlindStatus::Skipped))
 }
 
-/// What a player sees of a playing card's face (never its id).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct CardFace {
-	/// 0 for a Stone card, which shows no suit or rank.
-	pub suit: u8,
-	/// The rank id (0 for a Stone card).
-	pub rank: u8,
-	pub enhancement: u8,
-	/// [`Edition::id`].
-	pub edition: u8,
-	/// 0 for none, else 1 + the seal.
-	pub seal: u8,
-	/// The bits of Hiker's bonus.
-	pub perma_bonus: u64,
-}
-
-impl CardFace {
-	pub(crate) fn of(c: &PlayingCard) -> CardFace {
-		let (suit, rank) = if c.is_stone() {
-			(0, 0)
-		} else {
-			(c.suit as u8, c.rank.id())
-		};
-		CardFace {
-			suit,
-			rank,
-			enhancement: c.enhancement as u8,
-			edition: Edition::id(c.core.edition),
-			seal: c.seal.map_or(0, |s| s as u8 + 1),
-			perma_bonus: c.perma_bonus.to_bits(),
-		}
-	}
-}
-
-/// The visible content of a playing card: the sort key of the canonical
-/// pool order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct CanonKey {
-	face: CardFace,
-	played_this_ante: bool,
-	times_played: u32,
-}
-
-pub(crate) fn canon_key(c: &PlayingCard) -> CanonKey {
-	CanonKey {
-		face: CardFace::of(c),
-		played_this_ante: c.played_this_ante,
-		times_played: c.times_played,
-	}
-}
-
-/// [`canon_key`]'s values for a card that is not a playing card: its
+/// [`crate::card::canon_key`]'s values for a card that is not a playing card: its
 /// edition, and constants for the rest (Spades, rank id 0, no enhancement,
 /// no seal, no bonus, never played).
 fn card_canon_key(c: &Card) -> CanonKey {

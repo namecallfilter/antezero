@@ -1,11 +1,10 @@
-use super::preview::PREVIEW_TOK;
 use super::{Zone, center};
+use crate::card::PlayingCard;
 use crate::data::{
 	ALL_BACKS, ALL_BLINDS, ALL_TAGS, Edition, Enhancement, HandType, Rank, Seal, Suit,
 };
 use crate::game::{Areas, BlindSlot, Phase};
-use crate::playing_card::PlayingCard;
-use crate::tags::Tags;
+use crate::run::Tags;
 use crate::{STAKES, num};
 
 /// Maximum tokens per observation. Tokens past it are dropped (the deck and
@@ -14,6 +13,9 @@ pub const MAX_TOKENS: usize = 200;
 /// Categorical features per token: zone, center, suit, rank, enhancement,
 /// edition, seal, slot, aux.
 pub const TOK_INT: usize = 9;
+/// Token float columns of an item's preview (see
+/// [`ItemPreview::to_columns`](super::ItemPreview::to_columns)).
+pub const PREVIEW_TOK: usize = 4;
 /// Continuous features per token: 26 card features, then the item's build
 /// preview (`TOK_PREVIEW..`, see `BuildPreview::item_feats`).
 pub const TOK_FLOAT: usize = TOK_PREVIEW + PREVIEW_TOK;

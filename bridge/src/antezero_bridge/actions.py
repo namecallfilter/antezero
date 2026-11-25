@@ -1,4 +1,4 @@
-"""The sim's action vocabulary (``sim/src/actions.rs``) in Python.
+"""The sim's action vocabulary (``sim/src/actions/parse.rs``) in Python.
 
 Text codes are exactly those of the Rust ``Action`` ``Display`` / ``FromStr``
 (also used in history files), with the same strict grammar. Hand-card

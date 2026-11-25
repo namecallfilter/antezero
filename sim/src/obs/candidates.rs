@@ -3,17 +3,18 @@
 
 use std::collections::HashSet;
 
-use super::digest::CardFace;
 use super::layout::shown_hand;
-use super::preview::PREVIEW_PLAYS;
 use crate::actions::Action;
-use crate::card_mask::CardMask;
+use crate::card::{CardFace, CardMask};
 use crate::data::{HandType, Joker};
 use crate::game::{Areas, Blind, Game, Hand, HandLevels, Phase, Scratch};
 use crate::hand_eval::EvalFlags;
 use crate::rng::{self, PseudoRandom};
-use crate::{areas, blind, hand_eval, num};
+use crate::{areas, hand_eval, num, round};
 
+/// Plays a build preview simulates per hand (the best by a cheap joker-free
+/// estimate).
+pub const PREVIEW_PLAYS: usize = 6;
 /// Plays previewed per decision for candidates (ranked by a cheap
 /// joker-free estimate first).
 pub const PREVIEW_BUDGET: usize = 64;
@@ -116,7 +117,7 @@ pub(super) fn rough_score(
 	let top = hand_eval::evaluate(&cards[..n], flags)
 		.top
 		.expect("a play of at least one card is a hand");
-	if blind::debuffs_play(blind, n, top.hand) {
+	if round::debuffs_play(blind, n, top.hand) {
 		return Rough {
 			mask,
 			estimate: 0.0,
