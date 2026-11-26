@@ -89,7 +89,14 @@ def test_action_heads_registry_and_logp():
                 assert "dst_q.0.weight" in sd
 
 
-def test_interval_logging_csvs(tmp_path):
+def test_interval_logging_csvs_and_wb(tmp_path):
+    class FakeWB:
+        def __init__(self):
+            self.logged = []
+
+        def log(self, d, step=None):
+            self.logged.append((step, d))
+
     cfg = preset("smoke")
     cfg.name = "interval_test"
     cfg.run_dir = str(tmp_path)
@@ -108,11 +115,13 @@ def test_interval_logging_csvs(tmp_path):
         rows = list(csv.DictReader(f))
     assert len(rows) == 24  # 12 hands * 2 updates
 
-    # IntervalLogger.flush directly
+    # Also test IntervalLogger.flush directly with FakeWB
     env = make_env(cfg, num_envs=4)
     il = IntervalLogger(tmp_path, cfg.env.backs, cfg.env.stakes)
     il.add_episodes([(0, "SEED", "b_red", 1, 2, True, 6, 50, 1.0, False, False)])
-    d = il.flush(1000, 10000, env)
+    wb = FakeWB()
+    d = il.flush(1000, 10000, env, wb=wb)
+    assert len(wb.logged) == 1
     assert "completion/stake1_ge1" in d
     assert d["completion/stake1_ge1"] == 1.0
     assert "hands/high_card_per_game" in d

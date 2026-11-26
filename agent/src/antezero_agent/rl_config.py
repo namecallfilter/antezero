@@ -19,6 +19,8 @@ class Config:
     save_every: int = 100
     keep_ckpt_every: int = 1000
     total_steps: int = 1_966_080_000
+    wandb: str = ""
+    wandb_entity: str = ""
 
     # ---- environment -------------------------------------------------------------------------------------------------
     num_envs: int = 512

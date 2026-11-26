@@ -486,6 +486,38 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
 
     last: dict = {}
     completed = start_update
+    wb = None
+    if cfg.wandb:
+        import wandb
+
+        wb = wandb.init(
+            entity=cfg.wandb_entity,
+            project=cfg.wandb,
+            name=f"antezero-{cfg.name}",
+            group="antezero",
+            id=cfg.wandb_id or f"antezero-{cfg.name}",
+            resume="allow",
+            config=dataclasses.asdict(cfg),
+            dir=str(run_dir),
+        )
+        if not wb.resumed and log_path.stat().st_size > 0:
+            with open(log_path, newline="") as rf:
+                for r in csv.DictReader(rf):
+                    wb.log(
+                        {
+                            f"train/{k}": float(v)
+                            for k, v in r.items()
+                            if k not in ("update", "stakes") and v not in ("", "nan", "None")
+                        },
+                        step=int(r["update"]),
+                    )
+    w_groups = [
+        (
+            "weights/rms_muon" if isinstance(o, torch.optim.Muon) else "weights/rms_adam",
+            [q for g in o.param_groups for q in g["params"]],
+        )
+        for o in getattr(opt, "opts", [opt])
+    ]
     combo_recent: dict[tuple[str, int], deque[int]] = {}
     interval_logger = IntervalLogger(run_dir, cfg.env.backs, cfg.env.stakes)
     if ck is not None:
@@ -717,6 +749,26 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
                     last = row
                     log_w.writerow(row)
                     log_f.flush()
+                    if wb is not None:
+                        wb_d = {
+                            f"train/{k}": float(v)
+                            for k, v in row.items()
+                            if k not in ("update", "stakes") and v is not None and not (isinstance(v, float) and math.isnan(v))
+                        }
+                        with torch.no_grad():
+                            for k_, ps in w_groups:
+                                if ps:
+                                    wb_d[k_] = math.sqrt(
+                                        float(torch.stack([q.float().square().sum() for q in ps]).sum())
+                                        / sum(q.numel() for q in ps)
+                                    )
+                        if cfg.ppo.kl_controller and cfg.ppo.target_kl > 0:
+                            wb_d["train/kl_factor"] = kl_ctl["m"]
+                        for (deck, stake_), q in combo_recent.items():
+                            if q:
+                                d_short = deck[2:] if deck.startswith("b_") else deck
+                                wb_d[f"combo/{d_short}_{stake_}"] = float(np.mean(q))
+                        wb.log(wb_d, step=row["update"])
                     if len(set(cfg.env.backs)) * len(cfg.env.stakes) > 1:
                         with open(run_dir / "cells.jsonl", "a") as f:
                             f.write(json.dumps({"update": update + 1, **cells}) + "\n")
@@ -743,7 +795,7 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
                             (run_dir / "config.json").write_text(cfg.to_json())
                     completed = update + 1
                     if cfg.log_interval_updates and completed % cfg.log_interval_updates == 0:
-                        interval_logger.flush(completed, steps, env)
+                        interval_logger.flush(completed, steps, env, wb=wb)
                     if cfg.save_every and completed % cfg.save_every == 0:
                         save(completed)
                         # Every saved checkpoint is kept (an average of them beats the last one), whether or not it is
@@ -756,17 +808,27 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
                         with open(run_dir / "eval.jsonl", "a") as f:
                             f.write(json.dumps({"update": completed, "steps": steps, **res}) + "\n")
                         print(f"[eval {completed}] {res['summary']}", flush=True)
+                        if wb is not None and isinstance(res.get("summary"), dict):
+                            ev_d = {
+                                f"eval/{k}": float(v)
+                                for k, v in res["summary"].items()
+                                if isinstance(v, (int, float)) and not math.isnan(v)
+                            }
+                            if ev_d:
+                                wb.log(ev_d, step=completed)
                     if stop_requested or (run_dir / "STOP").exists():
                         if (run_dir / "STOP").exists():
                             (run_dir / "STOP").unlink()
                         break
             if cfg.log_interval_updates and completed > interval_logger.last_flushed_update:
-                interval_logger.flush(completed, steps, env)
+                interval_logger.flush(completed, steps, env, wb=wb)
             save(completed)
             if completed >= n_updates and not stop_requested:
                 print("done", flush=True)
     finally:
         signal.signal(signal.SIGTERM, prev_sigterm)
+        if wb is not None:
+            wb.finish(exit_code=143 if stop_requested else 0)
     return last
 
 

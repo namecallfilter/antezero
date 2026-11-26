@@ -202,6 +202,14 @@ class PlayStats:
                 "play_blue_kept": self.blue_kept / self.blue_held if self.blue_held else nan,
                 "play_upgrade": self.upgraded[:12].sum() / nd if nd else nan}
 
+    def wandb(self):
+        n = max(1, self.plays)
+        out = {f"plays/declared_{nm.lower().replace(' ', '_')}": self.declared[k] / n
+               for k, nm in enumerate(self.NAMES)}
+        out.update({f"plays/upgraded_{nm.lower().replace(' ', '_')}": self.upgraded[k] / self.declared[k]
+                    for k, nm in enumerate(self.NAMES[:12]) if self.declared[k]})
+        return out
+
 
 def _fmt(v):
     if isinstance(v, float):
@@ -210,7 +218,7 @@ def _fmt(v):
 
 
 class RunLogger:
-    """log.csv rows of named values, and the interval tables written at each checkpoint."""
+    """log.csv (+ W&B) rows of named values, and the interval tables written at each checkpoint."""
 
     def __init__(self, run_dir, cfg_dict, opt, resume):
         self.run = run_dir
@@ -223,13 +231,31 @@ class RunLogger:
             self.cols = open(run_dir / "log.csv").readline().strip().split(",")
         self.logf = open(run_dir / "log.csv", "w" if self.new else "a", newline="")
         self.log = csv.writer(self.logf)
+        self.wb = None
+        if cfg_dict.get("wandb"):
+            import wandb
+            name = cfg_dict["name"]
+            self.wb = wandb.init(entity=cfg_dict.get("wandb_entity") or None, project=cfg_dict["wandb"],
+                                 name=f"balatro-{name}", id=f"balatro-{name}", resume="allow", config=cfg_dict,
+                                 dir=str(run_dir))
+        self.w_groups = [("weights/rms_muon" if isinstance(o, torch.optim.Muon) else "weights/rms_adam",
+                          [q for g in o.param_groups for q in g["params"]]) for o in opt.opts]
 
-    def write(self, row):
+    def write(self, row, extra_wb=None):
         if self.cols is None:
             self.cols = list(row)
             self.log.writerow(self.cols)
         self.log.writerow([_fmt(row.get(k, float("nan"))) for k in self.cols])
         self.logf.flush()
+        if self.wb:
+            d = {f"train/{k}": float(v) for k, v in row.items() if k != "update" and not
+                 (isinstance(v, float) and math.isnan(v))}
+            with torch.no_grad():
+                for k, ps in self.w_groups:
+                    if ps:
+                        d[k] = math.sqrt(float(torch.stack([q.float().square().sum() for q in ps]).sum())
+                                         / sum(q.numel() for q in ps))
+            self.wb.log({**d, **(extra_wb or {})}, step=row["update"])
 
     def _append(self, name, header, rows):
         new = not (self.run / name).exists()
@@ -259,7 +285,23 @@ class RunLogger:
                    "games": {f"{d}/{s}": n for (d, s), n in combos.games.items()},
                    "wins": {f"{d}/{s}": n for (d, s), n in combos.wins.items()}},
                   open(self.run / "curriculum.json", "w"), indent=1)
+        if self.wb:
+            per = {f"combo/{d[2:] if d.startswith('b_') else d}_{s}": float(np.mean([w for w, _ in q]))
+                   for (d, s), q in combos.recent.items()}
+            for st in ("tarot", "planet", "spectral"):
+                per[f"consumables/{st}_used_per_game"] = sum(
+                    v for (k, e), v in cc.items() if k[1] == st and e in ("used", "buy_use", "pack_pick")) / max(1, n_g)
+                per[f"consumables/{st}_sold_per_game"] = sum(
+                    v for (k, e), v in cc.items() if k[1] == st and e == "sold") / max(1, n_g)
+            for k, nm in enumerate(HANDS):
+                per[f"hands/{nm.lower().replace(' ', '_')}_per_game"] = hs[k][0] / max(1, n_g)
+            for deck, b in best.items():
+                per[f"best/{deck[2:] if deck.startswith('b_') else deck}_stake"] = b["stake"]
+            for st in completion.wins:
+                for k in (1, 10, 100, 1000):
+                    per[f"completion/stake{st}_ge{k}"] = completion.coverage(st, k)
+            self.wb.log(per, step=update)
 
     def finish(self, stopped=False):
-        """Ends the run's logging; `stopped`: training was stopped (SIGTERM) before its budget."""
-        self.logf.flush()
+        if self.wb:
+            self.wb.finish(exit_code=143 if stopped else 0)

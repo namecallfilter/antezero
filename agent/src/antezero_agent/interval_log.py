@@ -86,7 +86,7 @@ class IntervalLogger:
         hits = sum(1 for d in self.backs if self.combo_wins.get((d, stake), 0) >= threshold)
         return hits / n_decks
 
-    def flush(self, update: int, steps: int, env) -> dict[str, float]:
+    def flush(self, update: int, steps: int, env, wb=None) -> dict[str, float]:
         if hasattr(env, "pop_interval_stats"):
             st = env.pop_interval_stats()
         else:
@@ -162,6 +162,9 @@ class IntervalLogger:
         for st_ in stakes_seen:
             for k_ in (1, 10, 100, 1000):
                 wb_dict[f"completion/stake{st_}_ge{k_}"] = self._coverage(st_, k_)
+
+        if wb is not None and wb_dict:
+            wb.log(wb_dict, step=update)
 
         self.interval_games = 0
         self.interval_wins = 0

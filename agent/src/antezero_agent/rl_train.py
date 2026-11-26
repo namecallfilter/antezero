@@ -330,7 +330,7 @@ def main(argv=None):
                "softlocks_avoided": softlocks, "blinds_attempted": st["blinds_attempted"],
                "jokers_won1": completion.coverage(stake, 1), "jokers_won100": completion.coverage(stake, 100),
                **plays.row()}
-        logger.write(row)
+        logger.write(row, plays.wandb() if logger.wb else None)
         plays.reset()
         if cfg.compile and st["update"] <= 2:
             print(f"update {st['update']}: {SP.summary()}", flush=True)
