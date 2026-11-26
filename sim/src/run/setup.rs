@@ -275,6 +275,9 @@ pub struct Run {
 	/// `G.GAME.win_notified`: the run was won.
 	pub(crate) win_notified: bool,
 	pub last_hand_score: f64,
+	pub last_hand_chips: f64,
+	pub last_hand_mult: f64,
+	pub earned: f64,
 }
 
 impl Default for Run {
@@ -299,6 +302,9 @@ impl Default for Run {
 			won: false,
 			win_notified: false,
 			last_hand_score: 0.0,
+			last_hand_chips: 0.0,
+			last_hand_mult: 0.0,
+			earned: 0.0,
 		}
 	}
 }

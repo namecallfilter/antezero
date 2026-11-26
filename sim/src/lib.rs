@@ -11,6 +11,7 @@
 
 pub mod actions;
 mod areas;
+pub mod balatro;
 pub mod canon;
 pub mod card;
 mod consumables;

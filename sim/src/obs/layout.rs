@@ -30,6 +30,10 @@ pub const GLOB_INT: usize = 10;
 /// edition and seal counts, size, the build preview's capacities) and of
 /// the discard pile (52 counts).
 pub const GLOB_FLOAT: usize = 216;
+/// Extended global floats when `obs_v2` is enabled: appends
+/// `last_hand_score`, `last_hand_chips`, `last_hand_mult`, and
+/// `last_blind_share`.
+pub const GLOB_FLOAT_V2: usize = 220;
 pub const MAX_OPS: usize = 96;
 /// Maximum scored play candidates per decision (the bindings reject larger
 /// requests; [`ops`](fn@super::ops) also never lets them crowd out other ops).
@@ -199,6 +203,17 @@ impl ObsBuf {
 			tok_f: vec![0.0; MAX_TOKENS * TOK_FLOAT],
 			glob_i: vec![0; GLOB_INT],
 			glob_f: vec![0.0; GLOB_FLOAT],
+		}
+	}
+
+	/// Zeroed buffers sized for `obs_v2` (`GLOB_FLOAT_V2` global floats).
+	#[must_use]
+	pub fn new_v2() -> ObsBuf {
+		ObsBuf {
+			tok_i: vec![0; MAX_TOKENS * TOK_INT],
+			tok_f: vec![0.0; MAX_TOKENS * TOK_FLOAT],
+			glob_i: vec![0; GLOB_INT],
+			glob_f: vec![0.0; GLOB_FLOAT_V2],
 		}
 	}
 

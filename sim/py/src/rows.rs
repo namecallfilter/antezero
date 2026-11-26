@@ -65,6 +65,18 @@ pub(crate) struct ObsOptions {
 	pub previews: bool,
 	/// The gain column of the joker-move ops (`obs::order_gain`).
 	pub order_gain: bool,
+	/// Extended `obs_v2` global features (`GLOB_FLOAT_V2`).
+	pub obs_v2: bool,
+}
+
+impl ObsOptions {
+	pub(crate) fn glob_float(self) -> usize {
+		if self.obs_v2 {
+			obs::GLOB_FLOAT_V2
+		} else {
+			obs::GLOB_FLOAT
+		}
+	}
 }
 
 impl Rows<'_> {
@@ -124,6 +136,17 @@ impl Default for ObsRow {
 }
 
 impl ObsRow {
+	pub fn new(obs_v2: bool) -> ObsRow {
+		ObsRow {
+			obs: if obs_v2 {
+				ObsBuf::new_v2()
+			} else {
+				ObsBuf::new()
+			},
+			..ObsRow::default()
+		}
+	}
+
 	pub fn rows(&mut self) -> Rows<'_> {
 		Rows {
 			obs: self.obs.as_mut(),
@@ -190,12 +213,12 @@ pub(crate) struct ObsGuards<'py> {
 }
 
 impl ObsArrays {
-	pub(crate) fn zeros(py: Python<'_>, n: usize) -> ObsArrays {
+	pub(crate) fn zeros(py: Python<'_>, n: usize, glob_float: usize) -> ObsArrays {
 		ObsArrays {
 			tok_i: PyArray3::zeros(py, rows_of(n, TOK_I_SHAPE), /* is_fortran= */ false).unbind(),
 			tok_f: PyArray3::zeros(py, rows_of(n, TOK_F_SHAPE), /* is_fortran= */ false).unbind(),
 			glob_i: PyArray2::zeros(py, [n, obs::GLOB_INT], /* is_fortran= */ false).unbind(),
-			glob_f: PyArray2::zeros(py, [n, obs::GLOB_FLOAT], /* is_fortran= */ false).unbind(),
+			glob_f: PyArray2::zeros(py, [n, glob_float], /* is_fortran= */ false).unbind(),
 			ops: PyArray3::zeros(py, rows_of(n, OPS_SHAPE), /* is_fortran= */ false).unbind(),
 			ops_f: PyArray3::zeros(py, rows_of(n, OPS_F_SHAPE), /* is_fortran= */ false).unbind(),
 			n_ops: PyArray1::zeros(py, [n], /* is_fortran= */ false).unbind(),
@@ -204,12 +227,14 @@ impl ObsArrays {
 		}
 	}
 
-	pub(crate) fn borrow<'py>(&self, py: Python<'py>, n: usize) -> PyResult<ObsGuards<'py>> {
+	pub(crate) fn borrow<'py>(
+		&self, py: Python<'py>, n: usize, glob_float: usize,
+	) -> PyResult<ObsGuards<'py>> {
 		Ok(ObsGuards {
 			tok_i: borrow(&self.tok_i, py, &rows_of(n, TOK_I_SHAPE))?,
 			tok_f: borrow(&self.tok_f, py, &rows_of(n, TOK_F_SHAPE))?,
 			glob_i: borrow(&self.glob_i, py, &[n, obs::GLOB_INT])?,
-			glob_f: borrow(&self.glob_f, py, &[n, obs::GLOB_FLOAT])?,
+			glob_f: borrow(&self.glob_f, py, &[n, glob_float])?,
 			ops: borrow(&self.ops, py, &rows_of(n, OPS_SHAPE))?,
 			ops_f: borrow(&self.ops_f, py, &rows_of(n, OPS_F_SHAPE))?,
 			n_ops: borrow(&self.n_ops, py, &[n])?,
@@ -222,12 +247,14 @@ impl ObsArrays {
 impl ObsGuards<'_> {
 	/// The rows of every env (the shapes were checked, so there is one per
 	/// env).
-	pub(crate) fn rows(&mut self) -> PyResult<impl IndexedParallelIterator<Item = Rows<'_>>> {
+	pub(crate) fn rows(
+		&mut self, glob_float: usize,
+	) -> PyResult<impl IndexedParallelIterator<Item = Rows<'_>>> {
 		let rows = slice(&mut self.tok_i)?
 			.par_chunks_mut(row_len(TOK_I_SHAPE))
 			.zip(slice(&mut self.tok_f)?.par_chunks_mut(row_len(TOK_F_SHAPE)))
 			.zip(slice(&mut self.glob_i)?.par_chunks_mut(obs::GLOB_INT))
-			.zip(slice(&mut self.glob_f)?.par_chunks_mut(obs::GLOB_FLOAT))
+			.zip(slice(&mut self.glob_f)?.par_chunks_mut(glob_float))
 			.zip(slice(&mut self.ops)?.par_chunks_mut(row_len(OPS_SHAPE)))
 			.zip(slice(&mut self.ops_f)?.par_chunks_mut(row_len(OPS_F_SHAPE)))
 			.zip(slice(&mut self.n_ops)?.par_iter_mut())
