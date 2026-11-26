@@ -28,6 +28,12 @@ struct IdTables {
 	voucher_by_alpha: [Voucher; N_VOUCHER_KEYS],
 }
 
+/// A position in one of the sorted key lists, all of which are shorter than
+/// 300, as an id.
+fn id16(n: usize) -> u16 {
+	u16::try_from(n).expect("the key lists hold fewer than 300 keys")
+}
+
 fn build_tables() -> IdTables {
 	let mut t = IdTables {
 		center_id: [0; CENTER_COUNT],
@@ -42,7 +48,7 @@ fn build_tables() -> IdTables {
 	let mut backs: Vec<Back> = ALL_BACKS.to_vec();
 	backs.sort_by_key(|b| b.key());
 	for (rank, b) in backs.into_iter().enumerate() {
-		t.back_id[b as usize] = u16::try_from(rank).unwrap_or(0);
+		t.back_id[b as usize] = id16(rank);
 	}
 
 	let mut c_centers: Vec<Center> = ALL_TAROTS
@@ -54,26 +60,26 @@ fn build_tables() -> IdTables {
 		.collect();
 	c_centers.sort_by_key(|c| c.key());
 	for (rank, c) in c_centers.into_iter().enumerate() {
-		t.center_id[c.index()] = u16::try_from(16 + rank).unwrap_or(0);
+		t.center_id[c.index()] = id16(16 + rank);
 	}
 
 	let mut jokers: Vec<Joker> = ALL_JOKERS.to_vec();
 	jokers.sort_by_key(|j| j.key());
 	for (rank, j) in jokers.into_iter().enumerate() {
 		t.joker_by_alpha[rank] = j;
-		t.center_id[Center::Joker(j).index()] = u16::try_from(74 + rank).unwrap_or(0);
+		t.center_id[Center::Joker(j).index()] = id16(74 + rank);
 	}
 
 	let mut enhs: Vec<Enhancement> = Enhancement::POOL.to_vec();
 	enhs.sort_by_key(|e| e.key());
 	for (rank, e) in enhs.into_iter().enumerate() {
-		t.center_id[Center::Enhanced(e).index()] = u16::try_from(224 + rank).unwrap_or(0);
+		t.center_id[Center::Enhanced(e).index()] = id16(224 + rank);
 	}
 
 	let mut boosters: Vec<Booster> = ALL_BOOSTERS.to_vec();
 	boosters.sort_by_key(|b| b.key());
 	for (rank, b) in boosters.into_iter().enumerate() {
-		t.center_id[Center::Booster(b).index()] = u16::try_from(232 + rank).unwrap_or(0);
+		t.center_id[Center::Booster(b).index()] = id16(232 + rank);
 	}
 
 	let mut vouchers: Vec<Voucher> = ALL_VOUCHERS.to_vec();
@@ -81,19 +87,19 @@ fn build_tables() -> IdTables {
 	for (rank, v) in vouchers.into_iter().enumerate() {
 		t.voucher_alpha[v as usize] = rank;
 		t.voucher_by_alpha[rank] = v;
-		t.center_id[Center::Voucher(v).index()] = u16::try_from(267 + rank).unwrap_or(0);
+		t.center_id[Center::Voucher(v).index()] = id16(267 + rank);
 	}
 
 	let mut blinds: Vec<BlindKind> = ALL_BLINDS.to_vec();
 	blinds.sort_by_key(|b| b.key());
 	for (rank, b) in blinds.into_iter().enumerate() {
-		t.blind_id[b as usize] = u16::try_from(rank).unwrap_or(0);
+		t.blind_id[b as usize] = id16(rank);
 	}
 
 	let mut tags: Vec<TagKind> = ALL_TAGS.to_vec();
 	tags.sort_by_key(|tk| tk.key());
 	for (rank, tk) in tags.into_iter().enumerate() {
-		t.tag_id[tk as usize] = u16::try_from(rank).unwrap_or(0);
+		t.tag_id[tk as usize] = id16(rank);
 	}
 	t
 }

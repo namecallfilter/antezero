@@ -106,7 +106,7 @@ fn build_straight_mins() -> [Vec<u16>; 4] {
 				}
 			}
 			if minimal {
-				mins[mode].push(u16::try_from(x).unwrap_or(0));
+				mins[mode].push(u16::try_from(x).expect("a set of the 13 ranks fits 13 bits"));
 			}
 		}
 	}
@@ -192,7 +192,7 @@ pub(super) fn sel_eval(ctx: &SelCtx, bits: u32, count: usize) -> u32 {
 	let mut num_pos = 0usize;
 	let mut cur = bits;
 	while cur != 0 && num_pos < 5 {
-		pos[num_pos] = usize::try_from(cur.trailing_zeros()).unwrap_or(0);
+		pos[num_pos] = num::index(cur.trailing_zeros());
 		num_pos += 1;
 		cur &= cur - 1;
 	}
@@ -215,14 +215,14 @@ pub(super) fn sel_eval(ctx: &SelCtx, bits: u32, count: usize) -> u32 {
 	let (mut flush, mut straight) = (false, false);
 	if num_pos >= need {
 		for &sm in &ctx.suit {
-			if usize::try_from((bits & sm).count_ones()).unwrap_or(0) >= need {
+			if num::index((bits & sm).count_ones()) >= need {
 				flush = true;
 				pf = bits & sm;
 				break;
 			}
 		}
 		let mode = (usize::from(ctx.ff) << 1) | usize::from(ctx.shortcut);
-		let st_entry = straight_lut()[mode][usize::try_from((s1 >> 2) & 0x1fff).unwrap_or(0)];
+		let st_entry = straight_lut()[mode][num::index((s1 >> 2) & 0x1fff)];
 		if (st_entry & 0x8000) != 0 {
 			straight = true;
 			ps = cards_with_ranks(ctx, pos_slice, u32::from(st_entry & 0x1fff) << 2);
@@ -315,7 +315,7 @@ pub(super) fn core_ctx(g: &Game, hide: bool) -> CoreCtx {
 		let stone = cd.is_stone() && !cd.vampired;
 		let id = cd.rank.id();
 		x.rank[i] = if !stone && (2..=14).contains(&id) {
-			i8::try_from(id - 2).unwrap_or(-1)
+			(id - 2).cast_signed()
 		} else {
 			-1
 		};
@@ -350,7 +350,7 @@ pub(super) fn core_ctx(g: &Game, hide: bool) -> CoreCtx {
 		1usize
 	};
 	let hi = 5usize;
-	let forced_cnt = usize::try_from(x.forced.count_ones()).unwrap_or(0);
+	let forced_cnt = num::index(x.forced.count_ones());
 	if lo.max(forced_cnt).max(1) <= hi.min(x.nh).min(5) {
 		x.lo = lo.max(1);
 		x.hi = hi.min(5);
@@ -507,7 +507,7 @@ fn count(set: u16) -> i32 {
 pub(super) fn core_rule(ctx: &CoreCtx, hand: usize, prefix: u32) -> (u32, bool) {
 	let budget = num::id(ctx.hi);
 	let lo = num::id(ctx.lo);
-	let num_sel = i32::try_from(prefix.count_ones()).unwrap_or(0);
+	let num_sel = prefix.count_ones().cast_signed();
 	let rem_budget = budget - num_sel;
 	let all_hand = if ctx.nh >= 32 {
 		u32::MAX
@@ -528,7 +528,7 @@ pub(super) fn core_rule(ctx: &CoreCtx, hand: usize, prefix: u32) -> (u32, bool) 
 	};
 	let mut cur = prefix;
 	while cur != 0 {
-		let idx = usize::try_from(cur.trailing_zeros()).unwrap_or(0);
+		let idx = num::index(cur.trailing_zeros());
 		cur &= cur - 1;
 		for (q, s_cnt) in sc.sp.iter_mut().enumerate() {
 			*s_cnt += (ctx.suit[idx] >> q) & 1;
@@ -582,7 +582,7 @@ pub(super) fn core_rule(ctx: &CoreCtx, hand: usize, prefix: u32) -> (u32, bool) 
 	let mut out_mask = 0u32;
 	let mut rem = avail;
 	while rem != 0 {
-		let idx = usize::try_from(rem.trailing_zeros()).unwrap_or(0);
+		let idx = num::index(rem.trailing_zeros());
 		rem &= rem - 1;
 		let mut ok = (ctx.suit[idx] & sc.use_suit) != 0;
 		if let Ok(rk) = usize::try_from(ctx.rank[idx]) {

@@ -41,7 +41,10 @@ def test_a_recorded_core_env_game_replays_to_the_same_state():
     assert script == "seed RECORD deck b_red stake 1\nselect\ndiscard 0 5\n"
 
     pool = az.StartPool()
-    assert list(pool.add(script, [2])) == [0] and pool.error == ""
+    assert list(pool.add(script, [2, 0])) == [0, 1]
+    assert (pool.script(0), pool.script(1)) == (script, "seed RECORD deck b_red stake 1\n")
+    with pytest.raises(ValueError, match="start id 2 is not in the pool"):
+        pool.script(2)
     replayed = core_env_arrays()
     env.set_start(pool, 0, False)
     env.reset_into(None, "OTHER", *replayed)
@@ -52,7 +55,10 @@ def test_a_recorded_core_env_game_replays_to_the_same_state():
     assert not env.step_into(DISCARD, [5], *replayed)["illegal"]
     reseeded = env.script()
     assert reseeded == script + "dbg_reseed OTHER\ndiscard 5\n"
-    assert list(pool.add(reseeded, [4])) == [1] and pool.error == ""
+    assert list(pool.add(reseeded, [4])) == [2]
+    with pytest.raises(ValueError, match="negative action count"):
+        pool.add(reseeded, [4, -1])
+    assert len(pool) == 3
 
 
 def test_the_balatro_core_env_runs_a_seeded_game():
@@ -135,6 +141,16 @@ def test_a_seed_a_script_header_cannot_hold_is_refused(seed):
     env = az.BalatroCoreEnv()
     with pytest.raises(ValueError, match="a seed is 1 to 32 bytes"):
         env.reset_into(None, seed, *core_env_arrays())
+
+
+@pytest.mark.parametrize("seeds", [(None, None), (1, "BOTH")])
+def test_a_reset_takes_exactly_one_seed(seeds):
+    env = az.BalatroCoreEnv(record=True)
+    arrays = core_env_arrays()
+    env.reset_into(None, "ONE", *arrays)
+    with pytest.raises(ValueError, match="exactly one of seed_index and seed_str"):
+        env.reset_into(*seeds, *arrays)
+    assert env.script() == "seed ONE deck b_red stake 1\n"
 
 
 def test_a_batch_call_with_an_array_of_the_wrong_shape_changes_no_env():
@@ -231,6 +247,8 @@ def test_options_that_break_the_rewards_or_the_episode_are_refused(options):
         az.BalatroCoreVecEnv(1, **options)
 
 
-def test_a_batch_of_no_envs_is_refused():
+def test_a_batch_of_no_envs_or_no_threads_is_refused():
     with pytest.raises(ValueError, match="num_envs"):
         az.BalatroCoreVecEnv(0)
+    with pytest.raises(ValueError, match="threads"):
+        az.BalatroCoreVecEnv(1, threads=0)

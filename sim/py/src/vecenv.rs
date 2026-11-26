@@ -243,7 +243,7 @@ fn parse_reward_mode(reward_mode: &str) -> PyResult<RewardMode> {
 /// # Errors
 ///
 /// Returns a `ValueError` if `start_frac` is positive and the pool cannot be
-/// read or holds no usable state.
+/// loaded (see [`pool::load_start_pool`]) or its index is empty.
 fn load_pool_if_enabled(start_pool: &str, start_frac: f32) -> PyResult<Vec<SimGame>> {
 	if start_frac <= 0.0 {
 		return Ok(Vec::new());
@@ -254,7 +254,7 @@ fn load_pool_if_enabled(start_pool: &str, start_frac: f32) -> PyResult<Vec<SimGa
 	let games = pool::load_start_pool(start_pool)?;
 	if games.is_empty() {
 		return Err(PyValueError::new_err(format!(
-			"start_pool {start_pool:?} holds no usable start state"
+			"the index of start_pool {start_pool:?} lists no start state"
 		)));
 	}
 	Ok(games)

@@ -105,7 +105,7 @@ def test_interval_stats_count_a_truncated_episode_as_a_run_but_not_a_loss():
 
 
 def write_pool(tmp_path, recording, ks):
-    (tmp_path / "recordings").mkdir()
+    (tmp_path / "recordings").mkdir(parents=True)
     (tmp_path / "recordings" / "one.bal").write_text(recording)
     (tmp_path / "index.jsonl").write_text("\n".join(json.dumps({"rec": "one.bal", "k": k}) for k in ks))
     return str(tmp_path)
@@ -119,34 +119,58 @@ def test_episodes_start_from_the_start_pool(tmp_path):
     assert env.game(0).seed != env.game(1).seed
 
 
-def test_a_start_share_without_usable_start_states_is_refused(tmp_path):
+def test_a_start_share_needs_a_pool_with_start_states(tmp_path):
     with pytest.raises(ValueError, match="needs a start_pool"):
         az.VecEnv(1, start_frac=0.5)
-    pool = write_pool(tmp_path, "seed TEST deck b_nope stake 1\nselect\n", [1])
-    with pytest.raises(ValueError, match="no usable start state"):
-        az.VecEnv(1, start_pool=pool, start_frac=0.5)
+    with pytest.raises(ValueError, match="lists no start state"):
+        az.VecEnv(1, start_pool=write_pool(tmp_path, "seed TEST deck b_red stake 1\n", []), start_frac=0.5)
 
 
-def test_both_start_loaders_skip_an_optional_line_that_does_not_apply(tmp_path):
-    recording = "seed TEST deck b_red stake 1\nselect\n? not_an_action 9\nplay 0 1\nplay 0 1\n"
-    steps = [1, 2, 3, 4]
+def test_the_start_pool_path_is_used_as_given(tmp_path, monkeypatch):
+    write_pool(tmp_path / "agent" / "pools", "seed TEST deck b_red stake 1\nselect\n", [1])
+    monkeypatch.chdir(tmp_path)
+    assert az.VecEnv(1, start_pool="agent/pools", start_frac=1.0).start_pool_size == 1
+    with pytest.raises(ValueError, match="cannot read pools.index.jsonl"):
+        az.VecEnv(1, start_pool="pools", start_frac=1.0)
+
+
+@pytest.mark.parametrize(
+    ("index", "error"),
+    [
+        ('{"rec": "one.bal", "k": 1}\nnot json', "index.jsonl line 2: "),
+        ('{"rec": "one.bal", "k": 1}\n\n', "index.jsonl line 2: "),
+        ('{"k": 1}', 'index.jsonl line 1 has no recording name "rec"'),
+        ('{"rec": "one.bal"}', 'index.jsonl line 1 has no step "k"'),
+        ('{"rec": "one.bal", "k": -1}', 'index.jsonl line 1 has no step "k"'),
+        ('{"rec": "two.bal", "k": 1}', "cannot read .*two.bal"),
+    ],
+)
+def test_a_malformed_start_pool_index_is_refused(tmp_path, index, error):
+    pool = write_pool(tmp_path, "seed TEST deck b_red stake 1\nselect\n", [1])
+    (tmp_path / "index.jsonl").write_text(index)
+    with pytest.raises(ValueError, match=error):
+        az.VecEnv(1, start_pool=pool, start_frac=1.0)
+
+
+@pytest.mark.parametrize(
+    ("recording", "steps", "error"),
+    [
+        ("seed TEST deck b_red stake 1\nselect\nnot_an_action 9\n", [1, 2], "line 2 'not_an_action 9' unparseable"),
+        ("seed TEST deck b_red stake 1\nselect\n? select\n", [2], "line 2 '\\? select' unparseable"),
+        ("seed TEST deck b_red stake 1\nselect\ncash_out\n", [1, 2], "line 2 'cash_out' failed"),
+        ("seed TEST deck b_red stake 1\nselect\n", [1, 3], "script has only 1 action lines"),
+        ("seed TEST deck b_red stake garbage\nselect\n", [1], "invalid stake garbage"),
+        ("seed TEST deck b_nope stake 1\nselect\n", [1], "unsupported deck b_nope"),
+        ("seed TEST\nselect\n", [1], "header 'seed TEST' is not 'seed S deck D stake N'"),
+    ],
+)
+def test_a_recording_that_does_not_replay_is_refused_by_both_start_loaders(tmp_path, recording, steps, error):
     pool = az.StartPool()
-    assert [i >= 0 for i in pool.add(recording, steps)] == [True, False, True, True]
-    assert pool.error == ""
-    env = az.VecEnv(1, start_pool=write_pool(tmp_path, recording, steps), start_frac=1.0)
-    assert env.start_pool_size == len(pool) == 3
-
-
-def test_a_recording_that_stops_replaying_gives_no_start_point(tmp_path):
-    recording = "seed TEST deck b_red stake 1\nselect\nnot_an_action 9\n"
-    pool = az.StartPool()
-    assert list(pool.add(recording, [1, 2])) == [-1, -1]
-    assert pool.error == "line 2 'not_an_action 9' unparseable"
-    with pytest.raises(ValueError, match="no usable start state"):
-        az.VecEnv(1, start_pool=write_pool(tmp_path, recording, [1, 2]), start_frac=1.0)
-    assert list(pool.add("seed TEST deck b_red stake garbage\nselect\n", [1])) == [-1]
-    assert pool.error == "invalid stake garbage"
+    with pytest.raises(ValueError, match=error):
+        pool.add(recording, steps)
     assert len(pool) == 0
+    with pytest.raises(ValueError, match="one.bal: " + error):
+        az.VecEnv(1, start_pool=write_pool(tmp_path, recording, steps), start_frac=1.0)
 
 
 def test_a_bad_reward_mode_or_start_share_is_refused():

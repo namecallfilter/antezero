@@ -20,13 +20,13 @@ use self::obs::{
 	write_obs_selection,
 };
 pub use self::obs::{OBS_GROUPS, OBS_SIZE, SEL_F};
-use self::script::{Header, Step};
+use self::script::{Header, Step, skip_refused};
 pub use self::script::{ScriptError, StartPoint, load_starts};
 use crate::actions::Action;
 use crate::card::{AnyCard, Card, CardLike, CardMask, Kind};
 use crate::data::{Back, Edition, Seal, Spectral, Tarot};
 use crate::game::{Area, BlindSlot, Game, Phase, State};
-use crate::{SEED_CHARS, Stake, consumables, event, num, shop};
+use crate::{SEED_CHARS, Stake, consumables, num};
 
 /// The number of actions: the length of the mask that
 /// [`BalEnv::write_all_obs`] writes.
@@ -332,6 +332,9 @@ pub struct BalEnv {
 	core_cache: CoreCtx,
 }
 
+/// A selection: its verb, and its cards in pick order after the forced ones.
+type Selection<'a> = (usize, &'a [usize]);
+
 fn needs_target(card: &Card) -> bool {
 	card.kind.is_consumable() && consumables::targets(card.kind).is_some()
 }
@@ -468,7 +471,7 @@ impl BalEnv {
 				back: self.cfg.back,
 				stake: self.cfg.stake,
 			};
-			let _ = writeln!(self.script, "{header}");
+			writeln!(self.script, "{header}").expect("a String takes every write");
 		}
 		let mut unused = BalStepInfo::default();
 		self.auto_advance(&mut unused);
@@ -506,9 +509,7 @@ impl BalEnv {
 	}
 
 	/// The script of the episode so far if [`BalConfig::record`] is set, and
-	/// the empty string otherwise: [`load_starts`] replays it to this game,
-	/// except past a pack skipped under [`BalConfig::disable_softlocks`],
-	/// which the game itself does not allow.
+	/// the empty string otherwise: [`load_starts`] replays it to this game.
 	#[must_use]
 	pub fn script(&self) -> &str {
 		&self.script
@@ -551,9 +552,9 @@ impl BalEnv {
 		let hand_state = st == State::SelectingHand || st.is_pack();
 		if st == State::SelectingHand {
 			let av = if nh > 0 { self.hands_available() } else { 0 };
-			m[ACT_PLAY] = u8::try_from((av >> HS_ANY) & 1).unwrap_or(0);
+			m[ACT_PLAY] = u8::from((av >> HS_ANY) & 1 != 0);
 			for h in 0..N_HANDS - 1 {
-				m[ACT_PLAY_HAND + h] = u8::try_from((av >> h) & 1).unwrap_or(0);
+				m[ACT_PLAY_HAND + h] = u8::from((av >> h) & 1 != 0);
 			}
 			m[ACT_DISCARD] = u8::from(nh > 0 && self.g.round.discards_left > 0.0);
 		}
@@ -652,7 +653,7 @@ impl BalEnv {
 			m[ACT_PICK + i] = u8::from(ok);
 		}
 		let can_skip = self.g.check(Action::SkipPack).is_ok()
-			|| (self.cfg.disable_softlocks && !self.g.areas.pack_cards.is_empty());
+			|| (self.cfg.disable_softlocks && skip_refused(&self.g));
 		m[ACT_SKIP_PACK] = u8::from(can_skip);
 	}
 
@@ -736,7 +737,7 @@ impl BalEnv {
 			eligible = cm;
 		}
 		lo = (lo - forced).max(0);
-		let elig_cnt = i32::try_from(eligible.count_ones()).unwrap_or(0);
+		let elig_cnt = eligible.count_ones().cast_signed();
 		hi = (hi - forced).min(elig_cnt);
 		if hi < lo {
 			(0, -1, 0)
@@ -831,7 +832,7 @@ impl BalEnv {
 
 	fn record(&mut self, step: Step<'_>) {
 		if self.cfg.record {
-			let _ = writeln!(self.script, "{step}");
+			writeln!(self.script, "{step}").expect("a String takes every write");
 		}
 	}
 
@@ -851,26 +852,20 @@ impl BalEnv {
 			_ => {}
 		}
 		let before = self.g.run.earned;
-		let is_softlock_skip = act == Action::SkipPack
-			&& self.g.flow.state.is_pack()
-			&& self.g.check(Action::SkipPack).is_err()
-			&& self.cfg.disable_softlocks
-			&& !self.g.areas.pack_cards.is_empty();
-		let ok = if is_softlock_skip {
-			event::begin_action(&mut self.g.rng, &mut self.g.events);
-			shop::do_skip_pack(&mut self.g);
-			event::run_queue(&mut self.g);
-			true
+		let forced = act == Action::SkipPack && self.cfg.disable_softlocks && skip_refused(&self.g);
+		let step = if forced {
+			Step::ForcedSkip
 		} else {
-			self.g.step(act).is_ok()
+			Step::Act(act)
 		};
+		let ok = step.apply(&mut self.g);
 		if ok {
-			self.record(Step::Act(act));
+			self.record(step);
 		}
 		if ok && act == Action::SkipBlind {
 			self.skips_pending += 1;
 		}
-		if ok && is_softlock_skip {
+		if ok && forced {
 			self.softlocks += 1;
 		}
 		let gain = self.g.run.earned - before;
@@ -961,18 +956,18 @@ impl BalEnv {
 		self.refresh_core();
 		let mut m = [0u8; N_ACTIONS];
 		self.mask(&mut m);
-		let Ok(a) = usize::try_from(action) else {
-			return self.finish_step(action, None, &m, true);
+		let Some(a) = usize::try_from(action)
+			.ok()
+			.filter(|&a| a < N_ACTIONS && m[a] != 0)
+		else {
+			return self.finish_step(None);
 		};
-		if a >= N_ACTIONS || m[a] == 0 {
-			return self.finish_step(action, None, &m, true);
-		}
 		let Some(v) = sel_verb_index(a) else {
-			return self.finish_step(action, None, &m, false);
+			return self.finish_step(Some((a, None)));
 		};
 		let (lo, hi, elig) = self.select_spec(v, &m);
 		if hi < 0 {
-			return self.finish_step(action, None, &m, false);
+			return self.finish_step(Some((a, None)));
 		}
 		let mut order: Vec<usize> = Vec::with_capacity(MAX_PICKS);
 		let hc_len = self.g.areas.hand.cards.len().min(MAX_HAND);
@@ -1008,9 +1003,26 @@ impl BalEnv {
 			ok &= stop;
 		}
 		if !ok {
-			return self.finish_step(action, None, &m, true);
+			return self.finish_step(None);
 		}
-		self.finish_step(action, Some((v, &order)), &m, false)
+		self.finish_step(Some((a, Some((v, &order)))))
+	}
+
+	/// The position in the hand of the card `id`, which the hand holds.
+	fn hand_position(&self, id: u32) -> usize {
+		let hand = &self.g.areas.hand.cards;
+		hand.iter()
+			.position(|c| c.core.id == id)
+			.expect("moving hand cards keeps every card in the hand")
+	}
+
+	/// Takes a move between two cards the environment has just found, which
+	/// the game always allows.
+	fn reorder(&mut self, act: Action) {
+		assert!(
+			self.exec_action(act),
+			"the game refused {act:?} between two cards it holds"
+		);
 	}
 
 	fn hs_order_play(&mut self, order: &[usize]) -> CardMask {
@@ -1019,51 +1031,24 @@ impl BalEnv {
 			.map(|&i| self.g.areas.hand.cards[i].core.id)
 			.collect();
 		for j in 1..ids.len() {
-			let p = self
-				.g
-				.areas
-				.hand
-				.cards
-				.iter()
-				.position(|c| c.core.id == ids[j])
-				.unwrap_or(0);
-			let q = self
-				.g
-				.areas
-				.hand
-				.cards
-				.iter()
-				.position(|c| c.core.id == ids[j - 1])
-				.unwrap_or(0);
-			if p > q {
-				continue;
-			}
-			let _ = self.exec_action(Action::MoveHand {
-				from: num::byte(p),
-				to: num::byte(q),
-			});
-		}
-		let mut mask = CardMask::EMPTY;
-		for id in ids {
-			if let Some(pos) = self.g.areas.hand.cards.iter().position(|c| c.core.id == id) {
-				mask.insert(pos);
+			let (p, q) = (self.hand_position(ids[j]), self.hand_position(ids[j - 1]));
+			if p < q {
+				self.reorder(Action::MoveHand {
+					from: num::byte(p),
+					to: num::byte(q),
+				});
 			}
 		}
-		mask
+		ids.iter().map(|&id| self.hand_position(id)).collect()
 	}
 
 	fn reorder_jokers(&mut self, order: &[usize]) {
 		let nj = self.g.areas.jokers.len();
-		if nj < 2 {
-			return;
-		}
 		let mut target = Vec::with_capacity(nj);
 		let mut used = vec![false; nj];
 		for &idx in order {
-			if idx < nj && !used[idx] {
-				target.push(self.g.areas.jokers[idx].core.id);
-				used[idx] = true;
-			}
+			target.push(self.g.areas.jokers[idx].core.id);
+			used[idx] = true;
 		}
 		for (i, &u) in used.iter().enumerate() {
 			if !u {
@@ -1074,16 +1059,14 @@ impl BalEnv {
 			if self.g.areas.jokers[k].core.id == tid {
 				continue;
 			}
-			if let Some(offset) = self.g.areas.jokers[k + 1..]
+			let offset = self.g.areas.jokers[k + 1..]
 				.iter()
 				.position(|c| c.core.id == tid)
-			{
-				let curr_idx = k + 1 + offset;
-				let _ = self.exec_action(Action::MoveJoker {
-					from: num::byte(curr_idx),
-					to: num::byte(k),
-				});
-			}
+				.expect("a joker that is not in place yet is further right");
+			self.reorder(Action::MoveJoker {
+				from: num::byte(k + 1 + offset),
+				to: num::byte(k),
+			});
 		}
 	}
 
@@ -1091,7 +1074,7 @@ impl BalEnv {
 		if order.len() == 2 && order[0] < order[1] {
 			let (src, dst) = (order[0], order[1]);
 			for k in (src..dst).rev() {
-				let _ = self.exec_action(Action::MoveHand {
+				self.reorder(Action::MoveHand {
 					from: num::byte(k),
 					to: num::byte(k + 1),
 				});
@@ -1108,22 +1091,22 @@ impl BalEnv {
 	fn record_play_info(&self, mask: CardMask, ht: usize, info: &mut BalStepInfo) {
 		let x = sel_ctx(&self.g);
 		let bits = mask.bits();
-		let n_played = usize::try_from(bits.count_ones()).unwrap_or(0);
+		let n_played = mask.len();
 		info.played_cards = num::id(n_played);
 		let scoring = sel_eval(&x, bits, n_played);
-		info.played_scoring = i32::try_from(scoring.count_ones()).unwrap_or(0);
+		info.played_scoring = scoring.count_ones().cast_signed();
 		for (i, pc) in self.g.areas.hand.cards.iter().take(x.nh).enumerate() {
 			if pc.seal == Some(Seal::Blue) {
 				info.blue_held += 1;
-				info.blue_played += i32::try_from((bits >> i) & 1).unwrap_or(0);
+				info.blue_played += i32::from(mask.contains(i));
 			}
 		}
 		info.hs_declared = num::id(ht);
 	}
 
-	fn finish_step(
-		&mut self, action: i32, sel_order: Option<(usize, &[usize])>, m: &[u8], mut illegal: bool,
-	) -> BalStepInfo {
+	/// Counts a step and takes it: `legal` is the action, with the verb and
+	/// the cards of a selection, or `None` for a step that is not allowed.
+	fn finish_step(&mut self, legal: Option<(usize, Option<Selection<'_>>)>) -> BalStepInfo {
 		let mut info = BalStepInfo {
 			hand_played: -1,
 			hs_declared: -1,
@@ -1133,28 +1116,22 @@ impl BalEnv {
 		let softlocks0 = self.softlocks;
 		self.steps += 1;
 		info.reward -= self.cfg.step_cost;
-		let a = usize::try_from(action).unwrap_or(usize::MAX);
-		if a >= N_ACTIONS || m[a] == 0 {
-			illegal = true;
-		}
-		if illegal {
-			info.illegal = 1;
-		} else if a == ACT_REORDER_JOKERS {
-			self.joker_ordered_in_phase = true;
-			info.reward -= self.cfg.toggle_cost;
-			if let Some((_, order)) = sel_order {
+		match legal {
+			None => info.illegal = 1,
+			Some((ACT_REORDER_JOKERS, Some((_, order)))) => {
+				self.joker_ordered_in_phase = true;
+				info.reward -= self.cfg.toggle_cost;
 				self.reorder_jokers(order);
+				self.auto_advance(&mut info);
 			}
-			self.auto_advance(&mut info);
-		} else {
-			self.step_valid_action(a, sel_order, &mut info);
+			Some((a, sel_order)) => self.step_valid_action(a, sel_order, &mut info),
 		}
 		self.finalize_step_info(earned0, softlocks0, &mut info);
 		info
 	}
 
 	fn step_valid_action(
-		&mut self, a: usize, sel_order: Option<(usize, &[usize])>, info: &mut BalStepInfo,
+		&mut self, a: usize, sel_order: Option<Selection<'_>>, info: &mut BalStepInfo,
 	) {
 		let prev_state = self.g.flow.state;
 		let prev_chips = self.g.round.chips;
@@ -1220,11 +1197,8 @@ impl BalEnv {
 		}
 
 		if (self.g.run.hands_played - hands0).abs() > f64::EPSILON {
-			info.hand_played = self
-				.g
-				.history
-				.last_hand_played
-				.map_or(-1, |h| i32::from(h as u8));
+			let hand = self.g.history.last_hand_played;
+			info.hand_played = i32::from(hand.expect("the game names a played hand") as u8);
 			info.hand_score = self.g.run.last_hand_score.floor();
 		}
 		if self.g.flow.state == State::RoundEval && prev_state != State::RoundEval {

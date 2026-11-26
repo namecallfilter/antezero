@@ -126,9 +126,17 @@ impl Reward {
 		blinds_before: u32, skips_before: f64, won_before: bool, deferred_skips: &mut u32,
 		g: &SimGame,
 	) -> f32 {
-		let delta_cleared = g.run.blinds_cleared.saturating_sub(blinds_before);
-		let delta_skips = num::index32(num::trunc((g.run.skips - skips_before).max(0.0).round()));
-		let delta_beaten = delta_cleared.saturating_sub(delta_skips);
+		let delta_cleared = g
+			.run
+			.blinds_cleared
+			.checked_sub(blinds_before)
+			.expect("the count of cleared blinds only grows");
+		let delta_skips = num::whole(g.run.skips - skips_before)
+			.and_then(|skips| u32::try_from(skips).ok())
+			.expect("the count of skipped blinds is whole and only grows");
+		let delta_beaten = delta_cleared
+			.checked_sub(delta_skips)
+			.expect("a skipped blind counts as cleared");
 		let mut r = 0.0f32;
 		if delta_skips > 0 {
 			*deferred_skips += delta_skips;
@@ -478,9 +486,8 @@ impl Slot {
 
 	fn record_action(&mut self, act: Action) {
 		if matches!(act, Action::Play(_)) {
-			if let Some(ht) = self.g.history.last_hand_played {
-				self.hand_plays[ht] += 1;
-			}
+			let played = self.g.history.last_hand_played;
+			self.hand_plays[played.expect("the game names a played hand")] += 1;
 			if self.g.run.last_hand_score > self.best_hand_score {
 				self.best_hand_score = self.g.run.last_hand_score;
 			}
@@ -619,8 +626,7 @@ fn start(
 		}
 		return (g, Origin::Snapshot(pool));
 	}
-	if !start_pool.is_empty()
-		&& u >= cfg.snapshot_prob + cfg.practice_prob
+	if u >= cfg.snapshot_prob + cfg.practice_prob
 		&& u < cfg.snapshot_prob + cfg.practice_prob + cfg.start_frac
 	{
 		let mut g = start_pool[num::pick(splitmix64(n ^ 0xa11), start_pool.len())].clone();

@@ -110,7 +110,7 @@ pub(crate) struct IntervalStats {
 	joker_runs: [u64; JOKER_COUNT],
 	joker_wins: [u64; JOKER_COUNT],
 	joker_losses: [u64; JOKER_COUNT],
-	joker_ante_sum: [u64; JOKER_COUNT],
+	joker_ante_sum: [i64; JOKER_COUNT],
 	joker_blinds: [u64; JOKER_COUNT],
 	// `back_key -> (best_stake, best_score)`.
 	best: HashMap<&'static str, (u8, f64)>,
@@ -157,7 +157,7 @@ impl IntervalStats {
 			} else if !st.truncated {
 				self.joker_losses[j_idx] += 1;
 			}
-			self.joker_ante_sum[j_idx] += u64::from(st.ante.max(0).cast_unsigned());
+			self.joker_ante_sum[j_idx] += i64::from(st.ante);
 			self.joker_blinds[j_idx] += u64::from(st.blinds_cleared);
 		}
 		let b_entry = self.best.entry(st.back.key()).or_insert((0, 0.0));

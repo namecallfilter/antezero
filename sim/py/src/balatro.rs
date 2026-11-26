@@ -206,7 +206,6 @@ fn step_info_to_dict<'py>(py: Python<'py>, s: &BalStepInfo) -> PyResult<Bound<'p
 #[derive(Default)]
 pub struct PyStartPool {
 	pub(crate) pts: Vec<Arc<StartPoint>>,
-	pub(crate) err: String,
 }
 
 #[pymethods]
@@ -221,17 +220,14 @@ impl PyStartPool {
 		self.pts.len()
 	}
 
-	/// Why the last `add` added no point, or `""` if its script replayed.
-	#[getter]
-	fn error(&self) -> &str {
-		&self.err
-	}
-
 	/// Replays the `.bal` script and adds the game after each action count
-	/// of `ks` as a start point. Returns their ids, `-1` where there is no
-	/// start point: the run is over there, or the line is a skipped optional
-	/// line. If the script does not replay through the largest count, no
-	/// point is added, every id is `-1` and `error` says why.
+	/// of `ks` as a start point. Returns the ids of the new points, in the
+	/// order of `ks`.
+	///
+	/// Raises `ValueError`, and adds no point, if the script does not give a
+	/// start point for every count: its header or a line is not of the
+	/// format, a line is not legal in the game, it has fewer lines than a
+	/// count, or the run is over at a count. A count below 0 is refused too.
 	#[expect(
 		clippy::needless_pass_by_value,
 		reason = "PyO3 extracts a Python list argument as a Vec by value"
@@ -242,41 +238,40 @@ impl PyStartPool {
 			.map(|&k| usize::try_from(k))
 			.collect::<Result<_, _>>()
 			.map_err(|_| PyValueError::new_err("ks must not hold a negative action count"))?;
-		let mut ids = vec![-1i32; ks.len()];
-		self.err.clear();
-		match py.detach(|| load_starts(script, &steps)) {
-			Ok(points) => {
-				for (id, point) in ids.iter_mut().zip(points) {
-					if let Some(mut point) = point {
-						*id = num::id(self.pts.len());
-						point.id = *id;
-						self.pts.push(Arc::new(point));
-					}
-				}
-			}
-			Err(e) => self.err = e.to_string(),
-		}
-		Ok(ids)
+		let points = py
+			.detach(|| load_starts(script, &steps))
+			.map_err(|e| PyValueError::new_err(e.to_string()))?;
+		let first = self.pts.len();
+		self.pts
+			.extend(points.into_iter().zip(first..).map(|(mut point, id)| {
+				point.id = num::id(id);
+				Arc::new(point)
+			}));
+		Ok((first..self.pts.len()).map(num::id).collect())
 	}
 
 	/// The script that leads to start point `id`: the header line and the
-	/// action lines that were applied. `""` for an id the pool does not
-	/// hold.
-	fn script(&self, id: i32) -> &str {
-		usize::try_from(id)
-			.ok()
-			.and_then(|i| self.pts.get(i))
-			.map_or("", |p| p.script.as_str())
+	/// action lines. Raises `ValueError` for an id the pool does not hold.
+	fn script(&self, id: i32) -> PyResult<&str> {
+		Ok(&point_of(self, id)?.script)
 	}
+}
 
-	/// The challenge of start point `id`. Always `""`: challenge runs are
-	/// not simulated.
-	fn challenge(&self, id: i32) -> &str {
-		usize::try_from(id)
-			.ok()
-			.and_then(|i| self.pts.get(i))
-			.map_or("", |p| p.challenge.as_str())
-	}
+/// Point `id` of `pool`.
+///
+/// # Errors
+///
+/// Returns a `ValueError` for an id the pool does not hold.
+fn point_of(pool: &PyStartPool, id: i32) -> PyResult<&Arc<StartPoint>> {
+	usize::try_from(id)
+		.ok()
+		.and_then(|i| pool.pts.get(i))
+		.ok_or_else(|| {
+			PyValueError::new_err(format!(
+				"start id {id} is not in the pool, which holds {} points",
+				pool.pts.len()
+			))
+		})
 }
 
 /// What `set_start(pool, id, ...)` asks for: no start point (a new run) for
@@ -289,14 +284,14 @@ fn start_point(pool: Option<&PyStartPool>, id: i32) -> PyResult<Option<Arc<Start
 	let Some(pool) = pool.filter(|_| id != -1) else {
 		return Ok(None);
 	};
-	let point = usize::try_from(id).ok().and_then(|i| pool.pts.get(i));
-	match point {
-		Some(point) => Ok(Some(Arc::clone(point))),
-		None => Err(PyValueError::new_err(format!(
-			"start id {id} is not in the pool, which holds {} points",
-			pool.pts.len()
-		))),
-	}
+	point_of(pool, id).map(|point| Some(Arc::clone(point)))
+}
+
+/// The seed of a new game: the seed itself, or the index it is derived from.
+#[derive(Clone, Copy)]
+enum Seed<'a> {
+	Text(&'a str),
+	Index(u64),
 }
 
 /// One game of Balatro with `RLBalatro`'s lean actions and observation.
@@ -413,12 +408,13 @@ impl PyBalatroEnv {
 		})
 	}
 
-	/// Starts a game and writes the five arrays: a new run with the seed
-	/// `seed_str` if it is given, else with the seed derived from
-	/// `seed_index` (index 1 if that is `None` too), or the start point set
-	/// with `set_start`. Raises `ValueError`, and starts nothing, for a seed
-	/// that a script header cannot hold (empty, longer than 32 bytes, or with
-	/// whitespace or `#`) or an array of the wrong shape.
+	/// Starts a game and writes the five arrays: the start point set with
+	/// `set_start`, or a new run. Exactly one of `seed_index` and `seed_str`
+	/// is given, the other is `None`: the seed, or the index a seed is
+	/// derived from. Raises `ValueError`, and starts nothing, for both or
+	/// neither, for a seed that a script header cannot hold (empty, longer
+	/// than 32 bytes, or with whitespace or `#`) or for an array of the wrong
+	/// shape.
 	#[expect(
 		clippy::too_many_arguments,
 		reason = "PyO3 method takes all 5 preallocated observation/mask arrays in one call"
@@ -429,20 +425,29 @@ impl PyBalatroEnv {
 		mask: &Bound<'py, PyArrayDyn<u8>>, specs: &Bound<'py, PyArrayDyn<i32>>,
 		hctx: &Bound<'py, PyArrayDyn<i32>>,
 	) -> PyResult<()> {
-		if seed_str.is_some_and(|seed| {
-			seed.is_empty()
+		let seed = match (seed_index, seed_str) {
+			(Some(index), None) => Seed::Index(index),
+			(None, Some(seed)) => Seed::Text(seed),
+			_ => {
+				return Err(PyValueError::new_err(
+					"exactly one of seed_index and seed_str must be given",
+				));
+			}
+		};
+		if let Seed::Text(seed) = seed
+			&& (seed.is_empty()
 				|| seed.len() > MAX_SEED_LEN
-				|| seed.contains(|c: char| c.is_whitespace() || c == '#')
-		}) {
+				|| seed.contains(|c: char| c.is_whitespace() || c == '#'))
+		{
 			return Err(PyValueError::new_err(format!(
 				"a seed is 1 to {MAX_SEED_LEN} bytes without whitespace or '#'"
 			)));
 		}
 		let mut out = Outputs::borrow(py, &[], obs, sel, mask, specs, hctx)?;
 		let buffers = out.buffers()?;
-		match seed_str {
-			Some(seed) => self.env.reset(seed),
-			None => self.env.reset_index(seed_index.unwrap_or(1)),
+		match seed {
+			Seed::Text(seed) => self.env.reset(seed),
+			Seed::Index(index) => self.env.reset_index(index),
 		}
 		buffers.write(&mut self.env);
 		Ok(())
@@ -531,7 +536,7 @@ impl PyBalatroEnv {
 /// `(num_envs, 32)`, all C-contiguous.
 ///
 /// Raises `ValueError` for what `BalatroCoreEnv` refuses and for a
-/// `num_envs` of 0.
+/// `num_envs` or `threads` of 0.
 #[pyclass(name = "BalatroCoreVecEnv", module = "antezero_sim")]
 pub struct PyBalatroVecEnv {
 	envs: Vec<BalEnv>,
@@ -600,8 +605,11 @@ impl PyBalatroVecEnv {
 			obs_hide_face_down,
 			record,
 		)?;
+		if threads == 0 {
+			return Err(PyValueError::new_err("threads must be > 0"));
+		}
 		let pool = rayon::ThreadPoolBuilder::new()
-			.num_threads(threads.max(1))
+			.num_threads(threads)
 			.build()
 			.map_err(|e| PyValueError::new_err(format!("cannot build thread pool: {e}")))?;
 		let envs = pool.install(|| {

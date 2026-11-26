@@ -599,7 +599,7 @@ pub(super) fn write_hand_ctx(g: &Game, core: &CoreCtx, out: &mut [i32]) {
 			0
 		};
 		let stone = i32::from(core.rank[i] < 0);
-		let forced = i32::try_from((core.forced >> i) & 1).unwrap_or(0);
+		let forced = i32::from((core.forced >> i) & 1 != 0);
 		*slot = rank | (i32::from(core.suit[i]) << 4) | (stone << 8) | (forced << 9) | (1 << 10);
 	}
 	out[24] = num::id(core.nh);

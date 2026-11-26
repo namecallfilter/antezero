@@ -21,7 +21,6 @@ fn env_at(game: Game, cfg: BalConfig) -> BalEnv {
 	let start = StartPoint {
 		game,
 		script: String::new(),
-		challenge: String::new(),
 		id: 0,
 	};
 	env.set_start(Some(Arc::new(start)), false);

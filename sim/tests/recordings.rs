@@ -121,18 +121,22 @@ fn assert_same_game(replayed: &Game, live: &Game, what: &str) {
 	);
 }
 
-/// Replays `script` to every step of `live` and compares the games.
+/// Replays `script` to every step of `live` and compares the games; a step
+/// at which the run is over is refused.
 fn assert_replays(script: &str, live: &[(usize, Game)]) {
-	let steps: Vec<usize> = live.iter().map(|&(step, _)| step).collect();
+	let (over, alive): (Vec<_>, Vec<_>) = live.iter().partition(|(_, game)| game.is_terminal());
+	let steps: Vec<usize> = alive.iter().map(|&&(step, _)| step).collect();
 	let points = load_starts(script, &steps).expect("a recording replays");
-	for ((step, game), point) in live.iter().zip(points) {
+	for (&&(step, ref game), point) in alive.iter().zip(points) {
 		let what = format!("after action line {step} of\n{script}");
-		if game.is_terminal() {
-			assert!(point.is_none(), "a finished run is no start point {what}");
-		} else {
-			let point = point.unwrap_or_else(|| panic!("no start point {what}"));
-			assert_same_game(&point.game, game, &what);
-		}
+		assert_same_game(&point.game, game, &what);
+	}
+	for &(line, _) in over {
+		assert_eq!(
+			load_starts(script, &[line]).err(),
+			Some(ScriptError::Over { line }),
+			"a finished run is no start point"
+		);
 	}
 }
 
@@ -150,16 +154,37 @@ fn lines_with(scripts: &[String], verb: &str, cards: impl Fn(usize) -> bool) -> 
 		.count()
 }
 
+/// `script` as a recording of the real game has it: with a highlighted hand
+/// card (position 0) listed on each `use` and `pick` line that lists none
+/// while the hand holds cards. Also returns the number of such lines.
+fn with_highlights(script: &str, live: &[(usize, Game)]) -> (String, usize) {
+	let mut text: Vec<String> = script.lines().map(str::to_string).collect();
+	let mut highlighted = 0;
+	for pair in live.windows(2) {
+		let (action, before) = (&mut text[pair[0].0 + 1], &pair[0].1);
+		let words: Vec<&str> = action.split_whitespace().collect();
+		if matches!(words[..], ["use" | "pick", _]) && !before.areas.hand.cards.is_empty() {
+			action.push_str(" 0");
+			highlighted += 1;
+		}
+	}
+	(text.join("\n"), highlighted)
+}
+
 #[test]
 fn a_recorded_game_replays_to_the_live_game_at_every_step() {
-	let mut scripts = Vec::new();
+	let (mut scripts, mut highlighted) = (Vec::new(), 0);
 	for i in 0..32 {
 		let mut env = recording_env();
 		env.reset_index(i);
 		let live = play(&mut env, &mut Xorshift::new(WALK_SEED ^ i), 200);
 		assert_replays(env.script(), &live);
+		let (script, lines) = with_highlights(env.script(), &live);
+		assert_replays(&script, &live);
+		highlighted += lines;
 		scripts.push(env.script().to_string());
 	}
+	assert!(highlighted > 0, "no card was used with a card highlighted");
 	assert!(lines_with(&scripts, "play", |n| n == 1) > 0);
 	assert!(lines_with(&scripts, "play", |n| n > 1) > 0);
 	assert!(lines_with(&scripts, "discard", |n| n > 0) > 0);
@@ -183,8 +208,7 @@ fn a_game_recorded_from_a_start_point_replays_to_the_live_game() {
 		let point = load_starts(env.script(), &[step])
 			.expect("a recording replays")
 			.pop()
-			.flatten()
-			.expect("a start point of a live game");
+			.expect("a start point for the step");
 		assert_same_game(&point.game, &before, "the start point");
 
 		env.set_start(Some(Arc::new(point)), reseed);
@@ -223,98 +247,96 @@ fn a_script_lists_hand_cards_by_position() {
 		"play 2 1",
 	]);
 	let points = load_starts(&text, &[5]).expect("the script replays");
-	let point = points[0].as_ref().expect("the run is not over");
-	assert_same_game(&point.game, &game, "after the script");
-}
-
-#[test]
-fn a_skipped_optional_line_is_no_start_point_and_later_steps_load() {
-	let text = script(&[
-		"select",
-		"? not_an_action 9",
-		"? discard 0",
-		"play 0 1",
-		"play 0 1",
-	]);
-	let points = load_starts(&text, &[1, 2, 3, 4, 5]).expect("the script replays");
-	let loaded: Vec<bool> = points.iter().map(Option::is_some).collect();
-	assert_eq!(loaded, [true, false, true, true, true]);
-
-	let applied = script(&["select", "discard 0", "play 0 1", "play 0 1"]);
-	let last = points[4].as_ref().expect("checked above");
-	assert_eq!(last.script, applied, "skipped lines are left out");
-	let plain = load_starts(&applied, &[4]).expect("the script replays");
-	let plain = plain[0].as_ref().expect("the run is not over");
-	assert_same_game(&last.game, &plain.game, "with and without the skipped line");
-
-	let illegal = script(&["select", "? cash_out", "play 0 1"]);
-	let points = load_starts(&illegal, &[2, 3]).expect("the script replays");
-	assert!(points[0].is_none() && points[1].is_some());
+	assert_same_game(&points[0].game, &game, "after the script");
 }
 
 #[test]
 fn a_line_that_does_not_replay_fails_the_whole_script() {
-	let unparseable = ScriptError::Unparseable {
-		line: 2,
-		text: "not_an_action 9".to_string(),
+	let illegal = |line, text: &str| {
+		Some(ScriptError::Illegal {
+			line,
+			text: text.to_string(),
+		})
 	};
-	let text = script(&["select", "not_an_action 9"]);
-	assert_eq!(load_starts(&text, &[1, 2]).err(), Some(unparseable));
+	let text = script(&["select", "cash_out"]);
+	assert_eq!(load_starts(&text, &[1, 2]).err(), illegal(2, "cash_out"));
 	assert!(
 		load_starts(&text, &[1]).is_ok(),
 		"lines after the largest step are not read"
 	);
-
-	let illegal = ScriptError::Illegal {
-		line: 1,
-		text: "cash_out".to_string(),
-	};
-	assert_eq!(
-		load_starts(&script(&["cash_out"]), &[1]).err(),
-		Some(illegal)
-	);
-	let off_the_win_screen = ScriptError::Illegal {
-		line: 2,
-		text: "endless".to_string(),
-	};
-	let text = script(&["select", "endless"]);
-	assert_eq!(load_starts(&text, &[2]).err(), Some(off_the_win_screen));
+	for directive in ["endless", "dbg_skip_pack"] {
+		let text = script(&["select", directive]);
+		assert_eq!(load_starts(&text, &[2]).err(), illegal(2, directive));
+	}
 	let short = ScriptError::TooShort { lines: 1 };
 	assert_eq!(load_starts(&script(&["select"]), &[3]).err(), Some(short));
 }
 
 #[test]
-fn a_header_names_the_run_and_a_bad_one_is_an_error() {
-	let stake_of = |header: &str| {
+fn only_the_lines_a_recording_holds_are_lines_of_a_script() {
+	for line in [
+		"not_an_action 9",
+		"? select",
+		"sell 0",
+		"sell_consumable 0",
+		"sort 0",
+		"select 1",
+		"buy",
+		"buy 0 1",
+		"move_hand 0",
+		"play 1 x",
+		"use",
+		"dbg_reseed",
+		"dbg_reseed A B",
+	] {
+		let unparseable = ScriptError::Unparseable {
+			line: 1,
+			text: line.to_string(),
+		};
+		assert_eq!(load_starts(&script(&[line]), &[1]).err(), Some(unparseable));
+	}
+}
+
+#[test]
+fn a_header_is_a_seed_a_deck_and_a_stake() {
+	let run_of = |header: &str| {
 		load_starts(header, &[0]).map(|points| {
-			let point = points[0].as_ref().expect("a new run is not over");
-			(point.game.setup.back, point.game.setup.stake)
+			let game = &points[0].game;
+			(
+				game.rng.seed().to_string(),
+				game.setup.back,
+				game.setup.stake,
+			)
 		})
 	};
-	assert_eq!(stake_of("seed TEST"), Ok((Back::Red, Stake::White)));
 	assert_eq!(
-		stake_of("stake 8 deck b_blue seed TEST"),
-		Ok((Back::Blue, Stake::Gold))
+		run_of("seed TEST deck b_blue stake 8"),
+		Ok(("TEST".to_string(), Back::Blue, Stake::Gold))
 	);
-	for stake in ["garbage", "0", "9", ""] {
+	for header in [
+		"seed TEST",
+		"seed TEST deck b_red",
+		"seed TEST deck b_red stake",
+		"stake 8 deck b_blue seed TEST",
+		"seed TEST deck b_red stake 1 challenge c_omelette_1",
+		"select",
+	] {
+		assert_eq!(run_of(header), Err(ScriptError::Header(header.to_string())));
+	}
+	for stake in ["garbage", "0", "9"] {
 		assert_eq!(
-			stake_of(&format!("seed TEST deck b_red stake {stake}")),
+			run_of(&format!("seed TEST deck b_red stake {stake}")),
 			Err(ScriptError::Stake(stake.to_string()))
 		);
 	}
 	assert_eq!(
-		stake_of("seed TEST deck b_nope"),
+		run_of("seed TEST deck b_nope stake 1"),
 		Err(ScriptError::Deck("b_nope".to_string()))
-	);
-	assert_eq!(
-		stake_of("seed TEST deck b_red stake 1 challenge c_omelette_1"),
-		Err(ScriptError::Challenge("c_omelette_1".to_string()))
 	);
 	let long_seed = "S".repeat(sim::MAX_SEED_LEN + 1);
 	assert_eq!(
-		stake_of(&format!("seed {long_seed}")),
+		run_of(&format!("seed {long_seed} deck b_red stake 1")),
 		Err(ScriptError::Seed(long_seed))
 	);
-	assert_eq!(stake_of("select"), Err(ScriptError::NoSeed));
-	assert_eq!(stake_of("# nothing\n\n"), Err(ScriptError::Empty));
+	assert_eq!(run_of("# nothing\n\n"), Err(ScriptError::Empty));
 }
