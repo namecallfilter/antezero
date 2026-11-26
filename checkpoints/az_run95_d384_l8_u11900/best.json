@@ -1,0 +1,92 @@
+{
+ "b_ghost": {
+  "stake": 8,
+  "score": 23820699.0,
+  "seed": 558251373,
+  "update": 8522
+ },
+ "b_anaglyph": {
+  "stake": 8,
+  "score": 47531083.0,
+  "seed": 709001322,
+  "update": 10823
+ },
+ "b_green": {
+  "stake": 8,
+  "score": 15361966.0,
+  "seed": 535932973,
+  "update": 8181
+ },
+ "b_erratic": {
+  "stake": 8,
+  "score": 30843914.0,
+  "seed": 754119824,
+  "update": 11511
+ },
+ "b_checkered": {
+  "stake": 8,
+  "score": 169609195.0,
+  "seed": 748669030,
+  "update": 11428
+ },
+ "b_abandoned": {
+  "stake": 8,
+  "score": 14672141.0,
+  "seed": 657991370,
+  "update": 10044
+ },
+ "b_yellow": {
+  "stake": 8,
+  "score": 56040075.0,
+  "seed": 521459894,
+  "update": 7960
+ },
+ "b_blue": {
+  "stake": 8,
+  "score": 15282348.0,
+  "seed": 733754220,
+  "update": 11200
+ },
+ "b_zodiac": {
+  "stake": 8,
+  "score": 31721409.0,
+  "seed": 621841181,
+  "update": 9494
+ },
+ "b_painted": {
+  "stake": 8,
+  "score": 16334432.0,
+  "seed": 692037561,
+  "update": 10563
+ },
+ "b_nebula": {
+  "stake": 8,
+  "score": 12285000.0,
+  "seed": 638860804,
+  "update": 9751
+ },
+ "b_red": {
+  "stake": 8,
+  "score": 22922433.0,
+  "seed": 681595793,
+  "update": 10404
+ },
+ "b_magic": {
+  "stake": 8,
+  "score": 13474027.0,
+  "seed": 612693126,
+  "update": 9352
+ },
+ "b_plasma": {
+  "stake": 8,
+  "score": 348531561.0,
+  "seed": 587441911,
+  "update": 8968
+ },
+ "b_black": {
+  "stake": 8,
+  "score": 19811691.0,
+  "seed": 405786316,
+  "update": 6195
+ }
+}
