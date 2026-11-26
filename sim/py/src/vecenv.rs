@@ -239,12 +239,25 @@ fn parse_reward_mode(reward_mode: &str) -> PyResult<RewardMode> {
 }
 
 /// The start pool at `start_pool`, if episodes start from it.
+///
+/// # Errors
+///
+/// Returns a `ValueError` if `start_frac` is positive and the pool cannot be
+/// read or holds no usable state.
 fn load_pool_if_enabled(start_pool: &str, start_frac: f32) -> PyResult<Vec<SimGame>> {
-	if !start_pool.is_empty() && start_frac > 0.0 {
-		pool::load_start_pool(start_pool)
-	} else {
-		Ok(Vec::new())
+	if start_frac <= 0.0 {
+		return Ok(Vec::new());
 	}
+	if start_pool.is_empty() {
+		return Err(PyValueError::new_err("start_frac > 0 needs a start_pool"));
+	}
+	let games = pool::load_start_pool(start_pool)?;
+	if games.is_empty() {
+		return Err(PyValueError::new_err(format!(
+			"start_pool {start_pool:?} holds no usable start state"
+		)));
+	}
+	Ok(games)
 }
 
 #[pymethods]
@@ -258,7 +271,15 @@ impl VecEnv {
 	/// late snapshots need `snapshot_min_ante` above those antes then.
 	/// `practice_eternal`: a gifted joker is Eternal where the game allows the
 	/// sticker, sellable otherwise. `null_sorts`: whether a hand sort that
-	/// would change nothing is offered.
+	/// would change nothing is offered. `obs_v2`: `glob_f` has
+	/// `GLOB_FLOAT_V2` columns, the last four describing the last hand
+	/// played. `max_rearranges`: how many free rearranges in a row are
+	/// offered. `reward_mode`: `"shaping"` (the win reward plus the shaping
+	/// potential) or `"blinds"` (1 per blind beaten, a skipped blind paid
+	/// with the next one beaten, `log10` of the final chips on a win and the
+	/// scored share of the blind on a loss). `start_frac`: the share of
+	/// episodes that start from a state of the pool directory `start_pool`
+	/// (`index.jsonl` and `recordings/*.bal`), its hidden state resampled.
 	///
 	/// Episodes end when the run is lost, or won unless `endless`; they are
 	/// truncated (not terminal: bootstrap from `final_*`) after `step_limit`

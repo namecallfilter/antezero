@@ -133,6 +133,7 @@ fn excused(g: &Game) -> Game {
 	g.run.last_hand_score = 0.0;
 	g.run.last_hand_chips = 0.0;
 	g.run.last_hand_mult = 0.0;
+	g.run.last_hand_blind = 0.0;
 	g.run.earned = 0.0;
 	for tag in &mut g.tags.held {
 		tag.id = 0;

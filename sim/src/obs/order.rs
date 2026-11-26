@@ -11,7 +11,7 @@
 //! stands then matters beyond the score.
 
 use super::candidates::{PlayPreview, Scenarios, preview_in};
-use super::{MAX_REARRANGES, OP_ORDER_GAIN, Op, OpKind, PREVIEW_SAMPLES, hidden_scoring_state};
+use super::{OP_ORDER_GAIN, Op, OpKind, PREVIEW_SAMPLES, hidden_scoring_state};
 use crate::card::CardMask;
 use crate::data::Joker;
 use crate::game::{Areas, Flow, Game, Phase, Scratch};
@@ -278,11 +278,12 @@ pub fn order_gain(g: &Game, ops: &mut [Op]) {
 /// move does). Scored on the first shared scenario, or on all
 /// `PREVIEW_SAMPLES` (mean capped score, a move no worse than the current
 /// order in each) if a score involved a random draw. `None` where
-/// [`order_gain`] stays zero for want of an eligible state, and when the
-/// play already reaches the chips still needed.
+/// [`order_gain`] stays zero for want of an eligible state (`max_rearranges`
+/// is the limit the ops were offered under, [`OpOptions::max_rearranges`](super::OpOptions::max_rearranges)),
+/// and when the play already reaches the chips still needed.
 #[must_use]
-pub fn order_label(g: &Game, mask: CardMask) -> Option<[u8; ORDER_JOKERS]> {
-	let can_reorder = g.flow.rearranges < MAX_REARRANGES;
+pub fn order_label(g: &Game, mask: CardMask, max_rearranges: u8) -> Option<[u8; ORDER_JOKERS]> {
+	let can_reorder = g.flow.rearranges < max_rearranges;
 	let mut order = Order::new(g, mask, PREVIEW_SAMPLES, can_reorder)?;
 	let mut dest = [0u8; ORDER_JOKERS];
 	let mut best = None;

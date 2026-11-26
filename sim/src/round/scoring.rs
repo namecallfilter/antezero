@@ -309,6 +309,7 @@ pub(crate) fn evaluate_play(g: &mut Game) {
 	g.run.last_hand_score = score;
 	g.run.last_hand_chips = hand_chips;
 	g.run.last_hand_mult = mult;
+	g.run.last_hand_blind = g.blind.chips;
 	g.flow.scored = true;
 	g.events.push_after(0.4, Event::PushHandTextImmediate);
 	if hand_chips * mult > 0.0 {

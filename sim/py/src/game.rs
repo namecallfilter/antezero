@@ -132,11 +132,13 @@ impl Game {
 
 	/// The learning observation of this state (see `sim::obs`): a dict with
 	/// `tok_i [MAX_TOKENS, TOK_INT]`, `tok_f [MAX_TOKENS, TOK_FLOAT]`,
-	/// `glob_i [GLOB_INT]`, `glob_f [GLOB_FLOAT]`, `ops [MAX_OPS, OP_INT]`,
-	/// `ops_f [MAX_OPS, OP_FLOAT]`, `n_ops`, `n_tokens`, `n_hand`; with up to
-	/// `play_candidates` (at most `MAX_CANDIDATES`) scored plays, with
-	/// `build_previews` the build previews of shops, packs and blind select,
-	/// and with `order_gain` the gain column of the joker-move ops.
+	/// `glob_i [GLOB_INT]`, `glob_f [GLOB_FLOAT]` (`[GLOB_FLOAT_V2]` with
+	/// `obs_v2`, which appends the last hand's score, chips, mult and share
+	/// of the blind), `ops [MAX_OPS, OP_INT]`, `ops_f [MAX_OPS, OP_FLOAT]`,
+	/// `n_ops`, `n_tokens`, `n_hand`; with up to `play_candidates` (at most
+	/// `MAX_CANDIDATES`) scored plays, with `build_previews` the build
+	/// previews of shops, packs and blind select, and with `order_gain` the
+	/// gain column of the joker-move ops.
 	#[pyo3(signature = (play_candidates = 0, deck_tokens = false, build_previews = true, order_gain = true, obs_v2 = false))]
 	#[expect(
 		clippy::fn_params_excessive_bools,
@@ -223,7 +225,7 @@ impl Game {
 	}
 
 	/// Free rearranges (hand and joker moves, sorts) since the last other
-	/// action: `encode` stops offering them at `sim::obs::MAX_REARRANGES`.
+	/// action: `encode` stops offering them at `max_rearranges`.
 	#[getter]
 	fn rearranges(&self) -> u8 {
 		self.g.flow.rearranges

@@ -500,6 +500,29 @@ fn obs_v2_encodes_last_hand_and_preserves_v1_prefix() {
 }
 
 #[test]
+fn obs_v2_keeps_the_blind_share_of_the_hand_that_beat_the_blind() {
+	let mut g = Game::new_run("OBSV2", Back::Red, Stake::White);
+	g.step(Action::SelectBlind).unwrap();
+	g.inject(Inject::Joker {
+		joker: Joker::Joker,
+		edition: None,
+		eternal: false,
+	});
+	let blind = g.blind.chips;
+	while g.flow.phase == Phase::Round {
+		g.step(Action::Play(CardMask::from_bits(0b1_1111))).unwrap();
+	}
+	assert_eq!(g.flow.phase, Phase::RoundEval);
+	assert_eq!(g.blind.chips, 0.0);
+	let share = g.run.last_hand_score / blind;
+	assert!(share > 0.0 && share < 4.0);
+
+	let mut v2 = ObsBuf::new_v2();
+	obs::encode(&g, &mut v2.as_mut());
+	assert_eq!(v2.glob_f[obs::GLOB_FLOAT + 3], num::feat(share));
+}
+
+#[test]
 fn max_rearranges_is_configurable_in_op_options() {
 	let mut g = Game::new_run("REARR", Back::Red, Stake::White);
 	g.step(Action::SelectBlind).unwrap();

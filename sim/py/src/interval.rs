@@ -70,9 +70,7 @@ impl JokerSet {
 		for c in &g.areas.jokers {
 			if let Kind::Joker(j) = c.kind {
 				let idx = j as usize;
-				if idx < JOKER_COUNT {
-					self.0[idx / 64] |= 1u64 << (idx % 64);
-				}
+				self.0[idx / 64] |= 1u64 << (idx % 64);
 			}
 		}
 	}
@@ -96,6 +94,7 @@ pub(crate) struct EpisodeStatsOut {
 	pub(crate) stake: u8,
 	pub(crate) ante: i32,
 	pub(crate) won: bool,
+	pub(crate) truncated: bool,
 	pub(crate) blinds_cleared: u32,
 	pub(crate) jokers_seen: JokerSet,
 	pub(crate) hand_plays: HandCounts<u32>,
@@ -152,16 +151,14 @@ impl IntervalStats {
 			}
 		}
 		for j_idx in st.jokers_seen.indices() {
-			if j_idx < JOKER_COUNT {
-				self.joker_runs[j_idx] += 1;
-				if st.won {
-					self.joker_wins[j_idx] += 1;
-				} else {
-					self.joker_losses[j_idx] += 1;
-				}
-				self.joker_ante_sum[j_idx] += u64::from(st.ante.max(0).cast_unsigned());
-				self.joker_blinds[j_idx] += u64::from(st.blinds_cleared);
+			self.joker_runs[j_idx] += 1;
+			if st.won {
+				self.joker_wins[j_idx] += 1;
+			} else if !st.truncated {
+				self.joker_losses[j_idx] += 1;
 			}
+			self.joker_ante_sum[j_idx] += u64::from(st.ante.max(0).cast_unsigned());
+			self.joker_blinds[j_idx] += u64::from(st.blinds_cleared);
 		}
 		let b_entry = self.best.entry(st.back.key()).or_insert((0, 0.0));
 		if st.won && st.stake > b_entry.0 {

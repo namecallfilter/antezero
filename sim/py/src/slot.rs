@@ -395,7 +395,7 @@ impl Slot {
 			&& cfg.order_label_rate > 0.0
 			&& self.roll(ctx.base_seed ^ LABEL_SALT, i) < cfg.order_label_rate
 		{
-			res.label = obs::order_label(&self.g, mask);
+			res.label = obs::order_label(&self.g, mask, cfg.obs.ops.max_rearranges);
 		}
 		let a = if let Some(a) = a {
 			Some(a)
@@ -501,6 +501,7 @@ impl Slot {
 			stake: g.setup.stake.into(),
 			ante: g.run.ante,
 			won: g.run_won(),
+			truncated: end == End::Truncated,
 			blinds_cleared: g.run.blinds_cleared,
 			jokers_seen: self.jokers_seen,
 			hand_plays: self.hand_plays,

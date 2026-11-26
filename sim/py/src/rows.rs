@@ -122,20 +122,8 @@ pub(crate) struct ObsRow {
 	pub n_hand: i32,
 }
 
-impl Default for ObsRow {
-	fn default() -> ObsRow {
-		ObsRow {
-			obs: ObsBuf::new(),
-			ops: vec![0; row_len(OPS_SHAPE)],
-			ops_f: vec![0.0; row_len(OPS_F_SHAPE)],
-			n_ops: 0,
-			n_tokens: 0,
-			n_hand: 0,
-		}
-	}
-}
-
 impl ObsRow {
+	/// Zeroed buffers, with the `obs_v2` global floats if asked.
 	pub fn new(obs_v2: bool) -> ObsRow {
 		ObsRow {
 			obs: if obs_v2 {
@@ -143,7 +131,11 @@ impl ObsRow {
 			} else {
 				ObsBuf::new()
 			},
-			..ObsRow::default()
+			ops: vec![0; row_len(OPS_SHAPE)],
+			ops_f: vec![0.0; row_len(OPS_F_SHAPE)],
+			n_ops: 0,
+			n_tokens: 0,
+			n_hand: 0,
 		}
 	}
 

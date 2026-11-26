@@ -30,9 +30,9 @@ pub const GLOB_INT: usize = 10;
 /// edition and seal counts, size, the build preview's capacities) and of
 /// the discard pile (52 counts).
 pub const GLOB_FLOAT: usize = 216;
-/// Extended global floats when `obs_v2` is enabled: appends
-/// `last_hand_score`, `last_hand_chips`, `last_hand_mult`, and
-/// `last_blind_share`.
+/// The global floats with `obs_v2`: [`GLOB_FLOAT`] and the last hand's
+/// score, chips, mult and share of its blind (score / blind chips, at most
+/// 4).
 pub const GLOB_FLOAT_V2: usize = 220;
 pub const MAX_OPS: usize = 96;
 /// Maximum scored play candidates per decision (the bindings reject larger

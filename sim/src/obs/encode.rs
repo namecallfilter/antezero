@@ -243,8 +243,13 @@ fn global_floats(g: &Game, gf: &mut [f32], pv: Option<&BuildPreview>) {
 		gf[GLOB_FLOAT] = signed_log(g.run.last_hand_score);
 		gf[GLOB_FLOAT + 1] = signed_log(g.run.last_hand_chips);
 		gf[GLOB_FLOAT + 2] = signed_log(g.run.last_hand_mult);
-		gf[GLOB_FLOAT + 3] = if g.blind.chips > 0.0 {
-			num::feat((g.run.last_hand_score / g.blind.chips).min(4.0))
+		let blind = if g.blind.chips > 0.0 {
+			g.blind.chips
+		} else {
+			g.run.last_hand_blind
+		};
+		gf[GLOB_FLOAT + 3] = if blind > 0.0 {
+			num::feat((g.run.last_hand_score / blind).min(4.0))
 		} else {
 			0.0
 		};
