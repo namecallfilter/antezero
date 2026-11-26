@@ -5,9 +5,9 @@
 pub mod hand_eval;
 pub mod ids;
 pub mod obs;
+mod script;
 
 use std::fmt::Write as _;
-use std::str::SplitWhitespace;
 use std::sync::Arc;
 
 use self::hand_eval::{CoreCtx, HS_ANY, N_HANDS, core_ctx, core_rule, sel_ctx, sel_eval};
@@ -16,12 +16,13 @@ use self::obs::{
 	MAX_BOOST, MAX_CONS, MAX_HAND, MAX_JOKERS, MAX_PACK, MAX_SHOP, MAX_VOUCH, write_hand_ctx,
 	write_obs, write_obs_selection,
 };
+use self::script::{Header, Step};
+pub use self::script::{ScriptError, StartPoint, load_starts};
 use crate::actions::Action;
 use crate::card::{AnyCard, Card, CardLike, CardMask, Kind};
 use crate::data::{Back, Edition, Seal, Spectral, Tarot};
-use crate::game::{Area, BlindSlot, Game, HandSort, Phase, State};
-use crate::rng::PseudoRandom;
-use crate::{Stake, consumables, event, num, shop};
+use crate::game::{Area, BlindSlot, Game, Phase, State};
+use crate::{SEED_CHARS, Stake, consumables, event, num, shop};
 
 pub const N_ACTIONS: usize = 152;
 pub const N_SEL_VERBS: usize = 32;
@@ -60,7 +61,6 @@ const _: () = assert!(SEL_VERB_PLAY_HAND + (N_HANDS - 1) == N_SEL_VERBS);
 
 #[must_use]
 pub fn seed_from_index(i: u64) -> String {
-	const CHARS: &[u8] = b"123456789ABCDEFGHIJKLMNPQRSTUVWXYZ";
 	let mut x = i
 		.wrapping_mul(0x9e37_79b9_7f4a_7c15)
 		.wrapping_add(0x632b_e59b_d9b4_e019);
@@ -68,8 +68,7 @@ pub fn seed_from_index(i: u64) -> String {
 	for _ in 0..8 {
 		x ^= x >> 29;
 		x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-		let idx = usize::try_from((x >> 32) % 34).unwrap_or(0);
-		s.push(char::from(CHARS[idx]));
+		s.push(char::from(SEED_CHARS[num::pick(x >> 32, SEED_CHARS.len())]));
 	}
 	s
 }
@@ -122,14 +121,6 @@ pub fn hand_verb_target(v: usize) -> Option<usize> {
 	} else {
 		None
 	}
-}
-
-#[derive(Clone, Debug)]
-pub struct StartPoint {
-	pub game: Game,
-	pub script: String,
-	pub challenge: String,
-	pub id: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -253,21 +244,21 @@ fn mask_of_slice(order: &[usize]) -> CardMask {
 	m
 }
 
-fn simple_action(a: usize) -> Option<(Action, &'static str)> {
+fn simple_action(a: usize) -> Option<Action> {
 	match a {
-		ACT_SELECT_BLIND => Some((Action::SelectBlind, "select")),
-		ACT_SKIP_BLIND => Some((Action::SkipBlind, "skip")),
-		ACT_REROLL_BOSS => Some((Action::RerollBoss, "reroll_boss")),
-		ACT_CASH_OUT => Some((Action::CashOut, "cash_out")),
-		ACT_END_SHOP => Some((Action::EndShop, "end_shop")),
-		ACT_REROLL => Some((Action::Reroll, "reroll")),
-		ACT_SKIP_PACK => Some((Action::SkipPack, "skip_pack")),
+		ACT_SELECT_BLIND => Some(Action::SelectBlind),
+		ACT_SKIP_BLIND => Some(Action::SkipBlind),
+		ACT_REROLL_BOSS => Some(Action::RerollBoss),
+		ACT_CASH_OUT => Some(Action::CashOut),
+		ACT_END_SHOP => Some(Action::EndShop),
+		ACT_REROLL => Some(Action::Reroll),
+		ACT_SKIP_PACK => Some(Action::SkipPack),
 		_ => None,
 	}
 }
 
 fn decode_non_select_action(a: usize) -> Option<Action> {
-	if let Some((act, _)) = simple_action(a) {
+	if let Some(act) = simple_action(a) {
 		return Some(act);
 	}
 	if (ACT_BUY..ACT_BUY + MAX_SHOP).contains(&a) {
@@ -340,7 +331,7 @@ impl BalEnv {
 		if let Some(ref sp) = self.start {
 			self.g.clone_from(&sp.game);
 			if self.start_reseed {
-				self.g.rng = PseudoRandom::new(seed);
+				self.g.rng.reseed(seed);
 			}
 			self.episode_start = sp.id;
 		} else {
@@ -361,19 +352,20 @@ impl BalEnv {
 		self.blue_seals = self.count_blue_seals();
 		self.skips_pending = 0;
 		self.script.clear();
-		if self.cfg.record {
-			if let Some(ref sp) = self.start {
+		if let Some(ref sp) = self.start {
+			if self.cfg.record {
 				self.script.clone_from(&sp.script);
-				if self.start_reseed {
-					let _ = writeln!(self.script, "dbg_reseed {seed}");
-				}
-			} else {
-				self.script = format!(
-					"seed {seed} deck {} stake {}\n",
-					self.cfg.back.key(),
-					u8::from(self.cfg.stake)
-				);
 			}
+			if self.start_reseed {
+				self.record(Step::Reseed(seed));
+			}
+		} else if self.cfg.record {
+			let header = Header {
+				seed,
+				back: self.cfg.back,
+				stake: self.cfg.stake,
+			};
+			let _ = writeln!(self.script, "{header}");
 		}
 		let mut unused = BalStepInfo::default();
 		self.auto_advance(&mut unused);
@@ -700,6 +692,12 @@ impl BalEnv {
 		!any || (self.g.flow.state.is_pack() && !pick && m[ACT_SKIP_PACK] == 0)
 	}
 
+	fn record(&mut self, step: Step<'_>) {
+		if self.cfg.record {
+			let _ = writeln!(self.script, "{step}");
+		}
+	}
+
 	fn exec_action(&mut self, act: Action) -> bool {
 		let mut base_sale = 0.0;
 		match act {
@@ -729,6 +727,9 @@ impl BalEnv {
 		} else {
 			self.g.step(act).is_ok()
 		};
+		if ok {
+			self.record(Step::Act(act));
+		}
 		if ok && act == Action::SkipBlind {
 			self.skips_pending += 1;
 		}
@@ -785,13 +786,13 @@ impl BalEnv {
 			let mut m = [0u8; N_ACTIONS];
 			self.mask(&mut m);
 			let next_act = if self.g.flow.state == State::RoundEval && m[ACT_CASH_OUT] != 0 {
-				Some((Action::CashOut, "cash_out"))
+				Some(Action::CashOut)
 			} else if self.g.flow.state == State::BlindSelect
 				&& m[ACT_SELECT_BLIND] != 0
 				&& m[ACT_SKIP_BLIND] == 0
 				&& m[ACT_REROLL_BOSS] == 0
 			{
-				Some((Action::SelectBlind, "select"))
+				Some(Action::SelectBlind)
 			} else {
 				let mut only = None;
 				let mut n = 0usize;
@@ -810,14 +811,10 @@ impl BalEnv {
 					None
 				}
 			};
-			let Some((act, line)) = next_act else {
+			let Some(act) = next_act else {
 				return;
 			};
 			let prev_state = self.g.flow.state;
-			if self.cfg.record {
-				self.script.push_str(line);
-				self.script.push('\n');
-			}
 			if !self.exec_action(act) {
 				info.illegal = 1;
 				return;
@@ -912,9 +909,6 @@ impl BalEnv {
 			if p > q {
 				continue;
 			}
-			if self.cfg.record {
-				let _ = writeln!(self.script, "move_hand {p} {q}");
-			}
 			let _ = self.exec_action(Action::MoveHand {
 				from: num::byte(p),
 				to: num::byte(q),
@@ -956,9 +950,6 @@ impl BalEnv {
 				.position(|c| c.core.id == tid)
 			{
 				let curr_idx = k + 1 + offset;
-				if self.cfg.record {
-					let _ = writeln!(self.script, "move_joker {curr_idx} {k}");
-				}
 				let _ = self.exec_action(Action::MoveJoker {
 					from: num::byte(curr_idx),
 					to: num::byte(k),
@@ -971,9 +962,6 @@ impl BalEnv {
 		if order.len() == 2 && order[0] < order[1] {
 			let (src, dst) = (order[0], order[1]);
 			for k in (src..dst).rev() {
-				if self.cfg.record {
-					let _ = writeln!(self.script, "move_hand {k} {}", k + 1);
-				}
 				let _ = self.exec_action(Action::MoveHand {
 					from: num::byte(k),
 					to: num::byte(k + 1),
@@ -1097,9 +1085,6 @@ impl BalEnv {
 		};
 
 		if let Some(act) = sim_act {
-			if self.cfg.record {
-				let _ = writeln!(self.script, "{act}");
-			}
 			if !self.exec_action(act) {
 				info.illegal = 1;
 			}
@@ -1209,9 +1194,7 @@ impl BalEnv {
 			self.endless = true;
 			self.win_score = self.g.round.chips;
 			info.reward += win_reward(self, self.g.round.chips);
-			if self.cfg.record {
-				self.script.push_str("endless\n");
-			}
+			self.record(Step::Endless);
 			self.auto_advance(info);
 		}
 
@@ -1272,182 +1255,5 @@ impl BalEnv {
 		info.round = self.g.run.round;
 		info.dollars = num::id(num::trunc(self.g.run.dollars));
 		info.steps = self.steps;
-	}
-}
-
-fn parse_script_mask<'a>(tokens: impl Iterator<Item = &'a str>) -> Option<CardMask> {
-	let mut mask = CardMask::EMPTY;
-	for tok in tokens {
-		let idx: usize = tok.parse().ok()?;
-		if idx >= CardMask::CAPACITY {
-			return None;
-		}
-		mask.insert(idx);
-	}
-	Some(mask)
-}
-
-fn parse_script_action(line: &str) -> Option<Action> {
-	let mut it = line.split_whitespace();
-	let op = it.next()?;
-	let next_u8 = |it: &mut SplitWhitespace<'_>| -> Option<u8> { it.next()?.parse().ok() };
-	match op {
-		"play" => Some(Action::Play(parse_script_mask(it)?)),
-		"discard" => Some(Action::Discard(parse_script_mask(it)?)),
-		"use" => Some(Action::UseConsumable {
-			index: next_u8(&mut it)?,
-			targets: parse_script_mask(it)?,
-		}),
-		"buy_use" => Some(Action::BuyAndUse {
-			index: next_u8(&mut it)?,
-			targets: parse_script_mask(it)?,
-		}),
-		"pick" => Some(Action::PickPackCard {
-			index: next_u8(&mut it)?,
-			targets: parse_script_mask(it)?,
-		}),
-		"sell" | "sell_joker" => Some(Action::SellJoker(next_u8(&mut it)?)),
-		"sell_cons" | "sell_consumable" => Some(Action::SellConsumable(next_u8(&mut it)?)),
-		"sort_rank" => Some(Action::SortHand(HandSort::Rank)),
-		"sort_suit" => Some(Action::SortHand(HandSort::Suit)),
-		_ => line.parse().ok(),
-	}
-}
-
-fn step_script_action(g: &mut Game, act: Action) -> bool {
-	if g.step(act).is_ok() {
-		return true;
-	}
-	let fallback = match act {
-		Action::UseConsumable { index, targets } if targets != CardMask::EMPTY => {
-			Some(Action::UseConsumable {
-				index,
-				targets: CardMask::EMPTY,
-			})
-		}
-		Action::BuyAndUse { index, targets } if targets != CardMask::EMPTY => {
-			Some(Action::BuyAndUse {
-				index,
-				targets: CardMask::EMPTY,
-			})
-		}
-		Action::PickPackCard { index, targets } if targets != CardMask::EMPTY => {
-			Some(Action::PickPackCard {
-				index,
-				targets: CardMask::EMPTY,
-			})
-		}
-		_ => None,
-	};
-	fallback.is_some_and(|fb| g.step(fb).is_ok())
-}
-
-/// Replays a `.bal` script and returns the settled `StartPoint` after each
-/// action count in `ks` (`None` if illegal or terminal).
-#[must_use]
-pub fn load_starts(script: &str, ks: &[i32]) -> (Vec<Option<StartPoint>>, String) {
-	let mut out: Vec<Option<StartPoint>> = vec![None; ks.len()];
-	if ks.is_empty() {
-		return (out, String::new());
-	}
-	let max_k = ks.iter().copied().max().unwrap_or(0);
-	let mut g: Option<Game> = None;
-	let mut challenge = String::new();
-	let mut text = String::new();
-	let mut k = 0i32;
-
-	for raw in script.lines() {
-		if max_k >= 0 && k >= max_k && g.is_some() {
-			break;
-		}
-		let line = raw.split('#').next().unwrap_or("").trim();
-		if line.is_empty() {
-			continue;
-		}
-		if let Some(ref mut game) = g {
-			k += 1;
-			let optional = line.starts_with('?');
-			let act_line = if optional {
-				line.trim_start_matches('?').trim_start()
-			} else {
-				line
-			};
-			if act_line == "endless" {
-				game.setup.endless = true;
-			} else if let Some(act) = parse_script_action(act_line) {
-				if !step_script_action(game, act) && !optional {
-					return (
-						vec![None; ks.len()],
-						format!("line {k} '{act_line}' failed"),
-					);
-				}
-			} else if !optional {
-				return (
-					vec![None; ks.len()],
-					format!("line {k} '{act_line}' unparseable"),
-				);
-			}
-			text.push_str(line);
-			text.push('\n');
-			capture_starts(game, &text, &challenge, k, ks, &mut out);
-		} else {
-			let mut it = line.split_whitespace();
-			let (mut seed, mut deck, mut stake) = ("", "b_red", 1u8);
-			while let Some(w) = it.next() {
-				match w {
-					"seed" => seed = it.next().unwrap_or(""),
-					"deck" => deck = it.next().unwrap_or("b_red"),
-					"stake" => stake = it.next().and_then(|s| s.parse().ok()).unwrap_or(1),
-					"challenge" => challenge = it.next().unwrap_or("").to_string(),
-					_ => {}
-				}
-			}
-			if seed.is_empty() {
-				return (out, "no header".to_string());
-			}
-			if !challenge.is_empty() {
-				return (out, format!("challenge {challenge} not supported"));
-			}
-			let Some(back) = Back::from_key(deck).filter(|b| b.is_simulated()) else {
-				return (out, format!("unsupported deck {deck}"));
-			};
-			let Ok(st) = Stake::try_from(stake) else {
-				return (out, format!("invalid stake {stake}"));
-			};
-			let mut game = Game::new_run(seed, back, st);
-			game.set_tracing(false);
-			text.push_str(line);
-			text.push('\n');
-			capture_starts(&game, &text, &challenge, 0, ks, &mut out);
-			g = Some(game);
-		}
-	}
-	if g.is_none() {
-		return (vec![None; ks.len()], "empty script".to_string());
-	}
-	if max_k >= 0 && k < max_k {
-		return (
-			vec![None; ks.len()],
-			format!("script has only {k} action lines"),
-		);
-	}
-	(out, String::new())
-}
-
-fn capture_starts(
-	g: &Game, text: &str, challenge: &str, k: i32, ks: &[i32], out: &mut [Option<StartPoint>],
-) {
-	if g.is_terminal() {
-		return;
-	}
-	for (i, &target_k) in ks.iter().enumerate() {
-		if target_k == k {
-			out[i] = Some(StartPoint {
-				game: g.clone(),
-				script: text.to_string(),
-				challenge: challenge.to_string(),
-				id: -1,
-			});
-		}
 	}
 }

@@ -128,6 +128,28 @@ def test_a_start_share_without_usable_start_states_is_refused(tmp_path):
         az.VecEnv(1, start_pool=pool, start_frac=0.5)
 
 
+def test_both_start_loaders_skip_an_optional_line_that_does_not_apply(tmp_path):
+    recording = "seed TEST deck b_red stake 1\nselect\n? not_an_action 9\nplay 0 1\nplay 0 1\n"
+    steps = [1, 2, 3, 4]
+    pool = az.StartPool()
+    assert [i >= 0 for i in pool.add(recording, steps)] == [True, False, True, True]
+    assert pool.error == ""
+    env = az.VecEnv(1, start_pool=write_pool(tmp_path, recording, steps), start_frac=1.0)
+    assert env.start_pool_size == len(pool) == 3
+
+
+def test_a_recording_that_stops_replaying_gives_no_start_point(tmp_path):
+    recording = "seed TEST deck b_red stake 1\nselect\nnot_an_action 9\n"
+    pool = az.StartPool()
+    assert list(pool.add(recording, [1, 2])) == [-1, -1]
+    assert pool.error == "line 2 'not_an_action 9' unparseable"
+    with pytest.raises(ValueError, match="no usable start state"):
+        az.VecEnv(1, start_pool=write_pool(tmp_path, recording, [1, 2]), start_frac=1.0)
+    assert list(pool.add("seed TEST deck b_red stake garbage\nselect\n", [1])) == [-1]
+    assert pool.error == "invalid stake garbage"
+    assert len(pool) == 0
+
+
 def test_a_bad_reward_mode_or_start_share_is_refused():
     with pytest.raises(ValueError, match="reward_mode"):
         az.VecEnv(1, reward_mode="nope")
@@ -135,6 +157,42 @@ def test_a_bad_reward_mode_or_start_share_is_refused():
         az.VecEnv(1, start_frac=1.5)
     with pytest.raises(ValueError, match="must be <= 1"):
         az.VecEnv(1, snapshot_prob=0.6, start_frac=0.6)
+
+
+def core_env_arrays():
+    """The arrays a BalatroCoreEnv writes into: observation, selection, mask, selection specs, hand context."""
+    return (
+        np.zeros(az.balatro_obs_layout()[1], dtype=np.float32),
+        np.zeros(44, dtype=np.float32),
+        np.zeros(152, dtype=np.uint8),
+        np.zeros((32, 3), dtype=np.int32),
+        np.zeros(32, dtype=np.int32),
+    )
+
+
+def test_a_recorded_core_env_game_replays_to_the_same_state():
+    select_blind, discard = 2, 1
+    env = az.BalatroCoreEnv(record=True)
+    live = core_env_arrays()
+    env.reset_into(None, "RECORD", *live)
+    for action, cards in [(select_blind, []), (discard, [0, 5])]:
+        assert not env.step_into(action, cards, *live)["illegal"]
+    script = env.script()
+    assert script == "seed RECORD deck b_red stake 1\nselect\ndiscard 0 5\n"
+
+    pool = az.StartPool()
+    assert list(pool.add(script, [2])) == [0] and pool.error == ""
+    replayed = core_env_arrays()
+    env.set_start(pool, 0, False)
+    env.reset_into(None, "OTHER", *replayed)
+    assert all(np.array_equal(a, b) for a, b in zip(live, replayed))
+
+    env.set_start(pool, 0, True)
+    env.reset_into(None, "OTHER", *replayed)
+    assert not env.step_into(discard, [5], *replayed)["illegal"]
+    reseeded = env.script()
+    assert reseeded == script + "dbg_reseed OTHER\ndiscard 5\n"
+    assert list(pool.add(reseeded, [4])) == [1] and pool.error == ""
 
 
 def test_the_balatro_core_env_runs_a_seeded_game():
@@ -145,11 +203,7 @@ def test_the_balatro_core_env_runs_a_seeded_game():
 
     def run(seed):
         env = az.BalatroCoreEnv(deck="b_red", stake=1, max_steps=300)
-        obs = np.zeros(obs_size, dtype=np.float32)
-        sel = np.zeros(44, dtype=np.float32)
-        mask = np.zeros(152, dtype=np.uint8)
-        specs = np.zeros((32, 3), dtype=np.int32)
-        hctx = np.zeros(32, dtype=np.int32)
+        obs, sel, mask, specs, hctx = core_env_arrays()
         env.reset_into(seed, None, obs, sel, mask, specs, hctx)
         rng = np.random.default_rng(seed)
         trace = []

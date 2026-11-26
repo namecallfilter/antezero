@@ -24,6 +24,10 @@ use crate::{card, event, flow, num, pools, round, shop};
 /// keys are the stream name followed by the seed).
 pub const MAX_SEED_LEN: usize = 32;
 
+/// The characters generated seeds are made of: the digits and capital
+/// letters without `0` and `O`.
+pub const SEED_CHARS: &[u8] = b"123456789ABCDEFGHIJKLMNPQRSTUVWXYZ";
+
 /// The numbers of the stakes, from White (1) to Gold (8).
 pub const STAKES: RangeInclusive<u8> = Stake::White as u8..=Stake::Gold as u8;
 

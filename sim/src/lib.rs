@@ -39,4 +39,4 @@ pub use card::{AnyCard, Card, CardLike, Kind, PlayingCard};
 pub use data::sets::{CenterSet, HandSet, PlanetSet, VoucherSet};
 pub use data::*;
 pub use game::{Game, Phase, State};
-pub use run::{InvalidStake, MAX_SEED_LEN, STAKES, Stake};
+pub use run::{InvalidStake, MAX_SEED_LEN, SEED_CHARS, STAKES, Stake};

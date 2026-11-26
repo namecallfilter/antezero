@@ -9,12 +9,10 @@ use sim::game::{BlindSlot, BlindStatus, Game as SimGame, Phase};
 use sim::inject::Inject;
 use sim::obs::{self, BuildPreview, Op};
 use sim::rng::splitmix64;
-use sim::{Action, CardMask, Stake, num};
+use sim::{Action, CardMask, SEED_CHARS, Stake, num};
 
 use crate::interval::{ConsEvent, EpisodeStatsOut, HandCounts, JokerSet, consumable_event};
 use crate::rows::{ObsOptions, Rows};
-
-const SEED_CHARS: &[u8] = b"123456789ABCDEFGHIJKLMNPQRSTUVWXYZ";
 
 /// Seed string `n` in the game's seed alphabet (8 characters).
 fn seed_string(n: u64) -> String {

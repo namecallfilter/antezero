@@ -118,23 +118,36 @@ impl PyStartPool {
 		&self.err
 	}
 
+	/// Replays the `.bal` script and adds the game after each action count
+	/// of `ks` as a start point. Returns their ids, `-1` where there is no
+	/// start point: the run is over there, or the line is a skipped optional
+	/// line. If the script does not replay through the largest count, no
+	/// point is added, every id is `-1` and `error` says why.
 	#[expect(
 		clippy::needless_pass_by_value,
-		reason = "PyO3 extracts Python list arguments as Vec<i32> by value"
+		reason = "PyO3 extracts a Python list argument as a Vec by value"
 	)]
-	fn add(&mut self, py: Python<'_>, script: &str, ks: Vec<i32>) -> Vec<i32> {
-		let (loaded, err) = py.detach(|| load_starts(script, &ks));
-		self.err = err;
+	fn add(&mut self, py: Python<'_>, script: &str, ks: Vec<i32>) -> PyResult<Vec<i32>> {
+		let steps: Vec<usize> = ks
+			.iter()
+			.map(|&k| usize::try_from(k))
+			.collect::<Result<_, _>>()
+			.map_err(|_| PyValueError::new_err("ks must not hold a negative action count"))?;
 		let mut ids = vec![-1i32; ks.len()];
-		for (i, pt_opt) in loaded.into_iter().enumerate() {
-			if let Some(mut pt) = pt_opt {
-				let id = num::id(self.pts.len());
-				pt.id = id;
-				ids[i] = id;
-				self.pts.push(Arc::new(pt));
+		self.err.clear();
+		match py.detach(|| load_starts(script, &steps)) {
+			Ok(points) => {
+				for (id, point) in ids.iter_mut().zip(points) {
+					if let Some(mut point) = point {
+						*id = num::id(self.pts.len());
+						point.id = *id;
+						self.pts.push(Arc::new(point));
+					}
+				}
 			}
+			Err(e) => self.err = e.to_string(),
 		}
-		ids
+		Ok(ids)
 	}
 
 	fn script(&self, id: i32) -> &str {
