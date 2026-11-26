@@ -46,4 +46,5 @@ pub use preview_items::{
 	BuildPreview, ItemPreview, PREVIEW_CACHE, PREVIEW_ITEM_HANDS, build_preview,
 };
 pub use tokens::hand_id;
+pub(crate) use tokens::unseen_pool;
 pub use zone::{ItemZone, Zone};

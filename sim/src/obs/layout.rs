@@ -31,8 +31,9 @@ pub const GLOB_INT: usize = 10;
 /// the discard pile (52 counts).
 pub const GLOB_FLOAT: usize = 216;
 /// The global floats with `obs_v2`: [`GLOB_FLOAT`] and the last hand's
-/// score, chips, mult and share of its blind (score / blind chips, at most
-/// 4).
+/// score, chips, mult and share of the blind (its score over the chips of
+/// the blind that is up, or of the blind it was played against while none
+/// is; at most 4).
 pub const GLOB_FLOAT_V2: usize = 220;
 pub const MAX_OPS: usize = 96;
 /// Maximum scored play candidates per decision (the bindings reject larger

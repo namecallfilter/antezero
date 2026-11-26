@@ -1,5 +1,5 @@
-//! Exact ID and prototype `config.extra` tables matching `RLBalatro`'s
-//! `ids.json` and `game_data.inc` (alphabetical by key within each prefix).
+//! The ids and the `config.extra` values of the observation, matching
+//! `RLBalatro`'s tables (ids are alphabetical by key within each key prefix).
 
 use std::iter;
 use std::sync::OnceLock;
@@ -13,19 +13,19 @@ use crate::data::{
 use crate::game::Game;
 use crate::num;
 
-pub const N_JOKER_KEYS: usize = ALL_JOKERS.len();
-pub const N_VOUCHER_KEYS: usize = ALL_VOUCHERS.len();
-pub const CARD_BACK_CENTER_F: f32 = 300.0;
+pub(super) const N_JOKER_KEYS: usize = ALL_JOKERS.len();
+pub(super) const N_VOUCHER_KEYS: usize = ALL_VOUCHERS.len();
+/// The center feature of a card shown face down.
+pub(super) const CARD_BACK_CENTER_F: f32 = 300.0;
 
-pub struct IdTables {
-	pub center_id: [u16; CENTER_COUNT],
-	pub back_id: [u16; ALL_BACKS.len()],
-	pub blind_id: [u16; ALL_BLINDS.len()],
-	pub tag_id: [u16; ALL_TAGS.len()],
-	pub joker_alpha: [usize; N_JOKER_KEYS],
-	pub joker_by_alpha: [Joker; N_JOKER_KEYS],
-	pub voucher_alpha: [usize; N_VOUCHER_KEYS],
-	pub voucher_by_alpha: [Voucher; N_VOUCHER_KEYS],
+struct IdTables {
+	center_id: [u16; CENTER_COUNT],
+	back_id: [u16; ALL_BACKS.len()],
+	blind_id: [u16; ALL_BLINDS.len()],
+	tag_id: [u16; ALL_TAGS.len()],
+	joker_by_alpha: [Joker; N_JOKER_KEYS],
+	voucher_alpha: [usize; N_VOUCHER_KEYS],
+	voucher_by_alpha: [Voucher; N_VOUCHER_KEYS],
 }
 
 fn build_tables() -> IdTables {
@@ -34,7 +34,6 @@ fn build_tables() -> IdTables {
 		back_id: [0; ALL_BACKS.len()],
 		blind_id: [0; ALL_BLINDS.len()],
 		tag_id: [0; ALL_TAGS.len()],
-		joker_alpha: [0; N_JOKER_KEYS],
 		joker_by_alpha: [Joker::Joker; N_JOKER_KEYS],
 		voucher_alpha: [0; N_VOUCHER_KEYS],
 		voucher_by_alpha: [Voucher::OverstockNorm; N_VOUCHER_KEYS],
@@ -61,7 +60,6 @@ fn build_tables() -> IdTables {
 	let mut jokers: Vec<Joker> = ALL_JOKERS.to_vec();
 	jokers.sort_by_key(|j| j.key());
 	for (rank, j) in jokers.into_iter().enumerate() {
-		t.joker_alpha[j as usize] = rank;
 		t.joker_by_alpha[rank] = j;
 		t.center_id[Center::Joker(j).index()] = u16::try_from(74 + rank).unwrap_or(0);
 	}
@@ -101,52 +99,54 @@ fn build_tables() -> IdTables {
 }
 
 #[inline]
-#[must_use]
-pub fn tables() -> &'static IdTables {
+fn tables() -> &'static IdTables {
 	static TABLES: OnceLock<IdTables> = OnceLock::new();
 	TABLES.get_or_init(build_tables)
 }
 
-#[inline]
+/// The jokers in the order the observation numbers them (alphabetical by
+/// key): the order of the `stickers` and `target` groups, and of the joker
+/// center ids.
 #[must_use]
-pub fn center_id(c: Center) -> u16 {
+pub fn jokers_by_key() -> &'static [Joker] {
+	&tables().joker_by_alpha
+}
+
+/// The vouchers in the order the observation numbers them (alphabetical by
+/// key): the order of the owned vouchers in the `round_ctx` group.
+#[must_use]
+pub fn vouchers_by_key() -> &'static [Voucher] {
+	&tables().voucher_by_alpha
+}
+
+#[inline]
+pub(super) fn center_id(c: Center) -> u16 {
 	tables().center_id[c.index()]
 }
 
 #[inline]
-#[must_use]
-pub fn back_id(b: Back) -> u16 {
+pub(super) fn back_id(b: Back) -> u16 {
 	tables().back_id[b as usize]
 }
 
 #[inline]
-#[must_use]
-pub fn blind_id(b: BlindKind) -> u16 {
+pub(super) fn blind_id(b: BlindKind) -> u16 {
 	tables().blind_id[b as usize]
 }
 
 #[inline]
-#[must_use]
-pub fn tag_id(t: TagKind) -> u16 {
+pub(super) fn tag_id(t: TagKind) -> u16 {
 	tables().tag_id[t as usize]
 }
 
 #[inline]
-#[must_use]
-pub fn joker_alpha(j: Joker) -> usize {
-	tables().joker_alpha[j as usize]
-}
-
-#[inline]
-#[must_use]
-pub fn voucher_alpha(v: Voucher) -> usize {
+pub(super) fn voucher_alpha(v: Voucher) -> usize {
 	tables().voucher_alpha[v as usize]
 }
 
 /// Static + dynamic `(extra0, extra1)` features (`f[17]`, `f[18]`) matching
-/// `RLBalatro/env/src/env.cpp:card_features`.
-#[must_use]
-pub fn card_extras(card: &Card) -> (f32, f32) {
+/// `RLBalatro`'s card features.
+pub(super) fn card_extras(card: &Card) -> (f32, f32) {
 	let ab = &card.ab;
 	match card.kind {
 		Kind::Booster(b) => (f32::from(b.def().extra), 0.0),
@@ -172,7 +172,7 @@ pub fn card_extras(card: &Card) -> (f32, f32) {
 fn voucher_extra(v: Voucher) -> f32 {
 	use Voucher as V;
 	match v {
-		V::OverstockNorm => 0.0,
+		V::OverstockNorm | V::OverstockPlus => 0.0,
 		V::Antimatter => 15.0,
 		V::Blank => 5.0,
 		V::ClearanceSale => 25.0,
@@ -188,7 +188,6 @@ fn voucher_extra(v: Voucher) -> f32 {
 		V::Grabber
 		| V::Hieroglyph
 		| V::NachoTong
-		| V::OverstockPlus
 		| V::PaintBrush
 		| V::Palette
 		| V::Petroglyph
@@ -303,9 +302,8 @@ fn joker_scalar_extra(j: Joker) -> f32 {
 }
 
 /// Observation v2's `(joker_value, joker_count)` (`f[22]`, `f[23]`), matching
-/// `RLBalatro/env/src/env.cpp:joker_live`.
-#[must_use]
-pub fn joker_live(g: &Game, card: &Card) -> (f32, f32) {
+/// `RLBalatro`'s `joker_live`.
+pub(super) fn joker_live(g: &Game, card: &Card) -> (f32, f32) {
 	use Joker as J;
 	let Kind::Joker(j) = card.kind else {
 		return (0.0, 0.0);

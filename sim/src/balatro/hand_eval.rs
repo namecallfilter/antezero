@@ -1,6 +1,5 @@
-//! Fast poker-hand classifier (`sel_eval`) and the hand-first `core-then-free`
-//! per-pick rule (`CoreCtx`, `core_rule`) ported directly from
-//! `RLBalatro/env/src/hand_eval.hpp`.
+//! `RLBalatro`'s fast poker-hand classifier (`sel_eval`) and its hand-first
+//! `core-then-free` per-pick rule (`CoreCtx`, `core_rule`).
 
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -10,25 +9,39 @@ use crate::data::{BlindKind, Joker, Suit};
 use crate::game::{Game, State};
 use crate::num;
 
-pub const MAX_HAND: usize = 24;
-pub const N_HANDS: usize = 12;
-pub const HS_ANY: usize = N_HANDS;
+/// The hand cards an observation has rows for; cards past them cannot be
+/// picked.
+pub(super) const MAX_HAND: usize = 24;
+pub(super) const N_HANDS: usize = 12;
+/// The declared "hand" of a plain play: any one to five cards.
+pub(super) const HS_ANY: usize = N_HANDS;
+/// The length of the hand context that [`BalEnv::write_all_obs`] writes, from
+/// which a policy computes the pick masks of the declared-hand plays itself.
+///
+/// While a hand is being selected, entry `i < 24` describes hand card `i`:
+/// its rank id (`2..=14`, `0` for a card without a rank) in bits 0 to 3, the
+/// suits it counts as for a flush (Spades, Hearts, Clubs, Diamonds) in bits
+/// 4 to 7, bit 8 if it has no rank, bit 9 if it is forced into the selection
+/// and bit 10 for every card present. Entry 24 is the number of hand cards,
+/// entry 25 is bit 0 for Four Fingers and bit 1 for Shortcut, and entries 28
+/// and 29 are the fewest and the most cards the boss lets a play have. A
+/// face-down card has no rank and no suit when face-down cards are hidden.
+/// In every other state all entries are 0.
+///
+/// Entries 26, 27, 30 and 31 are unused, as in `RLBalatro`. Bit 3 of entry 25
+/// is its "play blocked" flag, which is only set between the events of a
+/// draw and so is always 0 here.
+///
+/// [`BalEnv::write_all_obs`]: super::BalEnv::write_all_obs
 pub const HS_CTX: usize = 32;
-pub const CORE_INF: i32 = 64;
+const CORE_INF: i32 = 64;
 
-pub struct StraightLut {
-	pub run: Vec<[u16; 1 << 13]>,
-}
+/// The rank sets of one [`straight_lut`] mode: bit `r - 2` for rank id `r`.
+const RANK_SETS: usize = 1 << 13;
 
-pub struct StraightMins {
-	pub m: [Vec<u16>; 4],
-}
-
-fn build_straight_lut() -> StraightLut {
-	let mut lut = StraightLut {
-		run: vec![[0u16; 1 << 13]; 4],
-	};
-	for (mode, table) in lut.run.iter_mut().enumerate() {
+fn build_straight_lut() -> Vec<[u16; RANK_SETS]> {
+	let mut lut = vec![[0u16; RANK_SETS]; 4];
+	for (mode, table) in lut.iter_mut().enumerate() {
 		let need = if (mode & 2) != 0 { 4 } else { 5 };
 		let can_skip = (mode & 1) != 0;
 		for (mask, cell) in table.iter_mut().enumerate() {
@@ -64,67 +77,63 @@ fn build_straight_lut() -> StraightLut {
 	lut
 }
 
+/// Which sets of ranks hold a straight: four tables, one for each mode
+/// `2 * four_fingers + shortcut`, indexed by a rank set with bit `r - 2` for
+/// rank id `r` (an Ace is bit 12).
+///
+/// An entry is 0 if the set holds no straight. Otherwise bit 15 is set and
+/// the low 13 bits are the ranks of the straight.
 #[inline]
 #[must_use]
-pub fn straight_lut() -> &'static StraightLut {
-	static LUT: OnceLock<StraightLut> = OnceLock::new();
+pub fn straight_lut() -> &'static [[u16; RANK_SETS]] {
+	static LUT: OnceLock<Vec<[u16; RANK_SETS]>> = OnceLock::new();
 	LUT.get_or_init(build_straight_lut)
 }
 
-fn build_straight_mins() -> StraightMins {
+fn build_straight_mins() -> [Vec<u16>; 4] {
 	let lut = straight_lut();
-	let mut mins = StraightMins {
-		m: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
-	};
+	let mut mins = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 	for mode in 0..4 {
-		for x in 0..(1usize << 13) {
-			if (lut.run[mode][x] & 0x8000) == 0 {
+		for x in 0..RANK_SETS {
+			if (lut[mode][x] & 0x8000) == 0 {
 				continue;
 			}
 			let mut minimal = true;
 			for b in 0..13 {
-				if ((x >> b) & 1) != 0 && (lut.run[mode][x & !(1usize << b)] & 0x8000) != 0 {
+				if ((x >> b) & 1) != 0 && (lut[mode][x & !(1usize << b)] & 0x8000) != 0 {
 					minimal = false;
 					break;
 				}
 			}
 			if minimal {
-				mins.m[mode].push(u16::try_from(x).unwrap_or(0));
+				mins[mode].push(u16::try_from(x).unwrap_or(0));
 			}
 		}
 	}
 	mins
 }
 
+/// For each [`straight_lut`] mode, the rank sets that hold a straight and no
+/// smaller one.
 #[inline]
-#[must_use]
-pub fn straight_mins() -> &'static StraightMins {
-	static MINS: OnceLock<StraightMins> = OnceLock::new();
+fn straight_mins() -> &'static [Vec<u16>; 4] {
+	static MINS: OnceLock<[Vec<u16>; 4]> = OnceLock::new();
 	MINS.get_or_init(build_straight_mins)
 }
 
 #[derive(Clone, Copy)]
-pub struct SelCtx {
-	pub nh: usize,
-	pub rbit: [u32; MAX_HAND],
-	pub nominal: [f64; MAX_HAND],
-	pub suit: [u32; 4],
-	pub stone: u32,
-	pub forced: u32,
-	pub ff: bool,
-	pub shortcut: bool,
-	pub splash: bool,
+pub(super) struct SelCtx {
+	pub(super) nh: usize,
+	rbit: [u32; MAX_HAND],
+	nominal: [f64; MAX_HAND],
+	suit: [u32; 4],
+	stone: u32,
+	ff: bool,
+	shortcut: bool,
+	splash: bool,
 }
 
-#[derive(Clone, Copy)]
-pub struct SelEval {
-	pub hand_type: i32,
-	pub scoring: u32,
-	pub contains: u16,
-}
-
-#[must_use]
-pub fn sel_ctx(g: &Game) -> SelCtx {
+pub(super) fn sel_ctx(g: &Game) -> SelCtx {
 	let hc = &g.areas.hand.cards;
 	let nh = hc.len().min(MAX_HAND);
 	let smeared = g.areas.smeared();
@@ -134,7 +143,6 @@ pub fn sel_ctx(g: &Game) -> SelCtx {
 		nominal: [0.0; MAX_HAND],
 		suit: [0; 4],
 		stone: 0,
-		forced: 0,
 		ff: g.areas.has_joker(Joker::FourFingers),
 		shortcut: g.areas.has_joker(Joker::Shortcut),
 		splash: g.areas.has_joker(Joker::Splash),
@@ -160,9 +168,6 @@ pub fn sel_ctx(g: &Game) -> SelCtx {
 		if stone {
 			x.stone |= 1u32 << i;
 		}
-		if cd.forced_selection {
-			x.forced |= 1u32 << i;
-		}
 	}
 	x
 }
@@ -177,14 +182,11 @@ fn cards_with_ranks(ctx: &SelCtx, pos: &[usize], rm: u32) -> u32 {
 	out
 }
 
-#[must_use]
-pub fn sel_eval(ctx: &SelCtx, bits: u32, count: usize) -> SelEval {
+/// The cards of the hand cards `bits` that score when those `count` cards
+/// are played, one bit per hand position.
+pub(super) fn sel_eval(ctx: &SelCtx, bits: u32, count: usize) -> u32 {
 	if count == 0 {
-		return SelEval {
-			hand_type: -1,
-			scoring: 0,
-			contains: 0,
-		};
+		return 0;
 	}
 	let mut pos = [0usize; 5];
 	let mut num_pos = 0usize;
@@ -220,7 +222,7 @@ pub fn sel_eval(ctx: &SelCtx, bits: u32, count: usize) -> SelEval {
 			}
 		}
 		let mode = (usize::from(ctx.ff) << 1) | usize::from(ctx.shortcut);
-		let st_entry = straight_lut().run[mode][usize::try_from((s1 >> 2) & 0x1fff).unwrap_or(0)];
+		let st_entry = straight_lut()[mode][usize::try_from((s1 >> 2) & 0x1fff).unwrap_or(0)];
 		if (st_entry & 0x8000) != 0 {
 			straight = true;
 			ps = cards_with_ranks(ctx, pos_slice, u32::from(st_entry & 0x1fff) << 2);
@@ -238,25 +240,17 @@ pub fn sel_eval(ctx: &SelCtx, bits: u32, count: usize) -> SelEval {
 		p3 || p4 || p5,
 		n2 == 2 || (p3 && n2 == 1),
 		p2 || p3 || p4 || p5,
-		true,
 	];
-	let mut contains = 0u16;
-	for (h, &flag) in r_flags.iter().enumerate() {
-		if flag {
-			contains |= 1u16 << h;
-		}
-	}
-	let hand_type = num::id(usize::try_from(contains.trailing_zeros()).unwrap_or(11));
-	let sc = match hand_type {
-		0 | 2 => cards_with_ranks(ctx, pos_slice, e5),
-		1 | 5 => cards_with_ranks(ctx, pos_slice, e3 | high(e2)),
-		3 => pf | ps,
-		4 => cards_with_ranks(ctx, pos_slice, e4),
-		6 => pf,
-		7 => ps,
-		8 => cards_with_ranks(ctx, pos_slice, e3),
-		9 => cards_with_ranks(ctx, pos_slice, e2),
-		10 => cards_with_ranks(ctx, pos_slice, high(e2)),
+	let sc = match r_flags.iter().position(|&flag| flag) {
+		Some(0 | 2) => cards_with_ranks(ctx, pos_slice, e5),
+		Some(1 | 5) => cards_with_ranks(ctx, pos_slice, e3 | high(e2)),
+		Some(3) => pf | ps,
+		Some(4) => cards_with_ranks(ctx, pos_slice, e4),
+		Some(6) => pf,
+		Some(7) => ps,
+		Some(8) => cards_with_ranks(ctx, pos_slice, e3),
+		Some(9) => cards_with_ranks(ctx, pos_slice, e2),
+		Some(10) => cards_with_ranks(ctx, pos_slice, high(e2)),
 		_ => {
 			let mut best = pos_slice[0];
 			for &idx in &pos_slice[1..] {
@@ -267,27 +261,27 @@ pub fn sel_eval(ctx: &SelCtx, bits: u32, count: usize) -> SelEval {
 			1u32 << best
 		}
 	};
-	let scoring = sc | if ctx.splash { bits } else { bits & ctx.stone };
-	SelEval {
-		hand_type,
-		scoring,
-		contains,
-	}
+	sc | if ctx.splash { bits } else { bits & ctx.stone }
 }
 
+/// What the per-pick rule reads of the hand.
 #[derive(Clone, Copy)]
-pub struct CoreCtx {
-	pub nh: usize,
-	pub rank: [i8; MAX_HAND],
-	pub suit: [u8; MAX_HAND],
-	pub forced: u32,
-	pub ff: bool,
-	pub sc: bool,
-	pub block: bool,
-	pub lo: usize,
-	pub hi: usize,
-	pub cnt: [[u8; 13]; 5],
-	pub scnt: [u8; 4],
+pub(super) struct CoreCtx {
+	pub(super) nh: usize,
+	/// A card's rank id less 2, or -1 for a card without a rank.
+	pub(super) rank: [i8; MAX_HAND],
+	/// The suits a card counts as for a flush, bit `q` for `Suit::ALL[q]`.
+	pub(super) suit: [u8; MAX_HAND],
+	pub(super) forced: u32,
+	pub(super) ff: bool,
+	pub(super) sc: bool,
+	/// The fewest and the most cards the boss lets a play have.
+	pub(super) lo: usize,
+	pub(super) hi: usize,
+	/// The hand's cards of each rank: `cnt[0]` of any suit, `cnt[1 + q]` of
+	/// suit `q`.
+	cnt: [[u8; 13]; 5],
+	scnt: [u8; 4],
 }
 
 impl Default for CoreCtx {
@@ -299,7 +293,6 @@ impl Default for CoreCtx {
 			forced: 0,
 			ff: false,
 			sc: false,
-			block: false,
 			lo: 1,
 			hi: 5,
 			cnt: [[0; 13]; 5],
@@ -308,8 +301,9 @@ impl Default for CoreCtx {
 	}
 }
 
-#[must_use]
-pub fn core_ctx(g: &Game, hide: bool) -> CoreCtx {
+/// The context of the hand being selected in `g`. With `hide`, a face-down
+/// card has no rank and no suit.
+pub(super) fn core_ctx(g: &Game, hide: bool) -> CoreCtx {
 	let mut x = CoreCtx::default();
 	if g.flow.state != State::SelectingHand || g.is_terminal() {
 		return x;
@@ -350,7 +344,6 @@ pub fn core_ctx(g: &Game, hide: bool) -> CoreCtx {
 	}
 	x.ff = g.areas.has_joker(Joker::FourFingers);
 	x.sc = g.areas.has_joker(Joker::Shortcut);
-	x.block = false;
 	let lo = if g.blind.active(BlindKind::Psychic) {
 		5usize
 	} else {
@@ -432,7 +425,7 @@ impl RuleScratch {
 
 	fn eval_straight(&mut self, x: &CoreCtx, chans: Range<usize>) {
 		let mode = (usize::from(x.ff) << 1) | usize::from(x.sc);
-		let mins = &straight_mins().m[mode];
+		let mins = &straight_mins()[mode];
 		for c in chans {
 			let (mut pres, mut have) = (0u16, 0u16);
 			for v in 0..13 {
@@ -459,10 +452,14 @@ impl RuleScratch {
 
 /// Returns `(legal_next_cards_mask, can_stop)` for declared hand `hand` (`0..=11`,
 /// or `HS_ANY = 12`) and current selection bitmask `prefix` (forced cards included).
-#[must_use]
-pub fn core_rule(ctx: &CoreCtx, hand: usize, boss: bool, prefix: u32) -> (u32, bool) {
-	let budget = num::id(if boss { ctx.hi } else { 5 });
-	let lo = num::id(if boss { ctx.lo } else { 1 });
+///
+/// With Four Fingers the real game also scores a flush and a straight that
+/// use different cards as a Straight Flush, which a declared Straight Flush
+/// does not offer (its straight must lie inside one suit); the trainer's
+/// hand masker mirrors this rule, so the two change together.
+pub(super) fn core_rule(ctx: &CoreCtx, hand: usize, prefix: u32) -> (u32, bool) {
+	let budget = num::id(ctx.hi);
+	let lo = num::id(ctx.lo);
 	let num_sel = i32::try_from(prefix.count_ones()).unwrap_or(0);
 	let rem_budget = budget - num_sel;
 	let all_hand = if ctx.nh >= 32 {

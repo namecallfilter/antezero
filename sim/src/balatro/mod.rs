@@ -1,21 +1,25 @@
-//! Native Rust implementation of `RLBalatro`'s lean-actions environment
-//! (`152` discrete actions, `32` selection verbs, hand-first declared-hand
-//! plays, `auto_advance`, `StartPoint` replay, and exact `8281 + 44` obs).
+//! A native implementation of `RLBalatro`'s lean-actions environment: 152
+//! discrete actions, 32 of them selection verbs that take cards, plays that
+//! declare their poker hand, steps without a decision taken by the
+//! environment itself, episodes that start from recorded games, and its
+//! observation of 8281 floats.
 
-pub mod hand_eval;
-pub mod ids;
-pub mod obs;
+mod hand_eval;
+mod ids;
+mod obs;
 mod script;
 
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use self::hand_eval::{CoreCtx, HS_ANY, N_HANDS, core_ctx, core_rule, sel_ctx, sel_eval};
-use self::ids::{N_JOKER_KEYS, joker_alpha};
+use self::hand_eval::{CoreCtx, HS_ANY, MAX_HAND, N_HANDS, core_ctx, core_rule, sel_ctx, sel_eval};
+pub use self::hand_eval::{HS_CTX, straight_lut};
+pub use self::ids::{jokers_by_key, vouchers_by_key};
 use self::obs::{
-	MAX_BOOST, MAX_CONS, MAX_HAND, MAX_JOKERS, MAX_PACK, MAX_SHOP, MAX_VOUCH, write_hand_ctx,
-	write_obs, write_obs_selection,
+	MAX_BOOST, MAX_CONS, MAX_JOKERS, MAX_PACK, MAX_SHOP, MAX_VOUCH, write_hand_ctx, write_obs,
+	write_obs_selection,
 };
+pub use self::obs::{OBS_GROUPS, OBS_SIZE, SEL_F};
 use self::script::{Header, Step};
 pub use self::script::{ScriptError, StartPoint, load_starts};
 use crate::actions::Action;
@@ -24,43 +28,84 @@ use crate::data::{Back, Edition, Seal, Spectral, Tarot};
 use crate::game::{Area, BlindSlot, Game, Phase, State};
 use crate::{SEED_CHARS, Stake, consumables, event, num, shop};
 
+/// The number of actions: the length of the mask that
+/// [`BalEnv::write_all_obs`] writes.
 pub const N_ACTIONS: usize = 152;
+/// The number of selection verbs, the actions that take cards (see
+/// [`sel_verb_index`]).
 pub const N_SEL_VERBS: usize = 32;
+/// The most cards an action takes.
+pub const MAX_PICKS: usize = 5;
 
+/// Play the picked hand cards, whatever hand they make.
 pub const ACT_PLAY: usize = 0;
+/// Discard the picked hand cards.
 pub const ACT_DISCARD: usize = 1;
+/// Play the blind on offer.
 pub const ACT_SELECT_BLIND: usize = 2;
+/// Skip the blind on offer for its tag.
 pub const ACT_SKIP_BLIND: usize = 3;
+/// Reroll the boss blind.
 pub const ACT_REROLL_BOSS: usize = 4;
+/// Leave the round evaluation with its payout. The environment takes this
+/// action itself, so it is never left to the caller.
 pub const ACT_CASH_OUT: usize = 5;
+/// Leave the shop.
 pub const ACT_END_SHOP: usize = 6;
+/// Reroll the shop.
 pub const ACT_REROLL: usize = 7;
+/// `ACT_BUY + i` buys shop card `i`.
 pub const ACT_BUY: usize = 8;
+/// `ACT_BUY_USE + i` buys shop card `i`, a consumable, and uses it at once.
 pub const ACT_BUY_USE: usize = ACT_BUY + MAX_SHOP;
+/// `ACT_REDEEM + i` redeems shop voucher `i`.
 pub const ACT_REDEEM: usize = ACT_BUY_USE + MAX_SHOP;
+/// `ACT_OPEN + i` opens shop booster pack `i`.
 pub const ACT_OPEN: usize = ACT_REDEEM + MAX_VOUCH;
+/// `ACT_PICK + i` takes card `i` of the open pack; a card that acts on hand
+/// cards takes the picked ones.
 pub const ACT_PICK: usize = ACT_OPEN + MAX_BOOST;
+/// Skip the rest of the open pack.
 pub const ACT_SKIP_PACK: usize = ACT_PICK + MAX_PACK;
+/// `ACT_SELL_JOKER + i` sells joker `i`.
 pub const ACT_SELL_JOKER: usize = ACT_SKIP_PACK + 1;
+/// `ACT_SELL_CONS + i` sells consumable `i`.
 pub const ACT_SELL_CONS: usize = ACT_SELL_JOKER + MAX_JOKERS;
+/// `ACT_USE_CONS + i` uses consumable `i`; one that acts on hand cards takes
+/// the picked ones.
 pub const ACT_USE_CONS: usize = ACT_SELL_CONS + MAX_CONS;
+/// 19 ids that are never legal. In `RLBalatro` they swap joker `i` with its
+/// right neighbour, but only in its mode with one action per card toggle;
+/// its lean-actions mode, the one implemented here, orders jokers with
+/// [`ACT_REORDER_JOKERS`]. The ids stay so that the later ones keep their
+/// numbers, which trained checkpoints depend on.
 pub const ACT_JOKER_RIGHT: usize = ACT_USE_CONS + MAX_CONS;
+/// 20 ids that are never legal, here as in `RLBalatro`, which names them for
+/// moving joker `i` to the front. Kept like [`ACT_JOKER_RIGHT`].
 pub const ACT_JOKER_FRONT: usize = ACT_JOKER_RIGHT + MAX_JOKERS - 1;
+/// 20 ids that are never legal, here as in `RLBalatro`, which names them for
+/// moving joker `i` to the back. Kept like [`ACT_JOKER_RIGHT`].
 pub const ACT_JOKER_BACK: usize = ACT_JOKER_FRONT + MAX_JOKERS;
+/// Move the picked jokers to the front, in pick order. Legal with two jokers
+/// or more, once until another action changes the game.
 pub const ACT_REORDER_JOKERS: usize = ACT_JOKER_BACK + MAX_JOKERS;
+/// `ACT_PLAY_HAND + h` plays the picked hand cards as poker hand `h`, counted
+/// in `HandType::ALL` order from Flush Five to Pair (High Card has no id:
+/// [`ACT_PLAY`] plays any cards). A card can be picked only while the picks
+/// can still be completed to that hand, and the picks can stop once they
+/// hold it; cards picked after that are free.
 pub const ACT_PLAY_HAND: usize = ACT_REORDER_JOKERS + 1;
 const _: () = assert!(ACT_PLAY_HAND + (N_HANDS - 1) == N_ACTIONS);
 
-pub const SEL_VERB_PLAY: usize = 0;
-pub const SEL_VERB_DISCARD: usize = 1;
-pub const SEL_VERB_USE_CONS: usize = 2;
-pub const SEL_VERB_PICK: usize = SEL_VERB_USE_CONS + MAX_CONS;
-pub const SEL_VERB_REORDER_JOKERS: usize = SEL_VERB_PICK + MAX_PACK;
-pub const SEL_VERB_PLAY_HAND: usize = SEL_VERB_REORDER_JOKERS + 1;
+const SEL_VERB_PLAY: usize = 0;
+const SEL_VERB_DISCARD: usize = 1;
+const SEL_VERB_USE_CONS: usize = 2;
+const SEL_VERB_PICK: usize = SEL_VERB_USE_CONS + MAX_CONS;
+const SEL_VERB_REORDER_JOKERS: usize = SEL_VERB_PICK + MAX_PACK;
+const SEL_VERB_PLAY_HAND: usize = SEL_VERB_REORDER_JOKERS + 1;
 const _: () = assert!(SEL_VERB_PLAY_HAND + (N_HANDS - 1) == N_SEL_VERBS);
 
-#[must_use]
-pub fn seed_from_index(i: u64) -> String {
+fn seed_from_index(i: u64) -> String {
 	let mut x = i
 		.wrapping_mul(0x9e37_79b9_7f4a_7c15)
 		.wrapping_add(0x632b_e59b_d9b4_e019);
@@ -73,6 +118,10 @@ pub fn seed_from_index(i: u64) -> String {
 	s
 }
 
+/// The number of action `a` among the selection verbs, the actions that take
+/// cards: [`ACT_PLAY`], [`ACT_DISCARD`], the ten [`ACT_USE_CONS`] and the
+/// eight [`ACT_PICK`] actions, [`ACT_REORDER_JOKERS`] and the eleven
+/// [`ACT_PLAY_HAND`] actions, in this order. `None` for any other action.
 #[inline]
 #[must_use]
 pub fn sel_verb_index(a: usize) -> Option<usize> {
@@ -94,8 +143,7 @@ pub fn sel_verb_index(a: usize) -> Option<usize> {
 }
 
 #[inline]
-#[must_use]
-pub fn sel_verb_action(v: usize) -> usize {
+fn sel_verb_action(v: usize) -> usize {
 	if v == SEL_VERB_PLAY {
 		ACT_PLAY
 	} else if v == SEL_VERB_DISCARD {
@@ -111,9 +159,9 @@ pub fn sel_verb_action(v: usize) -> usize {
 	}
 }
 
+/// The hand that selection verb `v` declares, if it is a play.
 #[inline]
-#[must_use]
-pub fn hand_verb_target(v: usize) -> Option<usize> {
+fn hand_verb_target(v: usize) -> Option<usize> {
 	if v == SEL_VERB_PLAY {
 		Some(HS_ANY)
 	} else if (SEL_VERB_PLAY_HAND..SEL_VERB_PLAY_HAND + N_HANDS - 1).contains(&v) {
@@ -123,28 +171,62 @@ pub fn hand_verb_target(v: usize) -> Option<usize> {
 	}
 }
 
+/// The options of a [`BalEnv`].
 #[derive(Clone, Debug)]
 pub struct BalConfig {
+	/// The deck of a new run.
 	pub back: Back,
+	/// The stake of a new run.
 	pub stake: Stake,
+	/// The number of steps after which an episode is truncated.
 	pub max_steps: i32,
+	/// The reward for a blind beaten. Not paid with `reward_money`.
 	pub reward_blind: f32,
+	/// The reward for winning the run.
 	pub reward_win: f32,
+	/// Pay `log10` of the chips scored in the winning round in place of
+	/// `reward_win`.
 	pub reward_win_log: bool,
+	/// Above 8, a won run goes on in Endless Mode and the episode ends when
+	/// the boss of this ante is beaten, which pays the win reward again.
+	/// Otherwise the episode ends with the win.
 	pub endless_ante: i32,
+	/// Added to the reward of a lost run.
 	pub reward_lose: f32,
+	/// On a loss, also pay the share of the failed blind's chips that was
+	/// scored.
 	pub reward_lose_partial: bool,
+	/// Pay the dollars a step earns, divided by `money_per_reward`, in place
+	/// of `reward_blind`. The partial credit of a loss is then multiplied by
+	/// the failed blind's payout over `money_per_reward`.
 	pub reward_money: bool,
+	/// The dollars that pay a reward of 1 with `reward_money`. The rewards
+	/// are only finite if it is positive and finite.
 	pub money_per_reward: f32,
+	/// Pay this times the share of the blind's chips that a played hand
+	/// scores, unless the hand beats the blind.
 	pub reward_chips: f32,
+	/// Paid for each Blue Seal the deck gains in a step, and taken back for
+	/// each one it loses.
 	pub reward_blue_seal: f32,
+	/// Pay the reward of a skipped blind when the next blind is beaten.
 	pub reward_skip_deferred: bool,
+	/// Subtracted from the reward of every step.
 	pub step_cost: f32,
+	/// Subtracted from the reward of a joker reorder.
 	pub toggle_cost: f32,
+	/// Let a pack be skipped where the game refuses the skip (an Arcana or
+	/// Spectral pack with an empty hand), which can leave no action at all:
+	/// a softlock in the real game. Without it, a run that gets stuck there
+	/// ends as a loss.
 	pub disable_softlocks: bool,
+	/// Show nothing of the cards that lie face down in the hand or among the
+	/// jokers but that they are there, and treat such hand cards as having
+	/// no rank and no suit in the rule for declared hands. The deck rows of
+	/// the observation then hold the draw pile together with the face-down
+	/// hand cards and the cards discarded face down.
 	pub hide_face_down: bool,
-	pub sticker_penalty: f32,
-	pub joker_marks: [u8; N_JOKER_KEYS],
+	/// Keep the script of the episode, see [`BalEnv::script`].
 	pub record: bool,
 }
 
@@ -169,66 +251,84 @@ impl Default for BalConfig {
 			toggle_cost: 0.0,
 			disable_softlocks: false,
 			hide_face_down: false,
-			sticker_penalty: 1.0,
-			joker_marks: [0; N_JOKER_KEYS],
 			record: false,
 		}
 	}
 }
 
+/// What a step did, see [`BalEnv::step_select`]. The flags are 0 or 1.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BalStepInfo {
+	/// The reward of the step, as the [`BalConfig`] rewards add up.
 	pub reward: f32,
+	/// The episode is over: the run was won, lost or got stuck.
 	pub terminated: u8,
+	/// The episode reached [`BalConfig::max_steps`] without ending.
 	pub truncated: u8,
+	/// The run was won (on a terminal step).
 	pub won: u8,
+	/// The action or its cards were not allowed, and the game did not
+	/// change.
 	pub illegal: u8,
+	/// The ante after the step.
 	pub ante: i32,
+	/// The round after the step.
 	pub round: i32,
+	/// The money after the step, in whole dollars. Negative in debt.
 	pub dollars: i32,
+	/// The steps of the episode so far, illegal ones included.
 	pub steps: i32,
+	/// On a terminal step, the chips scored in the run's last round (in the
+	/// round that won it, if the run was then lost in Endless Mode); 0 on
+	/// any other step.
 	pub score: f64,
+	/// The dollars the step earned. Spending does not count, and a sale
+	/// counts only what the card's sell value had gained.
 	pub earned: f32,
+	/// The blinds the step beat.
 	pub blinds: i32,
+	/// The pack skips of the step that only
+	/// [`BalConfig::disable_softlocks`] allowed.
 	pub softlocks_avoided: i32,
+	/// The run ended because no action was left, or none that leaves a pack.
 	pub dead_end: i32,
-	pub stickered_held: i32,
-	pub stickered_lineup: i32,
+	/// The poker hand the step played, as the game named it (its position in
+	/// `HandType::ALL`); `-1` if it played none.
 	pub hand_played: i32,
-	pub hand_factor: f32,
+	/// The Blue Seals in the deck after the step.
 	pub blue_seals: i32,
-	pub bounty_drawn: i32,
-	pub bounty_deck: i32,
-	pub target_hits: i32,
-	pub target_held: i32,
+	/// The number of cards the step played; 0 if it played no hand, like the
+	/// three counts below.
 	pub played_cards: i32,
+	/// How many of the played cards score.
 	pub played_scoring: i32,
+	/// The Blue Seal cards that were in the hand before the play.
 	pub blue_held: i32,
+	/// How many of those were played.
 	pub blue_played: i32,
+	/// The hand a play declared (12 for [`ACT_PLAY`]); `-1` on a step that
+	/// played none.
 	pub hs_declared: i32,
+	/// The score of the hand the step played; 0 if it played none.
 	pub hand_score: f64,
 }
 
+/// One environment: a game, and the rewards and the episode around it.
 pub struct BalEnv {
-	pub cfg: BalConfig,
-	pub g: Game,
-	pub steps: i32,
-	pub endless: bool,
-	pub win_score: f64,
-	pub last_play_blind: f64,
-	pub joker_ordered_in_phase: bool,
-	pub marks: [u8; N_JOKER_KEYS],
-	pub n_marked: usize,
-	pub blind_factor: f32,
-	pub skips_pending: i32,
-	pub blue_seals: i32,
-	pub earned: f64,
-	pub earned_scaled: f64,
-	pub softlocks: i32,
-	pub start: Option<Arc<StartPoint>>,
-	pub start_reseed: bool,
-	pub episode_start: i32,
-	pub script: String,
+	cfg: BalConfig,
+	g: Game,
+	steps: i32,
+	endless: bool,
+	win_score: f64,
+	joker_ordered_in_phase: bool,
+	skips_pending: i32,
+	blue_seals: i32,
+	earned: f64,
+	softlocks: i32,
+	start: Option<Arc<StartPoint>>,
+	start_reseed: bool,
+	episode_start: i32,
+	script: String,
 	core_cache: CoreCtx,
 }
 
@@ -292,6 +392,8 @@ fn decode_non_select_action(a: usize) -> Option<Action> {
 }
 
 impl BalEnv {
+	/// An environment with the options `cfg`. Its game is a placeholder
+	/// until the first [`reset`](Self::reset).
 	#[must_use]
 	pub fn new(cfg: BalConfig) -> BalEnv {
 		let mut g = Game::new_run("11111111", cfg.back, cfg.stake);
@@ -303,15 +405,10 @@ impl BalEnv {
 			steps: 0,
 			endless: false,
 			win_score: 0.0,
-			last_play_blind: 0.0,
 			joker_ordered_in_phase: false,
-			marks: [0; N_JOKER_KEYS],
-			n_marked: 0,
-			blind_factor: 1.0,
 			skips_pending: 0,
 			blue_seals: 0,
 			earned: 0.0,
-			earned_scaled: 0.0,
 			softlocks: 0,
 			start: None,
 			start_reseed: true,
@@ -323,10 +420,21 @@ impl BalEnv {
 		env
 	}
 
+	/// [`reset`](Self::reset) with the seed that `RLBalatro` derives from
+	/// `seed_index`: eight seed characters.
 	pub fn reset_index(&mut self, seed_index: u64) {
 		self.reset(&seed_from_index(seed_index));
 	}
 
+	/// Starts an episode: a new run of the configured deck and stake with
+	/// the seed `seed`, or a copy of the start point's game (see
+	/// [`set_start`](Self::set_start)). The environment then takes the steps
+	/// that need no decision.
+	///
+	/// # Panics
+	///
+	/// Panics if the game takes `seed` and it is longer than
+	/// [`MAX_SEED_LEN`](crate::MAX_SEED_LEN) bytes.
 	pub fn reset(&mut self, seed: &str) {
 		if let Some(ref sp) = self.start {
 			self.g.clone_from(&sp.game);
@@ -344,11 +452,6 @@ impl BalEnv {
 		self.endless = self.start.is_some() && self.g.run_won() && self.cfg.endless_ante > 8;
 		self.joker_ordered_in_phase = false;
 		self.win_score = 0.0;
-		self.last_play_blind = 0.0;
-		self.marks = self.cfg.joker_marks;
-		self.n_marked = self.marks.iter().filter(|&&m| m != 0).count();
-		self.blind_factor = 1.0;
-		self.earned_scaled = self.earned;
 		self.blue_seals = self.count_blue_seals();
 		self.skips_pending = 0;
 		self.script.clear();
@@ -376,8 +479,48 @@ impl BalEnv {
 		self.core_cache = core_ctx(&self.g, self.cfg.hide_face_down);
 	}
 
+	/// The deck and the stake of the new runs that later resets start.
+	pub fn set_deck(&mut self, back: Back, stake: Stake) {
+		self.cfg.back = back;
+		self.cfg.stake = stake;
+	}
+
+	/// Makes later resets start from a copy of `start`'s game, which keeps
+	/// its own deck and stake; `None` goes back to new runs.
+	///
+	/// With `reseed`, a reset then restarts the game's random streams from
+	/// its seed. Nothing already dealt is dealt again: a start point inside
+	/// a round keeps its hand and the order of its draw pile, so the cards
+	/// drawn until the round ends are the recorded ones under every seed.
+	/// Without `reseed`, the episode replays the recorded run's randomness.
+	pub fn set_start(&mut self, start: Option<Arc<StartPoint>>, reseed: bool) {
+		self.start = start;
+		self.start_reseed = reseed;
+	}
+
+	/// The [`StartPoint::id`] the episode started from, or `-1` for a new
+	/// run.
 	#[must_use]
-	pub fn count_blue_seals(&self) -> i32 {
+	pub fn episode_start(&self) -> i32 {
+		self.episode_start
+	}
+
+	/// The script of the episode so far if [`BalConfig::record`] is set, and
+	/// the empty string otherwise: [`load_starts`] replays it to this game,
+	/// except past a pack skipped under [`BalConfig::disable_softlocks`],
+	/// which the game itself does not allow.
+	#[must_use]
+	pub fn script(&self) -> &str {
+		&self.script
+	}
+
+	/// The game being played.
+	#[must_use]
+	pub fn game(&self) -> &Game {
+		&self.g
+	}
+
+	fn count_blue_seals(&self) -> i32 {
 		num::id(
 			self.g
 				.areas
@@ -387,36 +530,10 @@ impl BalEnv {
 		)
 	}
 
-	#[must_use]
-	pub fn stickered_in_lineup(&self) -> i32 {
-		if self.n_marked == 0 {
-			return 0;
-		}
-		let mut n = 0i32;
-		for c in &self.g.areas.jokers {
-			if let Kind::Joker(j) = c.kind
-				&& (self.marks[joker_alpha(j)] & 1) != 0
-			{
-				n += 1;
-			}
-		}
-		n
-	}
-
-	#[must_use]
-	pub fn sticker_factor(&self, n: i32) -> f32 {
-		if n == 0 {
-			1.0
-		} else {
-			let slots = num::feat(self.g.areas.limits.jokers.limit.max(1.0));
-			(1.0 - self.cfg.sticker_penalty * num::feat(f64::from(n)) / slots).max(0.0)
-		}
-	}
-
 	fn hands_available(&self) -> u32 {
 		let mut av = 0u32;
 		for h in 0..=HS_ANY {
-			let (cm, stop) = core_rule(&self.core_cache, h, true, self.core_cache.forced);
+			let (cm, stop) = core_rule(&self.core_cache, h, self.core_cache.forced);
 			if cm != 0 || stop {
 				av |= 1u32 << h;
 			}
@@ -424,7 +541,7 @@ impl BalEnv {
 		av
 	}
 
-	pub fn mask(&self, m: &mut [u8]) {
+	fn mask(&self, m: &mut [u8]) {
 		m[..N_ACTIONS].fill(0);
 		if self.is_env_terminal() {
 			return;
@@ -562,8 +679,9 @@ impl BalEnv {
 		ok >= lo && forced <= hi && lo <= hi
 	}
 
-	#[must_use]
-	pub fn select_spec(&self, v: usize, m: &[u8]) -> (i32, i32, u32) {
+	/// For selection verb `v` under the mask `m`: the fewest and the most
+	/// cards to pick, and the cards that can be picked first.
+	fn select_spec(&self, v: usize, m: &[u8]) -> (i32, i32, u32) {
 		if v >= N_SEL_VERBS || self.is_env_terminal() {
 			return (0, -1, 0);
 		}
@@ -573,7 +691,7 @@ impl BalEnv {
 		}
 		if v == SEL_VERB_REORDER_JOKERS {
 			let nj = self.g.areas.jokers.len().min(MAX_JOKERS);
-			let k = num::id(nj.min(5));
+			let k = num::id(nj.min(MAX_PICKS));
 			let elig = if nj >= 32 { u32::MAX } else { (1u32 << nj) - 1 };
 			return (k, k, elig);
 		}
@@ -600,7 +718,7 @@ impl BalEnv {
 				tgt_card = Some(c);
 				(num::id(hl.min), num::id(hl.max))
 			} else {
-				(1, num::id(nh.min(5)))
+				(1, num::id(nh.min(MAX_PICKS)))
 			};
 		let mut forced = 0i32;
 		let mut fbits = 0u32;
@@ -614,7 +732,7 @@ impl BalEnv {
 			}
 		}
 		if let Some(ht) = hand_verb_target(v) {
-			let (cm, _) = core_rule(&self.core_cache, ht, true, fbits);
+			let (cm, _) = core_rule(&self.core_cache, ht, fbits);
 			eligible = cm;
 		}
 		lo = (lo - forced).max(0);
@@ -627,7 +745,7 @@ impl BalEnv {
 		}
 	}
 
-	pub fn sel_specs(&self, m: &[u8], out: &mut [i32]) {
+	fn sel_specs(&self, m: &[u8], out: &mut [i32]) {
 		for v in 0..N_SEL_VERBS {
 			let (lo, hi, el) = self.select_spec(v, m);
 			out[v * 3] = lo;
@@ -636,31 +754,50 @@ impl BalEnv {
 		}
 	}
 
+	/// The rule that [`step_select`](Self::step_select) checks every pick
+	/// of selection verb `v` with: the cards that may be picked next, as a
+	/// bit set, and whether the picks may stop here.
+	///
+	/// `lo`, `hi` and `elig` are the verb's row of the selection specs (see
+	/// [`write_all_obs`](Self::write_all_obs)), `prefix` is the bit set of
+	/// the forced cards and the cards picked so far, and `npicks` is the
+	/// number of cards picked so far.
 	#[must_use]
 	pub fn pick_rule(
 		&self, v: usize, lo: i32, hi: i32, elig: u32, prefix: u32, npicks: i32,
 	) -> (u32, bool) {
 		if let Some(ht) = hand_verb_target(v) {
-			return core_rule(&self.core_cache, ht, true, prefix);
+			return core_rule(&self.core_cache, ht, prefix);
 		}
 		let cards = if npicks < hi { elig & !prefix } else { 0 };
 		let stop = npicks >= lo;
 		(cards, stop)
 	}
 
+	/// Writes what a policy reads of the game:
+	///
+	/// - `obs_out`: the observation, [`OBS_SIZE`] floats in the groups of
+	///   [`OBS_GROUPS`];
+	/// - `sel_out`: the selection observation, [`SEL_F`] floats;
+	/// - `mask_out`: for each of the [`N_ACTIONS`] actions, 1 if it is legal
+	///   and 0 if not (all 0 once the episode is over);
+	/// - `specs_out`: three ints for each of the [`N_SEL_VERBS`] selection
+	///   verbs (see [`sel_verb_index`]): the fewest and the most cards to
+	///   pick, and the bit set of the cards that can be picked first (hand
+	///   positions, or joker positions for [`ACT_REORDER_JOKERS`]). The most
+	///   is `-1` for a verb that is not legal or takes no cards. Forced
+	///   cards are always part of a selection and are not picked;
+	/// - `hctx_out`: the hand context, [`HS_CTX`] ints.
+	///
+	/// # Panics
+	///
+	/// Panics if a slice is shorter than that.
 	pub fn write_all_obs(
 		&mut self, obs_out: &mut [f32], sel_out: &mut [f32], mask_out: &mut [u8],
 		specs_out: &mut [i32], hctx_out: &mut [i32],
 	) {
 		self.refresh_core();
-		write_obs(
-			&mut self.g,
-			self.cfg.hide_face_down,
-			self.last_play_blind,
-			&self.marks,
-			self.n_marked,
-			obs_out,
-		);
+		write_obs(&mut self.g, self.cfg.hide_face_down, obs_out);
 		write_obs_selection(&self.g, sel_out);
 		self.mask(mask_out);
 		self.sel_specs(mask_out, specs_out);
@@ -737,28 +874,12 @@ impl BalEnv {
 			self.softlocks += 1;
 		}
 		let gain = self.g.run.earned - before;
-		let counted = gain - gain.min(base_sale);
-		self.earned += counted;
-		if self.n_marked > 0 && counted != 0.0 {
-			let factor = if act == Action::CashOut {
-				self.blind_factor
-			} else {
-				self.sticker_factor(self.stickered_in_lineup())
-			};
-			self.earned_scaled += counted * f64::from(factor);
-		}
+		self.earned += gain - gain.min(base_sale);
 		ok
 	}
 
 	fn blind_beaten(&mut self, info: &mut BalStepInfo) {
 		info.blinds += 1;
-		let n = if self.n_marked > 0 {
-			self.stickered_in_lineup()
-		} else {
-			0
-		};
-		self.blind_factor = self.sticker_factor(n);
-		info.stickered_held += n;
 		let extra_skips = if self.cfg.reward_skip_deferred {
 			self.skips_pending
 		} else {
@@ -767,11 +888,7 @@ impl BalEnv {
 		let paid = self.cfg.reward_blind * num::feat(f64::from(1 + extra_skips));
 		self.skips_pending = 0;
 		if !self.cfg.reward_money {
-			info.reward += if n > 0 {
-				paid * self.blind_factor
-			} else {
-				paid
-			};
+			info.reward += paid;
 		}
 	}
 
@@ -828,6 +945,18 @@ impl BalEnv {
 		}
 	}
 
+	/// Takes `action` and then the steps that need no decision.
+	///
+	/// A selection verb (see [`sel_verb_index`]) takes `cards`: hand
+	/// positions in pick order, or joker positions for
+	/// [`ACT_REORDER_JOKERS`], each allowed by
+	/// [`pick_rule`](Self::pick_rule) after the ones before it. The forced
+	/// cards are always included and are not listed. Any other action
+	/// ignores `cards`.
+	///
+	/// An action that the mask does not allow, or cards that the rule does
+	/// not allow, change nothing but the step count: the step is `illegal`.
+	/// After a step that ends the episode, call [`reset`](Self::reset).
 	pub fn step_select(&mut self, action: i32, cards: &[i32]) -> BalStepInfo {
 		self.refresh_core();
 		let mut m = [0u8; N_ACTIONS];
@@ -845,7 +974,7 @@ impl BalEnv {
 		if hi < 0 {
 			return self.finish_step(action, None, &m, false);
 		}
-		let mut order: Vec<usize> = Vec::with_capacity(5);
+		let mut order: Vec<usize> = Vec::with_capacity(MAX_PICKS);
 		let hc_len = self.g.areas.hand.cards.len().min(MAX_HAND);
 		if a != ACT_REORDER_JOKERS {
 			for (i, pc) in self.g.areas.hand.cards.iter().enumerate().take(hc_len) {
@@ -858,7 +987,7 @@ impl BalEnv {
 		for &c in &order {
 			prefix |= 1u32 << c;
 		}
-		let mut ok = cards.len() <= 5;
+		let mut ok = cards.len() <= MAX_PICKS;
 		for (k, &c_i32) in cards.iter().enumerate() {
 			if !ok {
 				break;
@@ -981,8 +1110,8 @@ impl BalEnv {
 		let bits = mask.bits();
 		let n_played = usize::try_from(bits.count_ones()).unwrap_or(0);
 		info.played_cards = num::id(n_played);
-		let ev = sel_eval(&x, bits, n_played);
-		info.played_scoring = i32::try_from(ev.scoring.count_ones()).unwrap_or(0);
+		let scoring = sel_eval(&x, bits, n_played);
+		info.played_scoring = i32::try_from(scoring.count_ones()).unwrap_or(0);
 		for (i, pc) in self.g.areas.hand.cards.iter().take(x.nh).enumerate() {
 			if pc.seal == Some(Seal::Blue) {
 				info.blue_held += 1;
@@ -1001,7 +1130,6 @@ impl BalEnv {
 			..BalStepInfo::default()
 		};
 		let earned0 = self.earned;
-		let scaled0 = self.earned_scaled;
 		let softlocks0 = self.softlocks;
 		self.steps += 1;
 		info.reward -= self.cfg.step_cost;
@@ -1021,7 +1149,7 @@ impl BalEnv {
 		} else {
 			self.step_valid_action(a, sel_order, &mut info);
 		}
-		self.finalize_step_info(earned0, scaled0, softlocks0, &mut info);
+		self.finalize_step_info(earned0, softlocks0, &mut info);
 		info
 	}
 
@@ -1031,7 +1159,6 @@ impl BalEnv {
 		let prev_state = self.g.flow.state;
 		let prev_chips = self.g.round.chips;
 		let hands0 = self.g.run.hands_played;
-		let blind0 = self.g.blind.chips;
 		let mut is_hand_play = false;
 
 		let sim_act = if let Some((v, order)) = sel_order {
@@ -1099,7 +1226,6 @@ impl BalEnv {
 				.last_hand_played
 				.map_or(-1, |h| i32::from(h as u8));
 			info.hand_score = self.g.run.last_hand_score.floor();
-			self.last_play_blind = blind0;
 		}
 		if self.g.flow.state == State::RoundEval && prev_state != State::RoundEval {
 			self.blind_beaten(info);
@@ -1108,18 +1234,8 @@ impl BalEnv {
 			&& (a == ACT_PLAY || is_hand_play)
 			&& self.g.blind.chips > 0.0
 		{
-			let rc = self.cfg.reward_chips
+			info.reward += self.cfg.reward_chips
 				* num::feat((self.g.round.chips - prev_chips) / self.g.blind.chips.max(1.0));
-			let n = if self.n_marked > 0 {
-				self.stickered_in_lineup()
-			} else {
-				0
-			};
-			info.reward += if n > 0 {
-				rc * self.sticker_factor(n)
-			} else {
-				rc
-			};
 		}
 		self.update_phase_order_gate(prev_state, a, is_hand_play);
 		self.auto_advance(info);
@@ -1153,37 +1269,21 @@ impl BalEnv {
 		}
 	}
 
-	fn finalize_step_info(
-		&mut self, earned0: f64, scaled0: f64, softlocks0: i32, info: &mut BalStepInfo,
-	) {
-		let n_stk = if self.n_marked > 0 {
-			self.stickered_in_lineup()
-		} else {
-			0
-		};
-		let scaled = |env: &Self, r: f32| -> f32 {
-			if n_stk > 0 {
-				r * env.sticker_factor(n_stk)
-			} else {
-				r
-			}
-		};
+	fn finalize_step_info(&mut self, earned0: f64, softlocks0: i32, info: &mut BalStepInfo) {
 		let win_reward = |env: &Self, chips: f64| -> f32 {
-			let base = if env.cfg.reward_win_log {
+			if env.cfg.reward_win_log {
 				num::feat(chips.max(1.0).log10())
 			} else {
 				env.cfg.reward_win
-			};
-			scaled(env, base)
+			}
 		};
 		let lose_partial = |env: &Self| -> f32 {
 			let f = num::feat((env.g.round.chips / env.g.blind.chips).clamp(0.0, 1.0));
-			let base = if env.cfg.reward_money {
+			if env.cfg.reward_money {
 				f * num::feat(env.g.blind.dollars) / env.cfg.money_per_reward
 			} else {
 				f
-			};
-			scaled(env, base)
+			}
 		};
 
 		if self.cfg.endless_ante > 8
@@ -1243,17 +1343,16 @@ impl BalEnv {
 		self.blue_seals = blue;
 		info.blue_seals = blue;
 		if self.cfg.reward_money {
-			let paid = if self.n_marked > 0 {
-				num::feat(self.earned_scaled - scaled0)
-			} else {
-				info.earned
-			};
-			info.reward += paid / self.cfg.money_per_reward;
+			info.reward += info.earned / self.cfg.money_per_reward;
 		}
-		info.stickered_lineup = n_stk;
 		info.ante = self.g.run.ante;
 		info.round = self.g.run.round;
-		info.dollars = num::id(num::trunc(self.g.run.dollars));
+		#[expect(
+			clippy::cast_possible_truncation,
+			reason = "the game's money is a whole number of dollars; a balance beyond an i32 saturates"
+		)]
+		let dollars = self.g.run.dollars as i32;
+		info.dollars = dollars;
 		info.steps = self.steps;
 	}
 }

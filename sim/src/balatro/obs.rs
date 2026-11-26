@@ -1,37 +1,58 @@
-//! `RLBalatro` observation builder (`OBS_SIZE = 8281` floats, `SEL_F = 44`
-//! floats, `HS_CTX = 32` ints), ported directly from `RLBalatro/env/src/env.cpp`.
+//! `RLBalatro`'s observation (`OBS_SIZE = 8281` floats, `SEL_F = 44` floats,
+//! `HS_CTX = 32` ints).
 
-use super::hand_eval::{CoreCtx, HS_CTX};
+use std::cmp::Ordering;
+
+use super::hand_eval::{CoreCtx, HS_CTX, MAX_HAND};
 use super::ids::{
 	CARD_BACK_CENTER_F, N_JOKER_KEYS, N_VOUCHER_KEYS, back_id, blind_id, card_extras, center_id,
-	joker_alpha, joker_live, tag_id, voucher_alpha,
+	joker_live, tag_id, voucher_alpha,
 };
 use crate::card::{AnyCard, Card, Kind, PlayingCard, SuitTest};
 use crate::data::{ALL_VOUCHERS, BlindKind, Center, Edition, Enhancement, HandType, Joker, Suit};
 use crate::game::{BlindSlot, Game, State};
 use crate::num;
+use crate::obs::unseen_pool;
 use crate::round::blind_amount;
 
-pub const MAX_HAND: usize = 24;
-pub const MAX_JOKERS: usize = 20;
-pub const MAX_CONS: usize = 10;
-pub const MAX_SHOP: usize = 8;
-pub const MAX_VOUCH: usize = 4;
-pub const MAX_BOOST: usize = 4;
-pub const MAX_PACK: usize = 8;
-pub const MAX_DECK: usize = 120;
-pub const MAX_TAGS: usize = 12;
+pub(super) const MAX_JOKERS: usize = 20;
+pub(super) const MAX_CONS: usize = 10;
+pub(super) const MAX_SHOP: usize = 8;
+pub(super) const MAX_VOUCH: usize = 4;
+pub(super) const MAX_BOOST: usize = 4;
+pub(super) const MAX_PACK: usize = 8;
+const MAX_DECK: usize = 120;
+const MAX_TAGS: usize = 12;
 
-pub const SCALAR_F: usize = 48;
-pub const HAND_LEVEL_F: usize = 5;
-pub const CARD_F: usize = 39;
-pub const TAG_F: usize = 2;
-pub const HAND_TARGET_F: usize = 14;
-pub const BOUNTY_F: usize = 19;
-pub const TARGET_F: usize = N_JOKER_KEYS + 3;
-pub const ROUND_CTX_F: usize = 46 + N_VOUCHER_KEYS;
+const SCALAR_F: usize = 48;
+const HAND_LEVEL_F: usize = 5;
+const CARD_F: usize = 39;
+const TAG_F: usize = 2;
+const HAND_TARGET_F: usize = 14;
+const BOUNTY_F: usize = 19;
+const TARGET_F: usize = N_JOKER_KEYS + 3;
+const ROUND_CTX_F: usize = 46 + N_VOUCHER_KEYS;
+/// The length of the selection observation: `RLBalatro`'s preview of the
+/// hand cards toggled into the selection.
+///
+/// This environment takes the cards together with the action, so no card is
+/// ever selected and only entry 7 is written: the chips the blind still
+/// needs. The other entries are always 0.
 pub const SEL_F: usize = 8 + 12 + MAX_HAND;
 
+/// The groups of the observation in order, as `(name, rows, columns)`. A
+/// group takes `rows * columns` floats, row after row.
+///
+/// The layout is `RLBalatro`'s, so that a policy made for it reads this
+/// observation. Four groups belong to training curricula of that environment
+/// that this one does not have, and are always 0: `stickers` (jokers marked
+/// from outside the game), `hand_target` (a poker hand to build for),
+/// `bounty` (a kind of card to collect) and `target` (a joker to use). For
+/// the same reason columns 20 (stickered) and 21 (the target joker) of a
+/// card row are always 0. Column 8 of a card row (selected) and scalar 25
+/// (cards selected) are 0 because no card is ever selected, see [`SEL_F`];
+/// scalar 32 (play blocked) is only set between the events of a draw, and
+/// scalar 46 (inflation) only in challenge runs, which are not simulated.
 pub const OBS_GROUPS: [(&str, usize, usize); 18] = [
 	("scalars", 1, SCALAR_F),
 	("hand_levels", 12, HAND_LEVEL_F),
@@ -53,6 +74,7 @@ pub const OBS_GROUPS: [(&str, usize, usize); 18] = [
 	("round_ctx", 1, ROUND_CTX_F),
 ];
 
+/// The length of the observation: the sum of [`OBS_GROUPS`].
 pub const OBS_SIZE: usize = {
 	let mut total = 0;
 	let mut i = 0;
@@ -205,9 +227,7 @@ fn playing_card_features(c: &PlayingCard, f: &mut [f32], x: &ObsCtx, zone: Playi
 	};
 }
 
-fn non_playing_card_features(
-	g: &Game, c: &Card, f: &mut [f32], x: &ObsCtx, marks: &[u8; N_JOKER_KEYS], n_marked: usize,
-) {
+fn non_playing_card_features(g: &Game, c: &Card, f: &mut [f32], x: &ObsCtx) {
 	if x.hide && c.core.face_down {
 		f[0] = 1.0;
 		f[1] = CARD_BACK_CENTER_F;
@@ -235,9 +255,6 @@ fn non_playing_card_features(
 	f[17] = e0;
 	f[18] = e1;
 	if let Kind::Joker(j) = c.kind {
-		if n_marked > 0 && (marks[joker_alpha(j)] & 1) != 0 {
-			f[20] = 1.0;
-		}
 		match j {
 			Joker::Mail => f[2] = f32::from(x.mail_id),
 			Joker::Idol => {
@@ -316,7 +333,7 @@ fn write_scalars(g: &Game, s: &mut [f32]) {
 	s[47] = num::feat(g.blind.mult);
 }
 
-fn write_round_ctx(g: &Game, last_play_blind: f64, p: &mut [f32]) {
+fn write_round_ctx(g: &Game, p: &mut [f32]) {
 	if let Some(lh) = g.history.last_hand_played {
 		let score = g.run.last_hand_score.floor();
 		p[0] = num::feat(score.max(0.0).ln_1p());
@@ -325,7 +342,7 @@ fn write_round_ctx(g: &Game, last_play_blind: f64, p: &mut [f32]) {
 		let den = if g.blind.chips > 0.0 {
 			g.blind.chips
 		} else {
-			last_play_blind
+			g.run.last_hand_blind
 		};
 		if den > 0.0 {
 			p[3] = num::feat(score / den);
@@ -360,10 +377,10 @@ fn write_round_ctx(g: &Game, last_play_blind: f64, p: &mut [f32]) {
 	}
 }
 
-pub fn write_obs(
-	g: &mut Game, hide_face_down: bool, last_play_blind: f64, marks: &[u8; N_JOKER_KEYS],
-	n_marked: usize, out: &mut [f32],
-) {
+/// Writes the observation of `g` to the first [`OBS_SIZE`] floats of `out`.
+/// With `hide_face_down`, a card that lies face down in the hand or among the
+/// jokers shows only that it is there.
+pub(super) fn write_obs(g: &mut Game, hide_face_down: bool, out: &mut [f32]) {
 	g.update_derived();
 	out[..OBS_SIZE].fill(0.0);
 	let mut off = 0usize;
@@ -386,29 +403,14 @@ pub fn write_obs(
 	}
 
 	let mut counts = [0usize; 10];
-	off += write_active_areas(
-		g,
-		&ox,
-		&ox_open,
-		marks,
-		n_marked,
-		&mut counts,
-		&mut out[off..],
-	);
-	write_deck_and_tail(
-		g,
-		&ox_open,
-		last_play_blind,
-		marks,
-		n_marked,
-		&mut counts,
-		&mut out[off..OBS_SIZE],
-	);
+	off += write_active_areas(g, &ox, &ox_open, &mut counts, &mut out[off..]);
+	counts[7] = write_deck(g, &ox, &ox_open, &mut out[off..off + MAX_DECK * CARD_F]);
+	off += MAX_DECK * CARD_F;
+	write_tail(g, &mut counts, &mut out[off..OBS_SIZE]);
 }
 
 fn write_active_areas(
-	g: &Game, ox: &ObsCtx, ox_open: &ObsCtx, marks: &[u8; N_JOKER_KEYS], n_marked: usize,
-	counts: &mut [usize; 10], out: &mut [f32],
+	g: &Game, ox: &ObsCtx, ox_open: &ObsCtx, counts: &mut [usize; 10], out: &mut [f32],
 ) -> usize {
 	let mut off = 0usize;
 	counts[0] = g.areas.hand.cards.len().min(MAX_HAND);
@@ -424,14 +426,7 @@ fn write_active_areas(
 
 	counts[1] = g.areas.jokers.len().min(MAX_JOKERS);
 	for (i, c) in g.areas.jokers.iter().take(counts[1]).enumerate() {
-		non_playing_card_features(
-			g,
-			c,
-			&mut out[off + i * CARD_F..off + (i + 1) * CARD_F],
-			ox,
-			marks,
-			n_marked,
-		);
+		non_playing_card_features(g, c, &mut out[off + i * CARD_F..off + (i + 1) * CARD_F], ox);
 	}
 	off += MAX_JOKERS * CARD_F;
 
@@ -442,8 +437,6 @@ fn write_active_areas(
 			c,
 			&mut out[off + i * CARD_F..off + (i + 1) * CARD_F],
 			ox_open,
-			marks,
-			n_marked,
 		);
 	}
 	off += MAX_CONS * CARD_F;
@@ -459,7 +452,7 @@ fn write_active_areas(
 			AnyCard::Playing(pc) => {
 				playing_card_features(pc, slice, ox_open, PlayingZone::HandOrShop);
 			}
-			AnyCard::Card(cc) => non_playing_card_features(g, cc, slice, ox_open, marks, n_marked),
+			AnyCard::Card(cc) => non_playing_card_features(g, cc, slice, ox_open),
 		}
 	}
 	off += MAX_SHOP * CARD_F;
@@ -475,8 +468,6 @@ fn write_active_areas(
 			c,
 			&mut out[off + i * CARD_F..off + (i + 1) * CARD_F],
 			ox_open,
-			marks,
-			n_marked,
 		);
 	}
 	off += MAX_VOUCH * CARD_F;
@@ -492,8 +483,6 @@ fn write_active_areas(
 			c,
 			&mut out[off + i * CARD_F..off + (i + 1) * CARD_F],
 			ox_open,
-			marks,
-			n_marked,
 		);
 	}
 	off += MAX_BOOST * CARD_F;
@@ -507,42 +496,57 @@ fn write_active_areas(
 		let slice = &mut out[off + i * CARD_F..off + (i + 1) * CARD_F];
 		match c {
 			AnyCard::Playing(pc) => playing_card_features(pc, slice, ox_open, PlayingZone::Pack),
-			AnyCard::Card(cc) => non_playing_card_features(g, cc, slice, ox_open, marks, n_marked),
+			AnyCard::Card(cc) => non_playing_card_features(g, cc, slice, ox_open),
 		}
 	}
 	off + MAX_PACK * CARD_F
 }
 
-fn write_deck_and_tail(
-	g: &Game, ox_open: &ObsCtx, last_play_blind: f64, marks: &[u8; N_JOKER_KEYS], n_marked: usize,
-	counts: &mut [usize; 10], out: &mut [f32],
-) {
-	let mut off = 0usize;
-	let mut deck_order: Vec<(u32, usize)> = g
-		.areas
-		.deck
-		.iter()
-		.enumerate()
-		.map(|(idx, c)| {
-			let key = (u32::from(c.rank.id() + 1) << 24)
-				| (u32::from(c.suit as u8 + 1) << 16)
-				| u32::from(center_id(c.center()) + 1);
-			(key, idx)
-		})
-		.collect();
-	deck_order.sort_by_key(|&(k, _)| k);
-	let nd = deck_order.len().min(MAX_DECK);
-	counts[7] = nd;
-	for (i, &(_, idx)) in deck_order.iter().take(nd).enumerate() {
-		playing_card_features(
-			&g.areas.deck[idx],
-			&mut out[off + i * CARD_F..off + (i + 1) * CARD_F],
-			ox_open,
-			PlayingZone::Deck,
-		);
+/// Writes the deck rows, sorted by rank, suit and center so that they show
+/// nothing of the draw order, and returns their number.
+///
+/// With face-down cards hidden, the rows are the cards the player has not
+/// seen placed (the game's "remaining" deck view): the draw pile, the hand
+/// cards that lie face down and the cards discarded face down. Cards that
+/// sort alike are then ordered by the rest of their row, so that the rows do
+/// not depend on which of those cards are where.
+fn write_deck(g: &Game, ox: &ObsCtx, ox_open: &ObsCtx, out: &mut [f32]) -> usize {
+	fn keyed(c: &PlayingCard) -> (u32, &PlayingCard) {
+		let key = (u32::from(c.rank.id() + 1) << 24)
+			| (u32::from(c.suit as u8 + 1) << 16)
+			| u32::from(center_id(c.center()) + 1);
+		(key, c)
 	}
-	off += MAX_DECK * CARD_F;
+	let row = |c: &PlayingCard| {
+		let mut f = [0.0; CARD_F];
+		playing_card_features(c, &mut f, ox_open, PlayingZone::Deck);
+		f
+	};
+	let mut cards: Vec<(u32, &PlayingCard)> = if ox.hide {
+		unseen_pool(&g.areas).map(keyed).collect()
+	} else {
+		g.areas.deck.iter().map(keyed).collect()
+	};
+	cards.sort_by(|a, b| {
+		let by_key = a.0.cmp(&b.0);
+		if by_key.is_ne() || !ox.hide {
+			return by_key;
+		}
+		let (a, b) = (row(a.1), row(b.1));
+		a.iter()
+			.zip(&b)
+			.map(|(x, y)| x.total_cmp(y))
+			.find(|order| order.is_ne())
+			.unwrap_or(Ordering::Equal)
+	});
+	for (&(_, c), f) in cards.iter().zip(out.as_chunks_mut::<CARD_F>().0) {
+		playing_card_features(c, f, ox_open, PlayingZone::Deck);
+	}
+	cards.len().min(MAX_DECK)
+}
 
+fn write_tail(g: &Game, counts: &mut [usize; 10], out: &mut [f32]) {
+	let mut off = 0usize;
 	let nt = g.tags.held.len().min(MAX_TAGS);
 	counts[8] = nt;
 	for (i, tg) in g.tags.held.iter().take(nt).enumerate() {
@@ -570,21 +574,20 @@ fn write_deck_and_tail(
 	out[off + 2] = f32::from(blind_id(g.blind_select.boss) + 1);
 	off += 3;
 
-	if n_marked > 0 {
-		for (k, &m) in marks.iter().enumerate() {
-			out[off + k] = if (m & 1) != 0 { 1.0 } else { 0.0 };
-		}
-	}
 	off += N_JOKER_KEYS + HAND_TARGET_F + BOUNTY_F + TARGET_F;
-	write_round_ctx(g, last_play_blind, &mut out[off..off + ROUND_CTX_F]);
+	write_round_ctx(g, &mut out[off..off + ROUND_CTX_F]);
 }
 
-pub fn write_obs_selection(g: &Game, out: &mut [f32]) {
+/// Writes the selection observation of `g` to the first [`SEL_F`] floats of
+/// `out`.
+pub(super) fn write_obs_selection(g: &Game, out: &mut [f32]) {
 	out[..SEL_F].fill(0.0);
 	out[7] = num::feat((g.blind.chips - g.round.chips).max(0.0));
 }
 
-pub fn write_hand_ctx(g: &Game, core: &CoreCtx, out: &mut [i32]) {
+/// Writes the hand context `core` of `g` to the first [`HS_CTX`] ints of
+/// `out`.
+pub(super) fn write_hand_ctx(g: &Game, core: &CoreCtx, out: &mut [i32]) {
 	out[..HS_CTX].fill(0);
 	if g.flow.state != State::SelectingHand || g.is_terminal() {
 		return;
@@ -600,7 +603,7 @@ pub fn write_hand_ctx(g: &Game, core: &CoreCtx, out: &mut [i32]) {
 		*slot = rank | (i32::from(core.suit[i]) << 4) | (stone << 8) | (forced << 9) | (1 << 10);
 	}
 	out[24] = num::id(core.nh);
-	out[25] = i32::from(core.ff) | (i32::from(core.sc) << 1) | (i32::from(core.block) << 3);
+	out[25] = i32::from(core.ff) | (i32::from(core.sc) << 1);
 	out[28] = num::id(core.lo);
 	out[29] = num::id(core.hi);
 }

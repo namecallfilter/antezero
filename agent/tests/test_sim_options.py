@@ -1,6 +1,5 @@
 """The opt-in simulator features: the obs_v2 globals, the rearrange limit, the
-blinds reward, the start pool, the interval stats, and the native port of
-RLBalatro's environment."""
+blinds reward, the start pool and the interval stats."""
 
 import json
 
@@ -157,66 +156,3 @@ def test_a_bad_reward_mode_or_start_share_is_refused():
         az.VecEnv(1, start_frac=1.5)
     with pytest.raises(ValueError, match="must be <= 1"):
         az.VecEnv(1, snapshot_prob=0.6, start_frac=0.6)
-
-
-def core_env_arrays():
-    """The arrays a BalatroCoreEnv writes into: observation, selection, mask, selection specs, hand context."""
-    return (
-        np.zeros(az.balatro_obs_layout()[1], dtype=np.float32),
-        np.zeros(44, dtype=np.float32),
-        np.zeros(152, dtype=np.uint8),
-        np.zeros((32, 3), dtype=np.int32),
-        np.zeros(32, dtype=np.int32),
-    )
-
-
-def test_a_recorded_core_env_game_replays_to_the_same_state():
-    select_blind, discard = 2, 1
-    env = az.BalatroCoreEnv(record=True)
-    live = core_env_arrays()
-    env.reset_into(None, "RECORD", *live)
-    for action, cards in [(select_blind, []), (discard, [0, 5])]:
-        assert not env.step_into(action, cards, *live)["illegal"]
-    script = env.script()
-    assert script == "seed RECORD deck b_red stake 1\nselect\ndiscard 0 5\n"
-
-    pool = az.StartPool()
-    assert list(pool.add(script, [2])) == [0] and pool.error == ""
-    replayed = core_env_arrays()
-    env.set_start(pool, 0, False)
-    env.reset_into(None, "OTHER", *replayed)
-    assert all(np.array_equal(a, b) for a, b in zip(live, replayed))
-
-    env.set_start(pool, 0, True)
-    env.reset_into(None, "OTHER", *replayed)
-    assert not env.step_into(discard, [5], *replayed)["illegal"]
-    reseeded = env.script()
-    assert reseeded == script + "dbg_reseed OTHER\ndiscard 5\n"
-    assert list(pool.add(reseeded, [4])) == [1] and pool.error == ""
-
-
-def test_the_balatro_core_env_runs_a_seeded_game():
-    groups, obs_size = az.balatro_obs_layout()
-    assert groups and obs_size > 0
-    assert len(az.balatro_hands()) == 12
-    assert az.balatro_joker_keys() and az.balatro_voucher_keys()
-
-    def run(seed):
-        env = az.BalatroCoreEnv(deck="b_red", stake=1, max_steps=300)
-        obs, sel, mask, specs, hctx = core_env_arrays()
-        env.reset_into(seed, None, obs, sel, mask, specs, hctx)
-        rng = np.random.default_rng(seed)
-        trace = []
-        for _ in range(300):
-            assert mask.any() and np.isfinite(obs).all()
-            a = int(rng.choice(np.flatnonzero(mask)))
-            info = env.step_into(a, [], obs, sel, mask, specs, hctx)  # a play without picks is illegal
-            trace.append((a, bool(info["illegal"]), float(info["reward"])))
-            if info["terminated"] or info["truncated"]:
-                break
-        return trace, obs.copy()
-
-    t1, o1 = run(7)
-    t2, o2 = run(7)
-    assert t1 == t2 and np.array_equal(o1, o2)
-    assert not all(illegal for _, illegal, _ in t1)

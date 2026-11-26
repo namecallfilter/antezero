@@ -3,11 +3,10 @@
 
 use std::sync::Arc;
 
-use sim::balatro::hand_eval::HS_CTX;
-use sim::balatro::obs::{OBS_SIZE, SEL_F};
 use sim::balatro::{
 	ACT_DISCARD, ACT_PLAY, ACT_REORDER_JOKERS, ACT_SELL_JOKER, ACT_SKIP_BLIND, ACT_USE_CONS,
-	BalConfig, BalEnv, N_ACTIONS, N_SEL_VERBS, ScriptError, load_starts, sel_verb_index,
+	BalConfig, BalEnv, HS_CTX, N_ACTIONS, N_SEL_VERBS, OBS_SIZE, SEL_F, ScriptError, load_starts,
+	sel_verb_index,
 };
 use sim::data::Back;
 use sim::game::HandSort;
@@ -35,7 +34,7 @@ fn picks(env: &BalEnv, verb: usize, specs: &[i32], rng: &mut Xorshift) -> Vec<i3
 	}
 	let mut chosen = 0u32;
 	if sel_verb_index(ACT_REORDER_JOKERS) != Some(verb) {
-		for (i, card) in env.g.areas.hand.cards.iter().enumerate() {
+		for (i, card) in env.game().areas.hand.cards.iter().enumerate() {
 			chosen |= u32::from(card.forced_selection) << i;
 		}
 	}
@@ -71,12 +70,12 @@ fn play(env: &mut BalEnv, rng: &mut Xorshift, turns: usize) -> Vec<(usize, Game)
 			.filter(|&a| mask[a] != 0 && !(keep && gives_up(a)))
 			.collect();
 		let best = (mask[ACT_PLAY] != 0 && rng.chance(0.85))
-			.then(|| obs::top_plays(&env.g, 1))
+			.then(|| obs::top_plays(env.game(), 1))
 			.and_then(|plays| plays.first().copied());
 		let (action, cards) = if let Some(best) = best {
-			let round = &env.g.round;
-			let needed = (env.g.blind.chips - round.chips) / round.hands_left;
-			let hand = &env.g.areas.hand.cards;
+			let game = env.game();
+			let needed = (game.blind.chips - game.round.chips) / game.round.hands_left;
+			let hand = &game.areas.hand.cards;
 			let free = |i: &usize| !hand[*i].forced_selection;
 			let rest: Vec<i32> = (0..hand.len())
 				.filter(|&i| !best.mask.contains(i))
@@ -99,7 +98,7 @@ fn play(env: &mut BalEnv, rng: &mut Xorshift, turns: usize) -> Vec<(usize, Game)
 			(action, cards)
 		};
 		let info = env.step_select(num::id(action), &cards);
-		live.push((env.script.lines().count() - 1, env.g.clone()));
+		live.push((env.script().lines().count() - 1, env.game().clone()));
 		if info.terminated != 0 || info.truncated != 0 {
 			break;
 		}
@@ -158,8 +157,8 @@ fn a_recorded_game_replays_to_the_live_game_at_every_step() {
 		let mut env = recording_env();
 		env.reset_index(i);
 		let live = play(&mut env, &mut Xorshift::new(WALK_SEED ^ i), 200);
-		assert_replays(&env.script, &live);
-		scripts.push(env.script);
+		assert_replays(env.script(), &live);
+		scripts.push(env.script().to_string());
 	}
 	assert!(lines_with(&scripts, "play", |n| n == 1) > 0);
 	assert!(lines_with(&scripts, "play", |n| n > 1) > 0);
@@ -181,22 +180,21 @@ fn a_game_recorded_from_a_start_point_replays_to_the_live_game() {
 		let (step, before) = play(&mut env, &mut rng, 12)
 			.pop()
 			.expect("a played decision");
-		let point = load_starts(&env.script, &[step])
+		let point = load_starts(env.script(), &[step])
 			.expect("a recording replays")
 			.pop()
 			.flatten()
 			.expect("a start point of a live game");
 		assert_same_game(&point.game, &before, "the start point");
 
-		env.start = Some(Arc::new(point));
-		env.start_reseed = reseed;
+		env.set_start(Some(Arc::new(point)), reseed);
 		env.reset("RESEED");
-		assert_eq!(env.g.rng.seed() == "RESEED", reseed);
-		assert_eq!(env.script.contains("\ndbg_reseed RESEED\n"), reseed);
-		let mut live = vec![(env.script.lines().count() - 1, env.g.clone())];
+		assert_eq!(env.game().rng.seed() == "RESEED", reseed);
+		assert_eq!(env.script().contains("\ndbg_reseed RESEED\n"), reseed);
+		let mut live = vec![(env.script().lines().count() - 1, env.game().clone())];
 		live.extend(play(&mut env, &mut rng, 200));
 		assert!(live.len() > 3, "the game goes on from the start point");
-		assert_replays(&env.script, &live);
+		assert_replays(env.script(), &live);
 	}
 }
 

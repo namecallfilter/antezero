@@ -264,7 +264,7 @@ fn any_token(z: Zone, slot: usize, c: &AnyCard, round: &Round) -> Token {
 
 /// The cards a player has not seen placed: the draw pile plus face-down hand
 /// cards (what the game's deck view lists as remaining).
-pub(super) fn unseen_pool(areas: &Areas) -> impl Iterator<Item = &PlayingCard> {
+pub(crate) fn unseen_pool(areas: &Areas) -> impl Iterator<Item = &PlayingCard> {
 	areas
 		.deck
 		.iter()
