@@ -10,6 +10,7 @@ import torch
 
 from .config import Config
 from .model import Net
+from .models import build_model
 
 
 def pick_device(name: str) -> torch.device:
@@ -61,16 +62,24 @@ def make_env(cfg: Config, seed: int | None = None, num_envs: int | None = None, 
         terminal_phi=e.terminal_phi,
         order_gain=e.order_gain,
         order_label_rate=e.order_label_rate,
+        obs_v2=e.obs_v2,
+        max_rearranges=e.max_rearranges,
+        reward_mode=e.reward_mode,
+        start_pool=e.start_pool,
+        start_frac=e.start_frac,
     )
     kw.update(over)
     return az.VecEnv(num_envs or e.num_envs, **kw)
 
 
-def obs_schema() -> dict:
+def obs_schema(obs_v2: bool = False) -> dict:
     """The observation / action layout the network is built for (stored in
     checkpoints: a policy is only valid for the schema it was trained on)."""
     names = ["MAX_TOKENS", "TOK_INT", "TOK_FLOAT", "GLOB_INT", "GLOB_FLOAT", "MAX_OPS", "OP_INT", "OP_FLOAT", "MAX_HAND", "N_ZONES", "N_CENTERS", "N_OPS_KINDS"]
-    return {**{n: getattr(az, n) for n in names}, "TOK_VOCAB": list(az.TOK_VOCAB), "GLOB_VOCAB": list(az.GLOB_VOCAB)}
+    d = {**{n: getattr(az, n) for n in names}, "TOK_VOCAB": list(az.TOK_VOCAB), "GLOB_VOCAB": list(az.GLOB_VOCAB)}
+    if obs_v2:
+        d["GLOB_FLOAT"] = az.GLOB_FLOAT_V2
+    return d
 
 
 def save_checkpoint(path: Path, model: Net, opt, cfg: Config, update: int, steps: int, extra: dict | None = None) -> None:
@@ -81,7 +90,7 @@ def save_checkpoint(path: Path, model: Net, opt, cfg: Config, update: int, steps
         "config": json.loads(cfg.to_json()),
         "update": update,
         "steps": steps,
-        "obs_schema": obs_schema(),
+        "obs_schema": obs_schema(cfg.model.obs_v2),
         **(extra or {}),
     }
     tmp = path.with_suffix(".tmp")
@@ -91,7 +100,8 @@ def save_checkpoint(path: Path, model: Net, opt, cfg: Config, update: int, steps
 
 def read_checkpoint(path: str | Path) -> dict:
     ck = torch.load(path, map_location="cpu", weights_only=True)
-    if ck.get("obs_schema") != obs_schema():
+    obs_v2 = bool(ck.get("config", {}).get("model", {}).get("obs_v2", False))
+    if ck.get("obs_schema") != obs_schema(obs_v2):
         raise ValueError(f"{path} was trained on another observation schema than this simulator's")
     return ck
 
@@ -99,7 +109,7 @@ def read_checkpoint(path: str | Path) -> dict:
 def load_model(path: str | Path, device="cpu") -> tuple[Net, Config, dict]:
     ck = read_checkpoint(path)
     cfg = Config.from_dict(ck["config"])
-    model = Net(cfg.model, ck["model"].get("fx"))
+    model = build_model(cfg.model, ck["model"].get("fx"))
     model.load_state_dict(ck["model"])
     meta = {k: ck[k] for k in ("update", "steps")}
     return model.to(device).eval(), cfg, meta

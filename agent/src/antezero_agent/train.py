@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import math
 import shutil
+import signal
 import time
 from collections import deque
 from pathlib import Path
@@ -30,11 +32,14 @@ from pathlib import Path
 import antezero_sim as az
 import numpy as np
 import torch
+import torch.nn as nn
 
 from .collect import Collector
 from .config import Config, parse_overrides, preset
 from .critic import Critic, Learner, critic_state
+from .interval_log import IntervalLogger
 from .model import GAIN, MAX_CARDS, Net, Obs, count_params, obs_from_numpy
+from .models import build_model, load_text_embeddings
 from .runtime import make_env, pick_device, read_checkpoint, save_checkpoint
 from .stats import wilson
 
@@ -47,7 +52,7 @@ class Rollout:
     ops (33.0 of the 33.9 KB per state) live in host memory instead, and
     :meth:`obs` gathers them there."""
 
-    def __init__(self, T: int, N: int, device: torch.device, obs_on_cpu: bool = False):
+    def __init__(self, T: int, N: int, device: torch.device, obs_on_cpu: bool = False, glob_float: int = az.GLOB_FLOAT):
         z = lambda *s, dt: torch.zeros(*s, dtype=dt, device=device)  # noqa: E731
         self.host = obs_on_cpu and device.type == "cuda"
         # Pageable: torch rounds pinned blocks up to a power of two (tok_f: 11.7 -> 16 GiB at 4,096 x 128).
@@ -55,7 +60,7 @@ class Rollout:
         self.tok_i = big(T, N, az.MAX_TOKENS, az.TOK_INT, dt=torch.int16)
         self.tok_f = big(T, N, az.MAX_TOKENS, az.TOK_FLOAT, dt=torch.float32)
         self.glob_i = z(T, N, az.GLOB_INT, dt=torch.int16)
-        self.glob_f = z(T, N, az.GLOB_FLOAT, dt=torch.float32)
+        self.glob_f = z(T, N, glob_float, dt=torch.float32)
         self.ops = big(T, N, az.MAX_OPS, az.OP_INT, dt=torch.int32)
         self.ops_f = big(T, N, az.MAX_OPS, az.OP_FLOAT, dt=torch.float32)
         self.n_ops = z(T, N, dt=torch.int16)
@@ -245,13 +250,85 @@ def _log_writer(f, path: Path, fields: list[str] = LOG_FIELDS) -> csv.DictWriter
     return w
 
 
-def schedule(cfg: Config, update: int, n_updates: int):
+class Optimizers:
+    """Several optimizers stepped as one (param_groups, state_dict, step, zero_grad)."""
+
+    def __init__(self, *opts):
+        self.opts = opts
+
+    @property
+    def param_groups(self):
+        return [g for o in self.opts for g in o.param_groups]
+
+    def step(self):
+        for o in self.opts:
+            o.step()
+
+    def zero_grad(self, set_to_none: bool = False):
+        for o in self.opts:
+            o.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return [o.state_dict() for o in self.opts]
+
+    def load_state_dict(self, d):
+        for o, s in zip(self.opts, d):
+            o.load_state_dict(s)
+
+
+def muon_params(model: nn.Module, cfg: Config) -> list[nn.Parameter]:
+    """2-D hidden matrices optimized by Muon (excludes output heads and, when embed_adam, embedding tables)."""
+    table_ids = {id(m.weight) for m in model.modules() if isinstance(m, nn.Embedding)}
+    heads = ("op_score.", "ptr_stop.", "value.", "fx_lin.")
+    return [
+        p
+        for n, p in model.named_parameters()
+        if p.ndim == 2
+        and not n.startswith(heads)
+        and not any(f".{h}" in n for h in heads)
+        and "emb" not in n
+        and not (cfg.ppo.embed_adam and id(p) in table_ids)
+    ]
+
+
+def build_optimizer(model: nn.Module, cfg: Config, device: torch.device):
+    p = cfg.ppo
+    if p.optimizer == "adamw":
+        return torch.optim.AdamW(model.parameters(), lr=p.lr, weight_decay=p.weight_decay, eps=1e-5)
+    hidden = muon_params(model, cfg)
+    h_ids = {id(q) for q in hidden}
+    rest = [q for q in model.parameters() if id(q) not in h_ids]
+    fast = {"fused": True} if device.type == "cuda" else {}
+    adam = torch.optim.Adam(rest, lr=p.lr, eps=1e-5, **fast)
+    if not hidden:
+        return Optimizers(adam)
+    muon = torch.optim.Muon(hidden, lr=p.lr, weight_decay=p.muon_wd, adjust_lr_fn="match_rms_adamw")
+    return Optimizers(muon, adam)
+
+
+def update_kl_controller(cfg: Config, update: int, kl: float, kl_ctl: dict) -> None:
+    p = cfg.ppo
+    if p.target_kl > 0 and not math.isnan(kl):
+        kl_ctl["ema"] = kl if kl_ctl["ema"] is None else (1 - p.kl_ema) * kl_ctl["ema"] + p.kl_ema * kl
+        if update >= p.kl_start:
+            if kl_ctl["ema"] > p.kl_high * p.target_kl:
+                kl_ctl["m"] *= 1 - p.kl_step
+            elif kl_ctl["ema"] < p.kl_low * p.target_kl:
+                kl_ctl["m"] = min(p.kl_max_factor, kl_ctl["m"] * (1 + p.kl_step))
+
+
+def schedule(cfg: Config, update: int, n_updates: int, kl_ctl: dict | None = None):
     p = cfg.ppo
     frac = min(1.0, update / max(1, n_updates))
-    if update < p.warmup_updates:
+    if p.warmup_updates > 0 and update < p.warmup_updates:
         lr = p.lr * (update + 1) / p.warmup_updates
+    elif p.lr_schedule == "exp":
+        tau = -p.lr_decay_updates / math.log(max(1e-6, p.lr_final / max(1e-6, p.lr - p.lr_final)))
+        lr = p.lr_final + (p.lr - p.lr_final) * math.exp(-update / max(1.0, tau))
     else:
         lr = p.lr_final + 0.5 * (p.lr - p.lr_final) * (1 + math.cos(math.pi * frac))
+    if kl_ctl is not None:
+        lr *= kl_ctl["m"]
     ent = p.ent_coef + (p.ent_coef_final - p.ent_coef) * frac
     return lr, ent
 
@@ -314,7 +391,7 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     torch.set_float32_matmul_precision("high")
     run_dir = Path(cfg.run_dir) / cfg.name
     ck = read_checkpoint(resume) if resume else None
-    if ck is None and run_dir.exists() and any(run_dir.iterdir()):
+    if ck is None and (run_dir / "last.pt").exists():
         raise FileExistsError(f"{run_dir} already holds a run: choose another --name, or --resume it")
     if ck is not None:
         old = Config.from_dict(ck["config"])
@@ -327,8 +404,11 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     log_path.touch()
 
     torch.manual_seed(cfg.env.seed)
-    model = Net(cfg.model, ck["model"].get("fx") if ck is not None else None).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.ppo.lr, weight_decay=cfg.ppo.weight_decay, eps=1e-5)
+    model = build_model(cfg.model, ck["model"].get("fx") if ck is not None else None).to(device)
+    if ck is None and cfg.model.embed_from:
+        tables = load_text_embeddings(model, cfg.model.embed_from, device)
+        print(f"[antezero] embeddings from {cfg.model.embed_from}: {', '.join(tables)}", flush=True)
+    opt = build_optimizer(model, cfg, device)
     critic = learner = None  # not compiled: it would share (and fill) the policy encoder's Dynamo cache
     if cfg.ppo.critic:  # built before a resumed RNG state is restored (its init draws from it)
         state = ck["critic"] if ck is not None and "critic" in ck else critic_state(cfg.ppo.critic)
@@ -341,12 +421,15 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
         if device.type == "cuda":
             critic.encoder.half()  # ~4x faster, values within ~1e-3 (its inputs are float16-rounded already)
     start_update, steps = 0, 0
+    kl_ctl = {"m": 1.0, "ema": None}
     # Outcomes of the latest fresh episodes on the top stake (curriculum).
     top = deque(maxlen=cfg.env.curriculum_min_episodes)
     if ck is not None:
         model.load_state_dict(ck["model"])
         opt.load_state_dict(ck["opt"])
         start_update, steps = ck["update"], ck["steps"]
+        if "kl_ctl" in ck:
+            kl_ctl = ck["kl_ctl"]
         top.extend(ck.get("curriculum", []))
         if "torch_rng" in ck:
             torch.set_rng_state(ck["torch_rng"])
@@ -360,7 +443,13 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     autocast = lambda: torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp)  # noqa: E731
 
     def save(update: int):
-        extra = {"curriculum": list(top), "torch_rng": torch.get_rng_state()}
+        extra = {
+            "curriculum": list(top),
+            "kl_ctl": kl_ctl,
+            "torch_rng": torch.get_rng_state(),
+            "interval_logger": interval_logger.state_dict(),
+            "combo_recent": [[d, s_, list(q)] for (d, s_), q in combo_recent.items()],
+        }
         if torch.cuda.is_available():
             extra["cuda_rng"] = torch.cuda.get_rng_state_all()
         if critic is not None:
@@ -383,7 +472,8 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
     new_env = lambda seed: Collector(cfg, model, device, seed, fast, value_of, critic if fast == 2 else None) if fast else make_env(cfg, seed=seed)  # noqa: E731
     env = new_env(cfg.env.seed + 1_000_003 * start_update)
     N, T = cfg.env.num_envs, cfg.ppo.rollout_len
-    roll = Rollout(T, N, device, cfg.ppo.rollout_obs_on_cpu)
+    glob_float = az.GLOB_FLOAT_V2 if cfg.model.obs_v2 else az.GLOB_FLOAT
+    roll = Rollout(T, N, device, cfg.ppo.rollout_obs_on_cpu, glob_float=glob_float)
     # The schedule spans the whole run; `max_updates` only stops early.
     n_updates = cfg.ppo.total_steps // (N * T)
     stop_at = n_updates if max_updates is None else min(n_updates, start_update + max_updates)
@@ -396,263 +486,293 @@ def train(cfg: Config, resume: str | None = None, max_updates: int | None = None
 
     last: dict = {}
     completed = start_update
-    with open(log_path, "a", newline="") as log_f:
-        log_w = _log_writer(log_f, log_path, fields)
-        (run_dir / "config.json").write_text(cfg.to_json())
-        for update in range(start_update, stop_at):
-            t0 = time.perf_counter()
-            lr, ent_coef = schedule(cfg, update, n_updates)
-            for g in opt.param_groups:
-                g["lr"] = lr
-            top_stake = max(cfg.env.stakes)
-            model.eval()
-            cells: dict[str, list[int]] = {}  # this update's fresh episodes per deck/stake: [won, played]
+    combo_recent: dict[tuple[str, int], deque[int]] = {}
+    interval_logger = IntervalLogger(run_dir, cfg.env.backs, cfg.env.stakes)
+    if ck is not None:
+        interval_logger.load_state_dict(ck.get("interval_logger"))
+        if interval_logger.last_flushed_update == 0:
+            interval_logger.last_flushed_update = start_update
+        for d, s_, q in ck.get("combo_recent", ()):
+            combo_recent[(str(d), int(s_))] = deque((int(x) for x in q), maxlen=200)
+    stop_requested = False
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
 
-            def on_episodes(new_eps):
-                stats.add(new_eps)
-                top.extend(bool(x[5]) for x in new_eps if not x[10] and x[3] == top_stake)
-                for x in new_eps:
-                    if not x[10]:
-                        c = cells.setdefault(f"{x[2]}/{x[3]}", [0, 0])
-                        c[0] += bool(x[5])
-                        c[1] += 1
+    def _on_sigterm(_signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
 
-            if fast:
-                env.collect(roll, on_episodes)
-            for t in range(0 if fast else T):
-                o = obs_from_numpy(env, device)
-                roll.put_obs(t, o)
-                with autocast():
-                    out = model.act(o, explore=explore)
-                roll.op[t] = out["op"]
-                roll.card_seq[t] = out["card_seq"]
-                roll.dest[t] = out["dest"]
-                roll.explored[t] = out["explored"]
-                roll.logp[t] = out["logp"].float()
-                roll.sure[t] = out["sure"].float()
-                roll.value[t] = out["value"].float()
-                rew, done, trunc = env.step(
-                    out["op"].to(torch.int32).cpu().numpy(),
-                    out["cards"].cpu().numpy().astype(np.uint32),
-                    out["dest"].to(torch.int32).cpu().numpy(),
-                )
-                rew = torch.as_tensor(rew, device=device)
-                if trunc.any():
-                    # Not a real end: bootstrap from the final state's value.
-                    rows = np.flatnonzero(trunc)
-                    with torch.no_grad(), autocast():
-                        v_fin = value_of(obs_from_numpy(env, device, final=True, rows=rows))
-                    rew[torch.as_tensor(rows, device=device)] += cfg.ppo.gamma * v_fin
-                roll.reward[t] = rew
-                roll.done[t] = torch.as_tensor(done, device=device, dtype=torch.float32)
-                roll.aux_kind[t] = torch.as_tensor(np.asarray(env.aux_kind), device=device)
-                roll.aux_dest[t] = torch.as_tensor(np.asarray(env.aux_dest), device=device)
-                on_episodes(env.pop_episodes())
-            with torch.no_grad(), autocast():
-                vals = []
-                for o in env.last_obs() if fast else [obs_from_numpy(env, device)]:
-                    vals.append(value_of(o))
-                last_value = torch.cat(vals)
-            flat_op, flat_seq, flat_dest = roll.op.flatten(), roll.card_seq.flatten(0, 1), roll.dest.flatten()
-            logp_drift = torch.zeros((), device=device)
-            c_val = roll.c_val if critic is not None else None
-            sweep = critic is not None and not (fast and env.act.critic is not None)
-            if cfg.ppo.recompute_logp or sweep:
-                # Slices of states sorted by token count, each at its longest token and op lists (one GPU sync).
-                order = roll.n_tokens.flatten().argsort(stable=True).view(-1, mb)
-                lens = torch.stack([roll.n_tokens.flatten()[order].amax(1), roll.n_ops.flatten()[order].amax(1)], -1).clamp(min=1).tolist()
-                order_cpu = order.cpu() if roll.host else None
-                with torch.no_grad(), autocast():
-                    for k in range(cfg.ppo.minibatches):
-                        idx = order[k]
-                        # The critic alone reads no ops.
-                        o = roll.obs(idx, order_cpu[k] if roll.host else None, lens[k][0], lens[k][1] if cfg.ppo.recompute_logp else 0)
-                        tt, nn_ = idx // N, idx % N
-                        if cfg.ppo.recompute_logp:
-                            lp, _e, v = model.evaluate(o, flat_op[idx], flat_seq[idx], flat_dest[idx], *lens[k])
-                            # Kept on the device (no sync per slice: the next slice is gathered while this one runs).
-                            logp_drift = torch.maximum(logp_drift, (lp.float() - roll.logp[tt, nn_]).abs().max())
-                            roll.logp[tt, nn_] = lp.float()
-                            roll.value[tt, nn_] = v.float()
-                        if sweep:
-                            c_val[tt, nn_] = critic.value(o, lens[k][0]).float()
-            adv, ret = gae(roll, last_value, cfg.ppo.gamma, cfg.ppo.gae_lambda, c_val, roll.explored)
-            c_log = {}
-            if critic is not None:
-                # Graded on value-free targets: the critic's own lambda-returns would favour it (staleness).
-                ends, part = mc_returns(roll, cfg.ppo.gamma)
-                mc = part[ends]
-                for k, v in (("critic", c_val), ("value", roll.value)):
-                    e = v[ends] - mc
-                    c_log[f"{k}_ev"], c_log[f"{k}_bias"] = (float(1 - e.var() / mc.var()), float(e.mean())) if len(mc) > 1 else (math.nan, math.nan)
-                if learner is not None:
-                    c_log.update(learner.step(roll, ends, part, (c_val, roll.value), cfg.ppo.gamma, cfg.env.r_win))
-                    if cfg.ppo.critic_learn == 2:  # the fitted copy values the next rollout
-                        if not all(bool(torch.isfinite(p).all()) for p in learner.net.parameters()):
-                            raise FloatingPointError("the online critic's weights are not finite")
-                        critic.load_state_dict(learner.net.state_dict())
-            x_log = ""
-            if any(explore):  # explored steps: count, mean normalised advantage, share better than expected
-                xa = (adv[roll.explored] - adv.mean()) / adv.std()
-                c_log.update(explored=int(roll.explored.sum()), x_adv=float(xa.mean()) if len(xa) else 0.0, x_pos=float((xa > 0).float().mean()) if len(xa) else 0.0)
-                x_log = f" explored={c_log['explored']} x_adv={c_log['x_adv']:+.3f} x_pos={c_log['x_pos']:.2f}"
-            if labels:
-                c_log.update(order_log(model, roll, mb // cfg.ppo.grad_accum))
-            t_roll = time.perf_counter() - t0
-            steps += B
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    try:
+        with open(log_path, "a", newline="") as log_f:
+            log_w = _log_writer(log_f, log_path, fields)
+            (run_dir / "config.json").write_text(cfg.to_json())
+            for update in range(start_update, stop_at):
+                    t0 = time.perf_counter()
+                    lr, ent_coef = schedule(cfg, update, n_updates, kl_ctl if cfg.ppo.kl_controller else None)
+                    for g in opt.param_groups:
+                        g["lr"] = lr
+                    top_stake = max(cfg.env.stakes)
+                    model.eval()
+                    cells: dict[str, list[int]] = {}  # this update's fresh episodes per deck/stake: [won, played]
 
-            model.train()
-            flat_adv, flat_ret = adv.flatten(), ret.flatten()
-            flat_logp, flat_val, flat_x = roll.logp.flatten(), roll.value.flatten(), roll.explored.flatten()
-            flat_nt, flat_no = roll.n_tokens.flatten().long(), roll.n_ops.flatten().long()
-            flat_kind, flat_bits = roll.aux_kind.flatten(), roll.aux_dest.flatten(0, 1)
-            # Forced redeems and the hands a joker move would have gained on are always trained on.
-            flat_sure = roll.sure.flatten().masked_fill(flat_x | (flat_kind == 1), -torch.inf)
-            A = cfg.ppo.grad_accum
-            kb = max(A, int(mb * cfg.ppo.learn_frac) // A * A)  # samples of a minibatch that are trained on
-            kept = kb / mb
-            kls, clipfracs, pls, vls, ents = [], [], [], [], []
-            for _epoch in range(cfg.ppo.epochs):
-                perm = torch.randperm(B, device=device).view(-1, mb)
-                # Each minibatch's states by token count, so its equal chunks pad less (same summed gradient).
-                perm = perm.gather(1, flat_nt[perm].argsort(dim=1))
-                full = perm  # advantages are normalised over the whole minibatch
-                if kb < mb:  # ppo.learn_frac: the least sure states, still by token count
-                    perm = perm.gather(1, flat_sure[perm].topk(kb, dim=1, largest=False).indices.sort(dim=1).values)
-                ch = perm.view(-1, A, kb // A)
-                lens = torch.stack([flat_nt[ch].amax(-1), flat_no[ch].amax(-1)], -1).clamp(min=1).tolist()  # one GPU sync per epoch
-                perm = perm.flatten()
-                perm_cpu = perm.cpu() if roll.host else perm  # what host storage gathers with
-                for k in range(cfg.ppo.minibatches):
-                    idx = perm[k * kb : (k + 1) * kb]
-                    a_mean, a_std = flat_adv[full[k]].mean(), flat_adv[full[k]].std() + 1e-8
-                    opt.zero_grad(set_to_none=True)
-                    parts, gaining = [], []
-                    finite = torch.ones((), dtype=torch.bool, device=device)
-                    # Equal chunks of means: their summed gradients equal the whole minibatch's.
-                    for c, c_cpu, (n_tok, n_op) in zip(idx.chunk(A), perm_cpu[k * kb : (k + 1) * kb].chunk(A), lens[k]):
-                        o = roll.obs(c, c_cpu, n_tok, n_op)
+                    def on_episodes(new_eps):
+                        stats.add(new_eps)
+                        interval_logger.add_episodes(new_eps)
+                        top.extend(bool(x[5]) for x in new_eps if not x[10] and x[3] == top_stake)
+                        for x in new_eps:
+                            if not x[10]:
+                                c = cells.setdefault(f"{x[2]}/{x[3]}", [0, 0])
+                                c[0] += bool(x[5])
+                                c[1] += 1
+                                combo_recent.setdefault((x[2], int(x[3])), deque(maxlen=200)).append(int(bool(x[5])))
+
+                    if fast:
+                        env.collect(roll, on_episodes)
+                    for t in range(0 if fast else T):
+                        o = obs_from_numpy(env, device)
+                        roll.put_obs(t, o)
                         with autocast():
-                            enc = model.encode(o, n_tok, n_op)
-                            logp, ent, val = model.evaluate(o, flat_op[c], flat_seq[c], flat_dest[c], n_tok, n_op, enc)
-                        if cfg.ppo.aux_order:  # the ordering loss reads this pass's encodings of its states
-                            g = (flat_kind[c] == 1).nonzero().squeeze(1)
-                            if len(g):
-                                gaining.append((Obs(**{f: getattr(o, f)[g] for f in Obs.__dataclass_fields__}), flat_bits[c][g], tuple(x[g].detach() for x in enc[:3])))
-                        logp, ent, val = logp.float(), ent.float(), val.float()
-                        x = flat_x[c]
-                        with torch.no_grad():
-                            lr_ = logp - flat_logp[c]
-                            # Explored actions have pi ~ 0: their ratio is no measure of policy change.
-                            kl_terms = ((lr_.exp() - 1) - lr_)[~x]
-                            kl = kl_terms.mean() if kl_terms.numel() else lr_.new_zeros(())
-                        a = (flat_adv[c] - a_mean) / a_std
-                        drift = logp - flat_logp[c]
-                        # An explored step's old probability is ~0, so its ratio can overflow: it stays out of the
-                        # exponential, whose gradient would be NaN even through the branch `where` does not select.
-                        ratio = drift.masked_fill(x, 0.0).exp()
-                        clipped = ratio.clamp(1 - cfg.ppo.clip, 1 + cfg.ppo.clip) * a
-                        # Explored steps: no importance weight (it would be ~0). Their log-probability moves with the
-                        # sign of the advantage, by at most the clip per update either way (a one-sided term would
-                        # raise every tried action whose returns are noisy).
-                        tried = cfg.ppo.explore_weight * drift.clamp(-cfg.ppo.clip, cfg.ppo.clip) * a
-                        surr = torch.where(x, tried, torch.min(ratio * a, clipped))
-                        pl = -surr.mean()
-                        if cfg.ppo.value_clip > 0:
-                            v_old = flat_val[c]
-                            v_clip = v_old + (val - v_old).clamp(-cfg.ppo.value_clip, cfg.ppo.value_clip)
-                            vl = 0.5 * torch.max((val - flat_ret[c]) ** 2, (v_clip - flat_ret[c]) ** 2).mean()
-                        else:
-                            vl = 0.5 * ((val - flat_ret[c]) ** 2).mean()
-                        # glob_i column 0 is the phase: 2 = shop, 3 = booster pack.
-                        shop = (o.glob_i[:, 0] == 2) | (o.glob_i[:, 0] == 3)
-                        loss = pl + cfg.ppo.vf_coef * vl - ent_coef * (ent * torch.where(shop, cfg.ppo.shop_ent_mult, 1.0)).mean()
-                        finite &= torch.isfinite(loss)
-                        (loss * kept / A).backward()
-                        clipfrac = ((ratio.detach() - 1).abs() > cfg.ppo.clip).float().mean()
-                        parts.append(torch.stack([kl * kept, clipfrac * kept, pl.detach(), vl.detach(), ent.detach().mean() * kept]))
-                    # Fail instead of training on garbage (on Vast this also stops the instance).
-                    if not finite:
-                        raise FloatingPointError(f"non-finite loss at update {update + 1}")
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.ppo.max_grad_norm)
-                    if cfg.ppo.aux_order:
-                        add_order_grad(model, gaining, cfg.ppo.aux_order)
-                    opt.step()
-                    for v, s in zip((kls, clipfracs, pls, vls, ents), torch.stack(parts).mean(0).tolist()):
-                        v.append(s)
-                # Judged per epoch, so one noisy minibatch does not cut the update short.
-                if cfg.ppo.target_kl and _mean(kls[-cfg.ppo.minibatches :]) > 1.5 * cfg.ppo.target_kl:
-                    break
-            dt = time.perf_counter() - t0
-            row = {
-                "update": update + 1,
-                "steps": steps,
-                "fps": round(B / dt),
-                "rollout_s": round(t_roll, 3),
-                "lr": lr,
-                "ent_coef": ent_coef,
-                "policy_loss": _mean(pls),
-                "value_loss": _mean(vls),
-                "entropy": _mean(ents),
-                "approx_kl": _mean(kls),
-                "clipfrac": _mean(clipfracs),
-                "opt_steps": len(pls),
-                "logp_drift": float(logp_drift),
-                "invalid_actions": env.invalid_actions(),
-                "stakes": ",".join(map(str, cfg.env.stakes)),
-                **stats.summary(),
-            }
-            row.update(c_log)
-            last = row
-            log_w.writerow(row)
-            log_f.flush()
-            if len(set(cfg.env.backs)) * len(cfg.env.stakes) > 1:
-                with open(run_dir / "cells.jsonl", "a") as f:
-                    f.write(json.dumps({"update": update + 1, **cells}) + "\n")
-            if cfg.log_every and (update + 1) % cfg.log_every == 0:
-                s = row
-                num = lambda k, spec: "-" if s[k] is None else format(s[k], spec)  # noqa: E731
-                print(
-                    f"[{s['update']}] steps={s['steps']:,} fps={s['fps']:,} win={num('win_rate', '.3f')} "
-                    f"[{num('win_lo', '.3f')},{num('win_hi', '.3f')}] ante={num('ante_mean', '.2f')} max={num('ante_max', 'd')} "
-                    f"ret={num('ep_return', '.3f')} ent={s['entropy']:.3f} kl={s['approx_kl']:.4f} vl={s['value_loss']:.4f}{x_log}"
-                    + (f" cev={s['critic_ev']:.3f} vev={s['value_ev']:.3f} cbias={s['critic_bias']:+.3f} vbias={s['value_bias']:+.3f}" if critic is not None else ""),
-                    flush=True,
-                )
-            e = cfg.env
-            if e.curriculum and top_stake < 8 and len(top) == top.maxlen:
-                # The latest fresh episodes on the top stake (sampled actions,
-                # so a conservative estimate of greedy play).
-                lo, _hi = wilson(sum(top), len(top))
-                if lo >= e.curriculum_target:
-                    e.stakes = sorted(set(e.stakes) | {top_stake + 1})
-                    print(f"[curriculum] stakes -> {e.stakes}", flush=True)
-                    env = new_env(e.seed + 7919 * (update + 1))
-                    top.clear()
-                    (run_dir / "config.json").write_text(cfg.to_json())
-            completed = update + 1
-            if cfg.save_every and completed % cfg.save_every == 0:
-                save(completed)
-                # Every saved checkpoint is kept (an average of them beats the last one), whether or not it is
-                # evaluated: the in-run eval costs wall time and can be rarer.
-                shutil.copyfile(run_dir / "last.pt", run_dir / f"u{completed}.pt")
-            if cfg.eval_every and completed % cfg.eval_every == 0:
-                from .eval import evaluate
+                            out = model.act(o, explore=explore)
+                        roll.op[t] = out["op"]
+                        roll.card_seq[t] = out["card_seq"]
+                        roll.dest[t] = out["dest"]
+                        roll.explored[t] = out["explored"]
+                        roll.logp[t] = out["logp"].float()
+                        roll.sure[t] = out["sure"].float()
+                        roll.value[t] = out["value"].float()
+                        rew, done, trunc = env.step(
+                            out["op"].to(torch.int32).cpu().numpy(),
+                            out["cards"].cpu().numpy().astype(np.uint32),
+                            out["dest"].to(torch.int32).cpu().numpy(),
+                        )
+                        rew = torch.as_tensor(rew, device=device)
+                        if trunc.any():
+                            # Not a real end: bootstrap from the final state's value.
+                            rows = np.flatnonzero(trunc)
+                            with torch.no_grad(), autocast():
+                                v_fin = value_of(obs_from_numpy(env, device, final=True, rows=rows))
+                            rew[torch.as_tensor(rows, device=device)] += cfg.ppo.gamma * v_fin
+                        roll.reward[t] = rew
+                        roll.done[t] = torch.as_tensor(done, device=device, dtype=torch.float32)
+                        roll.aux_kind[t] = torch.as_tensor(np.asarray(env.aux_kind), device=device)
+                        roll.aux_dest[t] = torch.as_tensor(np.asarray(env.aux_dest), device=device)
+                        on_episodes(env.pop_episodes())
+                    with torch.no_grad(), autocast():
+                        vals = []
+                        for o in env.last_obs() if fast else [obs_from_numpy(env, device)]:
+                            vals.append(value_of(o))
+                        last_value = torch.cat(vals)
+                    flat_op, flat_seq, flat_dest = roll.op.flatten(), roll.card_seq.flatten(0, 1), roll.dest.flatten()
+                    logp_drift = torch.zeros((), device=device)
+                    c_val = roll.c_val if critic is not None else None
+                    sweep = critic is not None and not (fast and env.act.critic is not None)
+                    if cfg.ppo.recompute_logp or sweep:
+                        # Slices of states sorted by token count, each at its longest token and op lists (one GPU sync).
+                        order = roll.n_tokens.flatten().argsort(stable=True).view(-1, mb // cfg.ppo.grad_accum)
+                        lens = torch.stack([roll.n_tokens.flatten()[order].amax(1), roll.n_ops.flatten()[order].amax(1)], -1).clamp(min=1).tolist()
+                        order_cpu = order.cpu() if roll.host else None
+                        with torch.no_grad(), autocast():
+                            for k in range(len(order)):
+                                idx = order[k]
+                                # The critic alone reads no ops.
+                                o = roll.obs(idx, order_cpu[k] if roll.host else None, lens[k][0], lens[k][1] if cfg.ppo.recompute_logp else 0)
+                                tt, nn_ = idx // N, idx % N
+                                if cfg.ppo.recompute_logp:
+                                    lp, _e, v = model.evaluate(o, flat_op[idx], flat_seq[idx], flat_dest[idx], *lens[k])
+                                    # Kept on the device (no sync per slice: the next slice is gathered while this one runs).
+                                    logp_drift = torch.maximum(logp_drift, (lp.float() - roll.logp[tt, nn_]).abs().max())
+                                    roll.logp[tt, nn_] = lp.float()
+                                    roll.value[tt, nn_] = v.float()
+                                if sweep:
+                                    c_val[tt, nn_] = critic.value(o, lens[k][0]).float()
+                    adv, ret = gae(roll, last_value, cfg.ppo.gamma, cfg.ppo.gae_lambda, c_val, roll.explored)
+                    c_log = {}
+                    if critic is not None:
+                        # Graded on value-free targets: the critic's own lambda-returns would favour it (staleness).
+                        ends, part = mc_returns(roll, cfg.ppo.gamma)
+                        mc = part[ends]
+                        for k, v in (("critic", c_val), ("value", roll.value)):
+                            e = v[ends] - mc
+                            c_log[f"{k}_ev"], c_log[f"{k}_bias"] = (float(1 - e.var() / mc.var()), float(e.mean())) if len(mc) > 1 else (math.nan, math.nan)
+                        if learner is not None:
+                            c_log.update(learner.step(roll, ends, part, (c_val, roll.value), cfg.ppo.gamma, cfg.env.r_win))
+                            if cfg.ppo.critic_learn == 2:  # the fitted copy values the next rollout
+                                if not all(bool(torch.isfinite(p).all()) for p in learner.net.parameters()):
+                                    raise FloatingPointError("the online critic's weights are not finite")
+                                critic.load_state_dict(learner.net.state_dict())
+                    x_log = ""
+                    if any(explore):  # explored steps: count, mean normalised advantage, share better than expected
+                        xa = (adv[roll.explored] - adv.mean()) / adv.std()
+                        c_log.update(explored=int(roll.explored.sum()), x_adv=float(xa.mean()) if len(xa) else 0.0, x_pos=float((xa > 0).float().mean()) if len(xa) else 0.0)
+                        x_log = f" explored={c_log['explored']} x_adv={c_log['x_adv']:+.3f} x_pos={c_log['x_pos']:.2f}"
+                    if labels:
+                        c_log.update(order_log(model, roll, mb // cfg.ppo.grad_accum))
+                    t_roll = time.perf_counter() - t0
+                    steps += B
 
-                res = evaluate(model, cfg, episodes=cfg.eval_episodes, device=device)
-                with open(run_dir / "eval.jsonl", "a") as f:
-                    f.write(json.dumps({"update": completed, "steps": steps, **res}) + "\n")
-                print(f"[eval {completed}] {res['summary']}", flush=True)
-            if (run_dir / "STOP").exists():
-                (run_dir / "STOP").unlink()
-                break
-        save(completed)
+                    model.train()
+                    flat_adv, flat_ret = adv.flatten(), ret.flatten()
+                    flat_logp, flat_val, flat_x = roll.logp.flatten(), roll.value.flatten(), roll.explored.flatten()
+                    flat_nt, flat_no = roll.n_tokens.flatten().long(), roll.n_ops.flatten().long()
+                    flat_kind, flat_bits = roll.aux_kind.flatten(), roll.aux_dest.flatten(0, 1)
+                    # Forced redeems and the hands a joker move would have gained on are always trained on.
+                    flat_sure = roll.sure.flatten().masked_fill(flat_x | (flat_kind == 1), -torch.inf)
+                    A = cfg.ppo.grad_accum
+                    kb = max(A, int(mb * cfg.ppo.learn_frac) // A * A)  # samples of a minibatch that are trained on
+                    kept = kb / mb
+                    kls, clipfracs, pls, vls, ents = [], [], [], [], []
+                    for _epoch in range(cfg.ppo.epochs):
+                        perm = torch.randperm(B, device=device).view(-1, mb)
+                        # Each minibatch's states by token count, so its equal chunks pad less (same summed gradient).
+                        perm = perm.gather(1, flat_nt[perm].argsort(dim=1))
+                        full = perm  # advantages are normalised over the whole minibatch
+                        if kb < mb:  # ppo.learn_frac: the least sure states, still by token count
+                            perm = perm.gather(1, flat_sure[perm].topk(kb, dim=1, largest=False).indices.sort(dim=1).values)
+                        ch = perm.view(-1, A, kb // A)
+                        lens = torch.stack([flat_nt[ch].amax(-1), flat_no[ch].amax(-1)], -1).clamp(min=1).tolist()  # one GPU sync per epoch
+                        perm = perm.flatten()
+                        perm_cpu = perm.cpu() if roll.host else perm  # what host storage gathers with
+                        for k in range(cfg.ppo.minibatches):
+                            idx = perm[k * kb : (k + 1) * kb]
+                            a_mean, a_std = flat_adv[full[k]].mean(), flat_adv[full[k]].std() + 1e-8
+                            opt.zero_grad(set_to_none=True)
+                            parts, gaining = [], []
+                            finite = torch.ones((), dtype=torch.bool, device=device)
+                            # Equal chunks of means: their summed gradients equal the whole minibatch's.
+                            for c, c_cpu, (n_tok, n_op) in zip(idx.chunk(A), perm_cpu[k * kb : (k + 1) * kb].chunk(A), lens[k]):
+                                o = roll.obs(c, c_cpu, n_tok, n_op)
+                                with autocast():
+                                    enc = model.encode(o, n_tok, n_op)
+                                    logp, ent, val = model.evaluate(o, flat_op[c], flat_seq[c], flat_dest[c], n_tok, n_op, enc)
+                                if cfg.ppo.aux_order:  # the ordering loss reads this pass's encodings of its states
+                                    g = (flat_kind[c] == 1).nonzero().squeeze(1)
+                                    if len(g):
+                                        gaining.append((Obs(**{f: getattr(o, f)[g] for f in Obs.__dataclass_fields__}), flat_bits[c][g], tuple(x[g].detach() for x in enc[:3])))
+                                logp, ent, val = logp.float(), ent.float(), val.float()
+                                x = flat_x[c]
+                                with torch.no_grad():
+                                    lr_ = logp - flat_logp[c]
+                                    # Explored actions have pi ~ 0: their ratio is no measure of policy change.
+                                    kl_terms = ((lr_.exp() - 1) - lr_)[~x]
+                                    kl = kl_terms.mean() if kl_terms.numel() else lr_.new_zeros(())
+                                a = (flat_adv[c] - a_mean) / a_std
+                                drift = logp - flat_logp[c]
+                                # An explored step's old probability is ~0, so its ratio can overflow: it stays out of the
+                                # exponential, whose gradient would be NaN even through the branch `where` does not select.
+                                ratio = drift.masked_fill(x, 0.0).exp()
+                                clipped = ratio.clamp(1 - cfg.ppo.clip, 1 + cfg.ppo.clip) * a
+                                # Explored steps: no importance weight (it would be ~0). Their log-probability moves with the
+                                # sign of the advantage, by at most the clip per update either way (a one-sided term would
+                                # raise every tried action whose returns are noisy).
+                                tried = cfg.ppo.explore_weight * drift.clamp(-cfg.ppo.clip, cfg.ppo.clip) * a
+                                surr = torch.where(x, tried, torch.min(ratio * a, clipped))
+                                pl = -surr.mean()
+                                if cfg.ppo.value_clip > 0:
+                                    v_old = flat_val[c]
+                                    v_clip = v_old + (val - v_old).clamp(-cfg.ppo.value_clip, cfg.ppo.value_clip)
+                                    vl = 0.5 * torch.max((val - flat_ret[c]) ** 2, (v_clip - flat_ret[c]) ** 2).mean()
+                                else:
+                                    vl = 0.5 * ((val - flat_ret[c]) ** 2).mean()
+                                # glob_i column 0 is the phase: 2 = shop, 3 = booster pack.
+                                shop = (o.glob_i[:, 0] == 2) | (o.glob_i[:, 0] == 3)
+                                loss = pl + cfg.ppo.vf_coef * vl - ent_coef * (ent * torch.where(shop, cfg.ppo.shop_ent_mult, 1.0)).mean()
+                                finite &= torch.isfinite(loss)
+                                (loss * kept / A).backward()
+                                clipfrac = ((ratio.detach() - 1).abs() > cfg.ppo.clip).float().mean()
+                                parts.append(torch.stack([kl * kept, clipfrac * kept, pl.detach(), vl.detach(), ent.detach().mean() * kept]))
+                            # Fail instead of training on garbage (on Vast this also stops the instance).
+                            if not finite:
+                                raise FloatingPointError(f"non-finite loss at update {update + 1}")
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.ppo.max_grad_norm)
+                            if cfg.ppo.aux_order:
+                                add_order_grad(model, gaining, cfg.ppo.aux_order)
+                            opt.step()
+                            for v, s in zip((kls, clipfracs, pls, vls, ents), torch.stack(parts).mean(0).tolist()):
+                                v.append(s)
+                        # Judged per epoch, so one noisy minibatch does not cut the update short.
+                        if not cfg.ppo.kl_controller and cfg.ppo.target_kl and _mean(kls[-cfg.ppo.minibatches :]) > 1.5 * cfg.ppo.target_kl:
+                            break
+                    if cfg.ppo.kl_controller:
+                        update_kl_controller(cfg, update, _mean(kls), kl_ctl)
+                    dt = time.perf_counter() - t0
+                    row = {
+                        "update": update + 1,
+                        "steps": steps,
+                        "fps": round(B / dt),
+                        "rollout_s": round(t_roll, 3),
+                        "lr": lr,
+                        "ent_coef": ent_coef,
+                        "policy_loss": _mean(pls),
+                        "value_loss": _mean(vls),
+                        "entropy": _mean(ents),
+                        "approx_kl": _mean(kls),
+                        "clipfrac": _mean(clipfracs),
+                        "opt_steps": len(pls),
+                        "logp_drift": float(logp_drift),
+                        "invalid_actions": env.invalid_actions(),
+                        "stakes": ",".join(map(str, cfg.env.stakes)),
+                        **stats.summary(),
+                    }
+                    row.update(c_log)
+                    last = row
+                    log_w.writerow(row)
+                    log_f.flush()
+                    if len(set(cfg.env.backs)) * len(cfg.env.stakes) > 1:
+                        with open(run_dir / "cells.jsonl", "a") as f:
+                            f.write(json.dumps({"update": update + 1, **cells}) + "\n")
+                    if cfg.log_every and (update + 1) % cfg.log_every == 0:
+                        s = row
+                        num = lambda k, spec: "-" if s[k] is None else format(s[k], spec)  # noqa: E731
+                        print(
+                            f"[{s['update']}] steps={s['steps']:,} fps={s['fps']:,} win={num('win_rate', '.3f')} "
+                            f"[{num('win_lo', '.3f')},{num('win_hi', '.3f')}] ante={num('ante_mean', '.2f')} max={num('ante_max', 'd')} "
+                            f"ret={num('ep_return', '.3f')} ent={s['entropy']:.3f} kl={s['approx_kl']:.4f} vl={s['value_loss']:.4f}{x_log}"
+                            + (f" cev={s['critic_ev']:.3f} vev={s['value_ev']:.3f} cbias={s['critic_bias']:+.3f} vbias={s['value_bias']:+.3f}" if critic is not None else ""),
+                            flush=True,
+                        )
+                    e = cfg.env
+                    if e.curriculum and top_stake < 8 and len(top) == top.maxlen:
+                        # The latest fresh episodes on the top stake (sampled actions,
+                        # so a conservative estimate of greedy play).
+                        lo, _hi = wilson(sum(top), len(top))
+                        if lo >= e.curriculum_target:
+                            e.stakes = sorted(set(e.stakes) | {top_stake + 1})
+                            print(f"[curriculum] stakes -> {e.stakes}", flush=True)
+                            env = new_env(e.seed + 7919 * (update + 1))
+                            top.clear()
+                            (run_dir / "config.json").write_text(cfg.to_json())
+                    completed = update + 1
+                    if cfg.log_interval_updates and completed % cfg.log_interval_updates == 0:
+                        interval_logger.flush(completed, steps, env)
+                    if cfg.save_every and completed % cfg.save_every == 0:
+                        save(completed)
+                        # Every saved checkpoint is kept (an average of them beats the last one), whether or not it is
+                        # evaluated: the in-run eval costs wall time and can be rarer.
+                        shutil.copyfile(run_dir / "last.pt", run_dir / f"u{completed}.pt")
+                    if cfg.eval_every and completed % cfg.eval_every == 0:
+                        from .eval import evaluate
+
+                        res = evaluate(model, cfg, episodes=cfg.eval_episodes, device=device)
+                        with open(run_dir / "eval.jsonl", "a") as f:
+                            f.write(json.dumps({"update": completed, "steps": steps, **res}) + "\n")
+                        print(f"[eval {completed}] {res['summary']}", flush=True)
+                    if stop_requested or (run_dir / "STOP").exists():
+                        if (run_dir / "STOP").exists():
+                            (run_dir / "STOP").unlink()
+                        break
+            if cfg.log_interval_updates and completed > interval_logger.last_flushed_update:
+                interval_logger.flush(completed, steps, env)
+            save(completed)
+            if completed >= n_updates and not stop_requested:
+                print("done", flush=True)
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
     return last
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--preset", default="base", choices=["smoke", "cpu", "base", "large"])
+    ap.add_argument("--preset", default="base", choices=["smoke", "cpu", "base", "large", "run95"])
     ap.add_argument("--name", default=None)
     ap.add_argument("--set", nargs="*", default=[], help="overrides, e.g. ppo.lr=1e-4 env.backs=b_red,b_blue")
     ap.add_argument("--resume", default=None)

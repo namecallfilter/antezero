@@ -1206,3 +1206,54 @@ def test_the_bot_command_keeps_its_arguments_through_cmd(tmp_path):
     cmd = command_line([sys.executable, "-c", script, str(ckpt), str(out)])
     subprocess.run(f'start "AnteZero bot" /b /wait {cmd}', shell=True, check=True)  # as bot.lua starts it
     assert json.loads(out.read_text()) == [str(ckpt), str(out)]
+
+
+def test_obs_v2_models_train_and_reload(tmp_path):
+    from pathlib import Path
+
+    v02 = Path(__file__).resolve().parents[2] / "antezero-v0.2.0.pt"
+    if v02.exists():
+        m_v1, cfg_v1, _ = load_model(v02)
+        assert not cfg_v1.model.obs_v2
+        assert m_v1.glob_lin.in_features == az.GLOB_FLOAT
+
+    cfg = preset("smoke")
+    cfg.model.obs_v2 = True
+    cfg.env.obs_v2 = True
+    cfg.env.max_rearranges = 4
+    cfg.run_dir = str(tmp_path)
+    row = train(cfg)
+    assert np.isfinite(row["policy_loss"]) and np.isfinite(row["value_loss"])
+    m_v2, cfg_v2, _ = load_model(tmp_path / "smoke" / "last.pt")
+    assert cfg_v2.model.obs_v2
+    assert m_v2.glob_lin.in_features == az.GLOB_FLOAT_V2
+
+
+def test_run95_preset_model_optimizer_and_schedules():
+    import math
+    from antezero_agent.train import build_optimizer, schedule, update_kl_controller
+
+    cfg = preset("run95")
+    cfg.validate()
+    assert cfg.model.arch == "run95" and cfg.model.obs_v2
+    assert len(cfg.env.backs) == 15 and cfg.env.stakes == [8]
+    assert cfg.env.reward_mode == "blinds" and cfg.env.endless and cfg.env.max_ante == 16
+    assert cfg.ppo.optimizer == "muon" and cfg.ppo.gamma == 1.0 and cfg.ppo.kl_controller
+
+    from antezero_agent.models import Run95Net, build_model
+
+    m = build_model(cfg.model)
+    assert isinstance(m, Run95Net)
+    opt = build_optimizer(m, cfg, torch.device("cpu"))
+    assert len(opt.opts) == 2
+
+    kl_ctl = {"m": 1.0, "ema": None}
+    lr0, _ = schedule(cfg, 0, 1000, kl_ctl)
+    lr800, _ = schedule(cfg, 800, 1000, kl_ctl)
+    assert math.isclose(lr0, cfg.ppo.lr, rel_tol=1e-5)
+    assert cfg.ppo.lr_final < lr800 < cfg.ppo.lr
+    update_kl_controller(cfg, 2000, 0.01, kl_ctl)
+    assert kl_ctl["m"] < 1.0
+    kl_ctl = {"m": 1.0, "ema": None}
+    update_kl_controller(cfg, 2000, 0.0, kl_ctl)
+    assert kl_ctl["m"] > 1.0

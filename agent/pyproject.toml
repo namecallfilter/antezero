@@ -15,6 +15,7 @@ game = ["antezero-bridge"]
 
 [project.scripts]
 az-train = "antezero_agent.train:main"
+az-rl-train = "antezero_agent.rl_train:main"
 az-eval = "antezero_agent.eval:main"
 
 [build-system]

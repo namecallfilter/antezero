@@ -37,6 +37,14 @@ class ModelConfig:
     bf16_encoder: bool = False
     # Read what each item does from the table of effects.py; off = a table of zeros, for A/B controls.
     effects: bool = True
+    # Extended observation v2 (GLOB_FLOAT_V2: adds last_hand_score/chips/mult/blind_share).
+    obs_v2: bool = False
+    # Policy architecture: "antezero" (default Net) or "run95" (Run95Net).
+    arch: str = "antezero"
+    # Action head: "factored" (default 3-part head) or "hand_builder".
+    action_head: str = "factored"
+    # Optional path to RLBalatro text_embeddings_{d}_v2.pt ("" = disabled, "auto" = match d_model).
+    embed_from: str = ""
 
 
 @dataclass
@@ -105,6 +113,15 @@ class EnvConfig:
     # trained policy spent a sixth of its steps on such sorts, two before most
     # plays that would not clear the blind.
     null_sorts: bool = True
+    # Extended observation v2 (GLOB_FLOAT_V2).
+    obs_v2: bool = False
+    # Maximum consecutive free reorders (hand moves / sorts, joker moves).
+    max_rearranges: int = 2
+    # Reward scheme: "shaping" (antezero default) or "blinds" (Run 95).
+    reward_mode: str = "shaping"
+    # External start pool of .bal recordings (directory with index.jsonl + recordings/).
+    start_pool: str = ""
+    start_frac: float = 0.0
     # Stake curriculum: the next stake is added once the 95% Wilson lower
     # bound of the win rate over the latest `curriculum_min_episodes` fresh
     # episodes on the top stake (since the last change) reaches the target.
@@ -156,11 +173,24 @@ class PPOConfig:
     explore_weight: float = 0.25
     lr: float = 3e-4
     lr_final: float = 3e-5
+    lr_schedule: str = "cosine"  # "cosine" | "exp"
+    lr_decay_updates: int = 800  # exp schedule decay constant
     warmup_updates: int = 20
+    optimizer: str = "adamw"  # "adamw" | "muon"
     weight_decay: float = 0.01
+    muon_wd: float = 0.05
+    embed_adam: bool = True
     max_grad_norm: float = 0.5
-    # An update stops after the epoch whose mean KL exceeds 1.5x this.
+    # An update stops after the epoch whose mean KL exceeds 1.5x this (when kl_controller is False).
     target_kl: float = 0.03
+    # KL-adaptive LR controller (Run 95).
+    kl_controller: bool = False
+    kl_start: int = 2000
+    kl_high: float = 1.25
+    kl_low: float = 0.75
+    kl_step: float = 0.03
+    kl_max_factor: float = 2.0
+    kl_ema: float = 0.1
     # bf16 autocast (CUDA devices that support bf16, and CPU when amp_cpu).
     # Off: trained op logits reach ~2e3, where bf16 rounding (steps of 16)
     # flips near-tied plays between batches, giving PPO ratios of e^15.
@@ -216,6 +246,7 @@ class Config:
     ppo: PPOConfig = field(default_factory=PPOConfig)
     device: str = "auto"
     log_every: int = 1
+    log_interval_updates: int = 1000
     save_every: int = 50
     eval_every: int = 200
     eval_episodes: int = 256
@@ -270,14 +301,24 @@ class Config:
             (p.critic_learn in (0, 1, 2) and (not p.critic_learn or bool(p.critic)), "ppo.critic_learn is 0, 1 or 2 and needs ppo.critic"),
             (0.0 <= e.order_label_rate <= 1.0, "env.order_label_rate must be in [0, 1]"),
             (
-                0.0 <= e.snapshot_prob and 0.0 <= e.practice_prob and e.snapshot_prob + e.practice_prob <= 1.0,
-                "env.snapshot_prob and env.practice_prob must be >= 0 and sum to at most 1",
+                0.0 <= e.snapshot_prob and 0.0 <= e.practice_prob and 0.0 <= e.start_frac
+                and e.snapshot_prob + e.practice_prob + e.start_frac <= 1.0,
+                "env.snapshot_prob, env.practice_prob and env.start_frac must be >= 0 and sum to at most 1",
             ),
+            (e.start_frac == 0.0 or bool(e.start_pool), "env.start_frac > 0 needs env.start_pool"),
+            (self.log_interval_updates >= 0, "log_interval_updates must be >= 0"),
             (
                 not (e.practice_prob and e.snapshot_prob) or e.snapshot_min_ante > 3,
                 "env.practice_prob with env.snapshot_prob needs env.snapshot_min_ante > 3",
             ),
             (p.aux_order >= 0.0 and (not p.aux_order or e.order_label_rate > 0.0), "ppo.aux_order must be >= 0 and needs env.order_label_rate > 0"),
+            (self.model.obs_v2 == e.obs_v2, "model.obs_v2 and env.obs_v2 must match"),
+            (0 <= e.max_rearranges <= 255, "env.max_rearranges must be in 0..=255"),
+            (self.model.arch in ("antezero", "run95"), "model.arch must be 'antezero' or 'run95'"),
+            (self.model.action_head in ("factored", "hand_builder"), "model.action_head must be 'factored' or 'hand_builder'"),
+            (e.reward_mode in ("shaping", "blinds"), "env.reward_mode must be 'shaping' or 'blinds'"),
+            (p.optimizer in ("adamw", "muon"), "ppo.optimizer must be 'adamw' or 'muon'"),
+            (p.lr_schedule in ("cosine", "exp"), "ppo.lr_schedule must be 'cosine' or 'exp'"),
         ]
         for ok, msg in checks:
             if not ok:
@@ -311,6 +352,66 @@ def preset(name: str) -> Config:
         c.ppo.rollout_len = 64
         c.ppo.minibatches = 16
         c.ppo.lr = 2e-4
+    elif name == "run95":
+        c.model = ModelConfig(
+            arch="run95",
+            obs_v2=True,
+            d_model=256,
+            n_layers=6,
+            n_heads=8,
+            ff_mult=4,
+            bf16_encoder=True,
+            effects=False,
+            embed_from="auto",
+        )
+        c.env.backs = [
+            "b_red", "b_blue", "b_yellow", "b_green", "b_black",
+            "b_magic", "b_nebula", "b_ghost", "b_abandoned", "b_checkered",
+            "b_zodiac", "b_painted", "b_anaglyph", "b_plasma", "b_erratic",
+        ]
+        c.env.stakes = [8]
+        c.env.endless = True
+        c.env.max_ante = 16
+        c.env.step_limit = 3000
+        c.env.snapshot_prob = 0.0
+        c.env.start_pool = "pools/human_gold_v2_ante6"
+        c.env.start_frac = 0.2
+        c.env.reward_mode = "blinds"
+        c.env.obs_v2 = True
+        c.env.deck_tokens = True
+        c.env.play_candidates = 0
+        c.env.build_previews = False
+        c.env.order_gain = False
+        c.env.num_envs = 512
+        c.ppo.total_steps = 1_966_080_000
+        c.ppo.rollout_len = 128
+        c.ppo.gamma = 1.0
+        c.ppo.gae_lambda = 0.95
+        c.ppo.epochs = 1
+        c.ppo.minibatches = 16
+        c.ppo.grad_accum = 2
+        c.ppo.clip = 0.2
+        c.ppo.ent_coef = 0.01
+        c.ppo.ent_coef_final = 0.01
+        c.ppo.vf_coef = 0.5
+        c.ppo.max_grad_norm = 0.5
+        c.ppo.optimizer = "muon"
+        c.ppo.muon_wd = 0.05
+        c.ppo.embed_adam = True
+        c.ppo.lr = 6e-4
+        c.ppo.lr_final = 5e-5
+        c.ppo.lr_schedule = "exp"
+        c.ppo.lr_decay_updates = 800
+        c.ppo.warmup_updates = 0
+        c.ppo.kl_controller = True
+        c.ppo.target_kl = 0.0012
+        c.ppo.kl_start = 2000
+        c.ppo.kl_high = 1.25
+        c.ppo.kl_low = 0.75
+        c.ppo.kl_step = 0.03
+        c.ppo.kl_max_factor = 2.0
+        c.ppo.kl_ema = 0.1
+        c.ppo.compile = True
     else:
         raise ValueError(f"unknown preset {name!r}")
     return c

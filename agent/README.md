@@ -42,6 +42,15 @@ uv run python -m antezero_agent.bot --install CKPT                 # the in-game
 uv run --with pytest pytest agent/tests -q
 ```
 
+`rl_train` is RLBalatro's training recipe (its lean-actions environment, ported
+natively as `antezero_sim.BalatroCoreVecEnv`, its policy and PPO), configured by
+`key=value` overrides of `rl_config.Config`:
+
+```
+uv run python -m antezero_agent.rl_train --preset run95 --name run95 d_model=384 layers=8 heads=12
+uv run python -m antezero_agent.rl_train --name smoke num_envs=16 num_steps=16 compile=0 bf16=0 total_steps=768
+```
+
 `play_real` and `bot` need the real-game stack (`uv sync --extra game` when the agent
 is installed on its own; the uv workspace has it).
 
