@@ -39,6 +39,8 @@ pub(crate) struct Game {
 	pub(crate) allow_skip: bool,
 	/// Whether they offer sorts that change nothing.
 	pub(crate) null_sorts: bool,
+	/// Maximum consecutive free reorders offered before another action is required.
+	pub(crate) max_rearranges: u8,
 }
 
 impl From<SimGame> for Game {
@@ -51,6 +53,7 @@ impl From<SimGame> for Game {
 			previews: Vec::new(),
 			allow_skip: true,
 			null_sorts: true,
+			max_rearranges: obs::MAX_REARRANGES,
 		}
 	}
 }
@@ -61,6 +64,7 @@ fn options_of(game: &Game, candidates: usize) -> PyResult<OpOptions> {
 		candidates,
 		allow_skip: game.allow_skip,
 		null_sorts: game.null_sorts,
+		max_rearranges: game.max_rearranges,
 	})
 }
 
@@ -75,6 +79,7 @@ impl Clone for Game {
 			previews: self.previews.clone(),
 			allow_skip: self.allow_skip,
 			null_sorts: self.null_sorts,
+			max_rearranges: self.max_rearranges,
 		}
 	}
 }
@@ -127,28 +132,31 @@ impl Game {
 
 	/// The learning observation of this state (see `sim::obs`): a dict with
 	/// `tok_i [MAX_TOKENS, TOK_INT]`, `tok_f [MAX_TOKENS, TOK_FLOAT]`,
-	/// `glob_i [GLOB_INT]`, `glob_f [GLOB_FLOAT]`, `ops [MAX_OPS, OP_INT]`,
-	/// `ops_f [MAX_OPS, OP_FLOAT]`, `n_ops`, `n_tokens`, `n_hand`; with up to
-	/// `play_candidates` (at most `MAX_CANDIDATES`) scored plays, with
-	/// `build_previews` the build previews of shops, packs and blind select,
-	/// and with `order_gain` the gain column of the joker-move ops.
-	#[pyo3(signature = (play_candidates = 0, deck_tokens = false, build_previews = true, order_gain = true))]
+	/// `glob_i [GLOB_INT]`, `glob_f [GLOB_FLOAT]` (`[GLOB_FLOAT_V2]` with
+	/// `obs_v2`, which appends the last hand's score, chips, mult and share
+	/// of the blind), `ops [MAX_OPS, OP_INT]`, `ops_f [MAX_OPS, OP_FLOAT]`,
+	/// `n_ops`, `n_tokens`, `n_hand`; with up to `play_candidates` (at most
+	/// `MAX_CANDIDATES`) scored plays, with `build_previews` the build
+	/// previews of shops, packs and blind select, and with `order_gain` the
+	/// gain column of the joker-move ops.
+	#[pyo3(signature = (play_candidates = 0, deck_tokens = false, build_previews = true, order_gain = true, obs_v2 = false))]
 	#[expect(
 		clippy::fn_params_excessive_bools,
 		reason = "the Python API takes the flags, by position or by keyword; pyo3 maps each Python flag to a `bool`"
 	)]
 	fn encode<'py>(
 		&mut self, py: Python<'py>, play_candidates: usize, deck_tokens: bool,
-		build_previews: bool, order_gain: bool,
+		build_previews: bool, order_gain: bool, obs_v2: bool,
 	) -> PyResult<Bound<'py, PyDict>> {
 		let options = ObsOptions {
 			ops: options_of(self, play_candidates)?,
 			deck_tokens,
 			previews: build_previews,
 			order_gain,
+			obs_v2,
 		};
 		let r = py.detach(|| {
-			let mut r = ObsRow::default();
+			let mut r = ObsRow::new(obs_v2);
 			r.rows()
 				.write(&mut self.g, options, &mut self.ops, &mut self.previews);
 			r
@@ -193,8 +201,9 @@ impl Game {
 	/// Replaces the run with the one in `state`, a state dump of the real
 	/// game (the mod's `az_state`, or `state_json`) taken at a decision
 	/// point; this game's settings (`endless`, `steamodded`, `allow_skip`,
-	/// `null_sorts`) stay, and no free rearranges have been made (see `rearranges`).
-	/// `ValueError` if the dump is not one the simulator can take.
+	/// `null_sorts`, `max_rearranges`) stay, and no free rearranges have been
+	/// made (see `rearranges`). `ValueError` if the dump is not one the
+	/// simulator can take.
 	fn load_state(&mut self, py: Python<'_>, state: &str) -> PyResult<()> {
 		let mut g = py
 			.detach(|| {
@@ -216,7 +225,7 @@ impl Game {
 	}
 
 	/// Free rearranges (hand and joker moves, sorts) since the last other
-	/// action: `encode` stops offering them at `sim::obs::MAX_REARRANGES`.
+	/// action: `encode` stops offering them at `max_rearranges`.
 	#[getter]
 	fn rearranges(&self) -> u8 {
 		self.g.flow.rearranges
@@ -302,6 +311,17 @@ impl Game {
 	#[setter]
 	fn set_null_sorts(&mut self, v: bool) {
 		self.null_sorts = v;
+	}
+
+	/// Maximum consecutive free reorders offered by `encode` and `step_factored`.
+	#[getter]
+	fn max_rearranges(&self) -> u8 {
+		self.max_rearranges
+	}
+
+	#[setter]
+	fn set_max_rearranges(&mut self, v: u8) {
+		self.max_rearranges = v;
 	}
 
 	/// Whether ×Mult is rounded like Steamodded (`mult + mult * (x - 1)`),

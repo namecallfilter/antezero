@@ -9,7 +9,10 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod balatro;
 mod game;
+mod interval;
+mod pool;
 mod rows;
 mod slot;
 mod vecenv;
@@ -21,13 +24,22 @@ use sim::obs::{self, OpKind, Zone};
 fn antezero_sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
 	m.add_class::<game::Game>()?;
 	m.add_class::<vecenv::VecEnv>()?;
+	m.add_class::<balatro::PyStartPool>()?;
+	m.add_class::<balatro::PyBalatroEnv>()?;
+	m.add_class::<balatro::PyBalatroVecEnv>()?;
 	m.add_function(wrap_pyfunction!(game::backs, m)?)?;
 	m.add_function(wrap_pyfunction!(game::centers, m)?)?;
+	m.add_function(wrap_pyfunction!(balatro::balatro_straight_lut, m)?)?;
+	m.add_function(wrap_pyfunction!(balatro::balatro_obs_layout, m)?)?;
+	m.add_function(wrap_pyfunction!(balatro::balatro_joker_keys, m)?)?;
+	m.add_function(wrap_pyfunction!(balatro::balatro_voucher_keys, m)?)?;
+	m.add_function(wrap_pyfunction!(balatro::balatro_hands, m)?)?;
 	m.add("MAX_TOKENS", obs::MAX_TOKENS)?;
 	m.add("TOK_INT", obs::TOK_INT)?;
 	m.add("TOK_FLOAT", obs::TOK_FLOAT)?;
 	m.add("GLOB_INT", obs::GLOB_INT)?;
 	m.add("GLOB_FLOAT", obs::GLOB_FLOAT)?;
+	m.add("GLOB_FLOAT_V2", obs::GLOB_FLOAT_V2)?;
 	m.add("MAX_OPS", obs::MAX_OPS)?;
 	m.add("OP_INT", obs::OP_INT)?;
 	m.add("OP_FLOAT", obs::OP_FLOAT)?;

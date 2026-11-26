@@ -6,7 +6,8 @@ mod tags;
 
 pub(crate) use hidden::resample;
 pub use setup::{
-	History, InvalidStake, MAX_SEED_LEN, Modifiers, Run, STAKES, Setup, Stake, StartingParams,
+	History, InvalidStake, MAX_SEED_LEN, Modifiers, Run, SEED_CHARS, STAKES, Setup, Stake,
+	StartingParams,
 };
 pub(crate) use setup::{checkered_deck, new_run};
 pub use tags::{OrbitalChoices, Tag, Tags};

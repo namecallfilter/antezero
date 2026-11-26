@@ -330,7 +330,7 @@ fn order_labels_match_a_brute_force_over_every_move() {
 		// The top candidate and a weaker play (which more often stays below the blind).
 		let top = obs::top_plays(g, 8);
 		for c in top.iter().take(1).chain(top.last()) {
-			let got = obs::order_label(g, c.mask);
+			let got = obs::order_label(g, c.mask, obs::MAX_REARRANGES);
 			assert_eq!(got, brute_label(g, c.mask), "play {:b}", c.mask.bits());
 			let Some(dest) = got else { continue };
 			labels += 1;
@@ -367,17 +367,17 @@ fn order_gains_and_labels_do_not_reveal_hidden_state() {
 			assert_eq!(ops, obs_and_ops(h).1, "op features, hidden state {what}");
 			if let Some(m) = mask {
 				assert_eq!(
-					obs::order_label(g, m),
-					obs::order_label(h, m),
+					obs::order_label(g, m, obs::MAX_REARRANGES),
+					obs::order_label(h, m, obs::MAX_REARRANGES),
 					"label, hidden state {what}"
 				);
 			}
 		}
 		states += 1;
 		gaining += usize::from(ops.iter().any(|o| gain(o) > 0.0));
-		positive += usize::from(
-			mask.is_some_and(|m| obs::order_label(g, m).is_some_and(|d| d != [0; ORDER_JOKERS])),
-		);
+		positive += usize::from(mask.is_some_and(|m| {
+			obs::order_label(g, m, obs::MAX_REARRANGES).is_some_and(|d| d != [0; ORDER_JOKERS])
+		}));
 	});
 	assert!(
 		states > 500 && gaining > 50 && positive > 30,

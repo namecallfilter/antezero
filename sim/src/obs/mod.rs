@@ -33,9 +33,9 @@ pub use encode::{
 	hidden_scoring_state,
 };
 pub use layout::{
-	GLOB_FLOAT, GLOB_INT, GLOB_VOCAB, Layout, MAX_CANDIDATES, MAX_HAND, MAX_OPS, MAX_TOKENS,
-	OP_FLOAT, OP_INT, OP_ORDER_GAIN, ObsBuf, ObsMut, PREVIEW_TOK, TOK_FLOAT, TOK_INT, TOK_PREVIEW,
-	TOK_VOCAB, TokInts,
+	GLOB_FLOAT, GLOB_FLOAT_V2, GLOB_INT, GLOB_VOCAB, Layout, MAX_CANDIDATES, MAX_HAND, MAX_OPS,
+	MAX_TOKENS, OP_FLOAT, OP_INT, OP_ORDER_GAIN, ObsBuf, ObsMut, PREVIEW_TOK, TOK_FLOAT, TOK_INT,
+	TOK_PREVIEW, TOK_VOCAB, TokInts,
 };
 pub use op::{CardArg, MAX_REARRANGES, Op, OpKind, OpOptions, decode, fallback, ops};
 pub use order::{ORDER_GAIN_SCALE, ORDER_JOKERS, order_gain, order_label};
@@ -46,4 +46,5 @@ pub use preview_items::{
 	BuildPreview, ItemPreview, PREVIEW_CACHE, PREVIEW_ITEM_HANDS, build_preview,
 };
 pub use tokens::hand_id;
+pub(crate) use tokens::unseen_pool;
 pub use zone::{ItemZone, Zone};

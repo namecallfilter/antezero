@@ -11,7 +11,7 @@
 //! stands then matters beyond the score.
 
 use super::candidates::{PlayPreview, Scenarios, preview_in};
-use super::{MAX_REARRANGES, OP_ORDER_GAIN, Op, OpKind, PREVIEW_SAMPLES, hidden_scoring_state};
+use super::{OP_ORDER_GAIN, Op, OpKind, PREVIEW_SAMPLES, hidden_scoring_state};
 use crate::card::CardMask;
 use crate::data::Joker;
 use crate::game::{Areas, Flow, Game, Phase, Scratch};
@@ -155,13 +155,13 @@ fn gains(capped: f64, base: f64) -> bool {
 }
 
 /// Whether single joker moves are scored: a round with 2 to `ORDER_JOKERS`
-/// jokers and the reorder ops on offer, nothing face down (the previews
-/// would reveal it), no Ceremonial Dagger (it destroys its right neighbour
-/// when a blind is selected).
-fn eligible(flow: Flow, areas: &Areas) -> bool {
+/// jokers and the reorder ops on offer (`can_reorder`), nothing face down
+/// (the previews would reveal it), no Ceremonial Dagger (it destroys its
+/// right neighbour when a blind is selected).
+fn eligible(flow: Flow, areas: &Areas, can_reorder: bool) -> bool {
 	flow.phase == Phase::Round
 		&& (2..=ORDER_JOKERS).contains(&areas.jokers.len())
-		&& flow.rearranges < MAX_REARRANGES
+		&& can_reorder
 		&& !hidden_scoring_state(areas)
 		&& !areas.owns_joker(Joker::Ceremonial)
 }
@@ -192,8 +192,10 @@ impl<'game> Order<'game> {
 	/// `samples` scenarios instead. `None` if moves are not scored in `g`
 	/// (see [`eligible`]), the play is not legal or it already reaches the
 	/// chips still needed.
-	fn new(g: &'game Game, mask: CardMask, samples: usize) -> Option<Order<'game>> {
-		if !eligible(g.flow, &g.areas) {
+	fn new(
+		g: &'game Game, mask: CardMask, samples: usize, can_reorder: bool,
+	) -> Option<Order<'game>> {
+		if !eligible(g.flow, &g.areas, can_reorder) {
 			return None;
 		}
 		let need = g.blind.chips - g.round.chips;
@@ -243,6 +245,9 @@ impl<'game> Order<'game> {
 /// jokers, the reorder ops on offer, nothing face down and no Ceremonial
 /// Dagger.
 pub fn order_gain(g: &Game, ops: &mut [Op]) {
+	if !ops.iter().any(|o| o.kind == OpKind::MoveJoker) {
+		return;
+	}
 	let Some(Op {
 		kind: OpKind::PlayTop,
 		cards: Some(top),
@@ -251,7 +256,7 @@ pub fn order_gain(g: &Game, ops: &mut [Op]) {
 	else {
 		return;
 	};
-	let Some(mut order) = Order::new(g, top.required, 1) else {
+	let Some(mut order) = Order::new(g, top.required, 1, /* can_reorder= */ true) else {
 		return;
 	};
 	// Each joker's first move in the list that leaves nothing else changed is its best.
@@ -273,11 +278,13 @@ pub fn order_gain(g: &Game, ops: &mut [Op]) {
 /// move does). Scored on the first shared scenario, or on all
 /// `PREVIEW_SAMPLES` (mean capped score, a move no worse than the current
 /// order in each) if a score involved a random draw. `None` where
-/// [`order_gain`] stays zero for want of an eligible state, and when the
-/// play already reaches the chips still needed.
+/// [`order_gain`] stays zero for want of an eligible state (`max_rearranges`
+/// is the limit the ops were offered under, [`OpOptions::max_rearranges`](super::OpOptions::max_rearranges)),
+/// and when the play already reaches the chips still needed.
 #[must_use]
-pub fn order_label(g: &Game, mask: CardMask) -> Option<[u8; ORDER_JOKERS]> {
-	let mut order = Order::new(g, mask, PREVIEW_SAMPLES)?;
+pub fn order_label(g: &Game, mask: CardMask, max_rearranges: u8) -> Option<[u8; ORDER_JOKERS]> {
+	let can_reorder = g.flow.rearranges < max_rearranges;
+	let mut order = Order::new(g, mask, PREVIEW_SAMPLES, can_reorder)?;
 	let mut dest = [0u8; ORDER_JOKERS];
 	let mut best = None;
 	for &Gain { capped, mv } in &order.moves {

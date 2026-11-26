@@ -143,6 +143,9 @@ pub struct OpOptions {
 	/// Whether a sort that would move no card the player can tell apart is
 	/// offered (a training switch: a policy can pad its turns with it).
 	pub null_sorts: bool,
+	/// Maximum consecutive free reorders (hand moves / sorts, joker moves)
+	/// offered before another action is required.
+	pub max_rearranges: u8,
 }
 
 impl Default for OpOptions {
@@ -151,6 +154,7 @@ impl Default for OpOptions {
 			candidates: 0,
 			allow_skip: true,
 			null_sorts: true,
+			max_rearranges: MAX_REARRANGES,
 		}
 	}
 }
@@ -352,7 +356,7 @@ fn base_ops(g: &Game, lay: &Layout, options: OpOptions, out: &mut Vec<Op>) {
 		Phase::RoundEval => out.push(Op::simple(OpKind::CashOut)),
 	}
 	// Reordering the hand (in rounds, and in packs opened with it drawn).
-	let can_reorder = g.flow.rearranges < MAX_REARRANGES;
+	let can_reorder = g.flow.rearranges < options.max_rearranges;
 	if can_reorder && matches!(g.flow.phase, Phase::Round | Phase::Pack) && nh >= 2 {
 		let hand = &g.areas.hand;
 		let null = !options.null_sorts && null_sort(hand);

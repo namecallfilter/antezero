@@ -36,11 +36,13 @@ fn options() -> [OpOptions; 3] {
 			candidates: 8,
 			allow_skip: false,
 			null_sorts: true,
+			..OpOptions::default()
 		},
 		OpOptions {
 			candidates: 8,
 			allow_skip: false,
 			null_sorts: false,
+			..OpOptions::default()
 		},
 	]
 }

@@ -475,3 +475,87 @@ fn every_other_state(seed: &str, steps: usize) -> Vec<Game> {
 	});
 	states
 }
+
+#[test]
+fn obs_v2_encodes_last_hand_and_preserves_v1_prefix() {
+	let mut g = Game::new_run("OBSV2", Back::Red, Stake::White);
+	g.step(Action::SelectBlind).unwrap();
+	g.step(Action::Play(CardMask::from_bits(1))).unwrap();
+	assert!(g.run.last_hand_score > 0.0);
+	assert!(g.run.last_hand_chips > 0.0);
+	assert!(g.run.last_hand_mult > 0.0);
+
+	let mut v1 = ObsBuf::new();
+	obs::encode(&g, &mut v1.as_mut());
+	let mut v2 = ObsBuf::new_v2();
+	obs::encode(&g, &mut v2.as_mut());
+
+	assert_eq!(v1.glob_f.len(), obs::GLOB_FLOAT);
+	assert_eq!(v2.glob_f.len(), obs::GLOB_FLOAT_V2);
+	assert_eq!(&v2.glob_f[..obs::GLOB_FLOAT], &v1.glob_f[..]);
+	assert!(v2.glob_f[obs::GLOB_FLOAT] > 0.0);
+	assert!(v2.glob_f[obs::GLOB_FLOAT + 1] > 0.0);
+	assert!(v2.glob_f[obs::GLOB_FLOAT + 2] > 0.0);
+	assert!(v2.glob_f[obs::GLOB_FLOAT + 3] > 0.0);
+}
+
+#[test]
+fn obs_v2_keeps_the_blind_share_of_the_hand_that_beat_the_blind() {
+	let mut g = Game::new_run("OBSV2", Back::Red, Stake::White);
+	g.step(Action::SelectBlind).unwrap();
+	g.inject(Inject::Joker {
+		joker: Joker::Joker,
+		edition: None,
+		eternal: false,
+	});
+	let blind = g.blind.chips;
+	while g.flow.phase == Phase::Round {
+		g.step(Action::Play(CardMask::from_bits(0b1_1111))).unwrap();
+	}
+	assert_eq!(g.flow.phase, Phase::RoundEval);
+	assert_eq!(g.blind.chips, 0.0);
+	let share = g.run.last_hand_score / blind;
+	assert!(share > 0.0 && share < 4.0);
+
+	let mut v2 = ObsBuf::new_v2();
+	obs::encode(&g, &mut v2.as_mut());
+	assert_eq!(v2.glob_f[obs::GLOB_FLOAT + 3], num::feat(share));
+}
+
+#[test]
+fn max_rearranges_is_configurable_in_op_options() {
+	let mut g = Game::new_run("REARR", Back::Red, Stake::White);
+	g.step(Action::SelectBlind).unwrap();
+	let mut buf = ObsBuf::new();
+	let lay = encode_with_deck(&g, &mut buf);
+	let mut ops = Vec::new();
+	for _ in 0..3 {
+		g.step(Action::SortHand(HandSort::Rank)).unwrap();
+	}
+	obs::ops(
+		&g,
+		&lay,
+		obs::OpOptions {
+			max_rearranges: 2,
+			..Default::default()
+		},
+		&mut ops,
+	);
+	assert!(!ops.iter().any(|o| matches!(
+		o.kind,
+		obs::OpKind::SortRank | obs::OpKind::SortSuit | obs::OpKind::MoveHand
+	)));
+	obs::ops(
+		&g,
+		&lay,
+		obs::OpOptions {
+			max_rearranges: 5,
+			..Default::default()
+		},
+		&mut ops,
+	);
+	assert!(ops.iter().any(|o| matches!(
+		o.kind,
+		obs::OpKind::SortRank | obs::OpKind::SortSuit | obs::OpKind::MoveHand
+	)));
+}

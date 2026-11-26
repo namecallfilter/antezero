@@ -8,7 +8,8 @@ use super::tokens::{
 	seen_discards, signed_log, tag_id, tag_tokens, unseen_pool,
 };
 use super::{
-	BuildPreview, GLOB_FLOAT, Layout, MAX_TOKENS, ObsMut, TOK_FLOAT, TOK_INT, build_preview, center,
+	BuildPreview, GLOB_FLOAT, GLOB_FLOAT_V2, Layout, MAX_TOKENS, ObsMut, TOK_FLOAT, TOK_INT,
+	build_preview, center,
 };
 use crate::card::{Kind, PlayingCard};
 use crate::data::{ALL_VOUCHERS, Edition, Enhancement, Rank, Seal};
@@ -237,5 +238,20 @@ fn global_floats(g: &Game, gf: &mut [f32], pv: Option<&BuildPreview>) {
 		if let Some(i) = card_index(card) {
 			gf[G_DISCARD + i] += 0.5;
 		}
+	}
+	if gf.len() >= GLOB_FLOAT_V2 {
+		gf[GLOB_FLOAT] = signed_log(g.run.last_hand_score);
+		gf[GLOB_FLOAT + 1] = signed_log(g.run.last_hand_chips);
+		gf[GLOB_FLOAT + 2] = signed_log(g.run.last_hand_mult);
+		let blind = if g.blind.chips > 0.0 {
+			g.blind.chips
+		} else {
+			g.run.last_hand_blind
+		};
+		gf[GLOB_FLOAT + 3] = if blind > 0.0 {
+			num::feat((g.run.last_hand_score / blind).min(4.0))
+		} else {
+			0.0
+		};
 	}
 }

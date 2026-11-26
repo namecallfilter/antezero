@@ -24,6 +24,10 @@ use crate::{card, event, flow, num, pools, round, shop};
 /// keys are the stream name followed by the seed).
 pub const MAX_SEED_LEN: usize = 32;
 
+/// The characters generated seeds are made of: the digits and capital
+/// letters without `0` and `O`.
+pub const SEED_CHARS: &[u8] = b"123456789ABCDEFGHIJKLMNPQRSTUVWXYZ";
+
 /// The numbers of the stakes, from White (1) to Gold (8).
 pub const STAKES: RangeInclusive<u8> = Stake::White as u8..=Stake::Gold as u8;
 
@@ -275,6 +279,12 @@ pub struct Run {
 	/// `G.GAME.win_notified`: the run was won.
 	pub(crate) win_notified: bool,
 	pub last_hand_score: f64,
+	pub last_hand_chips: f64,
+	pub last_hand_mult: f64,
+	/// The chips of the blind the last hand was played against (the blind's
+	/// own amount is cleared once it is beaten).
+	pub last_hand_blind: f64,
+	pub earned: f64,
 }
 
 impl Default for Run {
@@ -299,6 +309,10 @@ impl Default for Run {
 			won: false,
 			win_notified: false,
 			last_hand_score: 0.0,
+			last_hand_chips: 0.0,
+			last_hand_mult: 0.0,
+			last_hand_blind: 0.0,
+			earned: 0.0,
 		}
 	}
 }

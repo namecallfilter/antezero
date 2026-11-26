@@ -3,16 +3,16 @@
 
 use std::ops::RangeInclusive;
 
+use rayon::prelude::*;
 use sim::data::{ALL_JOKERS, ALL_PLANETS, Back};
 use sim::game::{BlindSlot, BlindStatus, Game as SimGame, Phase};
 use sim::inject::Inject;
 use sim::obs::{self, BuildPreview, Op};
 use sim::rng::splitmix64;
-use sim::{Action, CardMask, Stake, num};
+use sim::{Action, CardMask, SEED_CHARS, Stake, num};
 
+use crate::interval::{ConsEvent, EpisodeStatsOut, HandCounts, JokerSet, consumable_event};
 use crate::rows::{ObsOptions, Rows};
-
-const SEED_CHARS: &[u8] = b"123456789ABCDEFGHIJKLMNPQRSTUVWXYZ";
 
 /// Seed string `n` in the game's seed alphabet (8 characters).
 fn seed_string(n: u64) -> String {
@@ -72,8 +72,14 @@ pub(crate) fn potential(g: &SimGame, w_blind: f32, w_score: f32) -> f32 {
 /// return plus `gamma^T * Phi(s_T)`, the discounted shaping potential of the
 /// final state. With `terminal_phi = false` Phi *is* zeroed there (classic
 /// shaping: exactly P(win)).
+///
+/// With [`RewardMode::Blinds`], there is no shaping potential: each blind
+/// beaten pays 1 (skipped blinds are paid with the next beaten one), a win
+/// pays `log10` of the final round's chips, and a loss pays the fraction of
+/// the lost blind's chips scored.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Reward {
+	pub(crate) mode: RewardMode,
 	pub(crate) gamma: f32,
 	pub(crate) r_win: f32,
 	pub(crate) r_endless: f32,
@@ -83,9 +89,21 @@ pub(crate) struct Reward {
 	pub(crate) terminal_phi: bool,
 }
 
+/// Which reward [`Reward`] pays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RewardMode {
+	/// The true objective plus potential shaping.
+	Shaping,
+	/// Blinds beaten, with no shaping.
+	Blinds,
+}
+
 impl Reward {
 	fn potential(&self, g: &SimGame) -> f32 {
-		potential(g, self.w_blind, self.w_score)
+		match self.mode {
+			RewardMode::Shaping => potential(g, self.w_blind, self.w_score),
+			RewardMode::Blinds => 0.0,
+		}
 	}
 
 	fn true_reward(&self, blinds_before: u32, won_before: bool, g: &SimGame) -> f32 {
@@ -100,6 +118,38 @@ impl Reward {
 		}
 		if g.flow.phase == Phase::GameOver || g.is_stuck() {
 			r -= self.r_loss;
+		}
+		r
+	}
+
+	fn blinds_reward(
+		blinds_before: u32, skips_before: f64, won_before: bool, deferred_skips: &mut u32,
+		g: &SimGame,
+	) -> f32 {
+		let delta_cleared = g
+			.run
+			.blinds_cleared
+			.checked_sub(blinds_before)
+			.expect("the count of cleared blinds only grows");
+		let delta_skips = num::whole(g.run.skips - skips_before)
+			.and_then(|skips| u32::try_from(skips).ok())
+			.expect("the count of skipped blinds is whole and only grows");
+		let delta_beaten = delta_cleared
+			.checked_sub(delta_skips)
+			.expect("a skipped blind counts as cleared");
+		let mut r = 0.0f32;
+		if delta_skips > 0 {
+			*deferred_skips += delta_skips;
+		}
+		if delta_beaten > 0 {
+			r += num::feat(f64::from(delta_beaten + *deferred_skips));
+			*deferred_skips = 0;
+		}
+		if g.run_won() && !won_before {
+			r += num::feat(g.round.chips.max(1.0).log10());
+		}
+		if (g.flow.phase == Phase::GameOver || g.is_stuck()) && g.blind.chips > 0.0 {
+			r += num::feat((g.round.chips / g.blind.chips).clamp(0.0, 1.0));
 		}
 		r
 	}
@@ -118,6 +168,8 @@ pub(crate) struct Cfg {
 	pub(crate) snapshot_min_ante: i32,
 	pub(crate) practice_prob: f32,
 	pub(crate) practice_eternal: bool,
+	/// The share of episodes that start from the external start pool.
+	pub(crate) start_frac: f32,
 }
 
 /// Applies the env's settings to a game it is about to run.
@@ -202,6 +254,8 @@ enum Origin {
 	Fresh,
 	/// A snapshot of the pool, with its hidden state resampled.
 	Snapshot(Pool),
+	/// A state from the external `start_pool`, with its hidden state resampled.
+	StartPool,
 }
 
 pub(crate) struct Slot {
@@ -211,10 +265,15 @@ pub(crate) struct Slot {
 	steps: u32,
 	ret: f32,
 	phi: f32,
+	/// Skipped blinds not yet paid (`RewardMode::Blinds`).
+	deferred_skips: u32,
 	resets: u64,
 	origin: Origin,
 	/// Recent build previews (reused while the build is unchanged).
 	previews: Vec<BuildPreview>,
+	jokers_seen: JokerSet,
+	hand_plays: HandCounts<u32>,
+	best_hand_score: f64,
 }
 
 pub(crate) struct StepCtx<'a> {
@@ -224,6 +283,7 @@ pub(crate) struct StepCtx<'a> {
 	pub(crate) base_seed: u64,
 	pub(crate) n_slots: u64,
 	pub(crate) reservoirs: &'a Reservoirs,
+	pub(crate) start_pool: &'a [SimGame],
 	/// Probability of offering an ante start to its reservoir.
 	pub(crate) p_offer: f32,
 }
@@ -255,16 +315,22 @@ impl Choices<'_> {
 }
 
 impl Slot {
-	pub(crate) fn new(g: SimGame, reward: &Reward) -> Slot {
+	fn new(g: SimGame, origin: Origin, reward: &Reward) -> Slot {
+		let mut jokers_seen = JokerSet::default();
+		jokers_seen.mark(&g);
 		Slot {
 			phi: reward.potential(&g),
 			g,
 			ops: Vec::with_capacity(obs::MAX_OPS),
 			steps: 0,
 			ret: 0.0,
+			deferred_skips: 0,
 			resets: 0,
-			origin: Origin::Fresh,
+			origin,
 			previews: Vec::new(),
+			jokers_seen,
+			hand_plays: HandCounts::default(),
+			best_hand_score: 0.0,
 		}
 	}
 
@@ -275,6 +341,11 @@ impl Slot {
 		self.steps = 0;
 		self.ret = 0.0;
 		self.phi = reward.potential(&self.g);
+		self.deferred_skips = 0;
+		self.jokers_seen = JokerSet::default();
+		self.jokers_seen.mark(&self.g);
+		self.hand_plays = HandCounts::default();
+		self.best_hand_score = 0.0;
 	}
 
 	/// Starts the slot's next episode on `g`, a game handed in from outside,
@@ -316,6 +387,7 @@ impl Slot {
 		let (cfg, rw) = (ctx.cfg, ctx.cfg.reward);
 		let mut res = StepOut::default();
 		let blinds_before = self.g.run.blinds_cleared;
+		let skips_before = self.g.run.skips;
 		let won_before = self.g.run_won();
 		let was_ante_start = ante_start(&self.g, cfg.endless);
 		let a = usize::try_from(choice.op)
@@ -329,7 +401,7 @@ impl Slot {
 			&& cfg.order_label_rate > 0.0
 			&& self.roll(ctx.base_seed ^ LABEL_SALT, i) < cfg.order_label_rate
 		{
-			res.label = obs::order_label(&self.g, mask);
+			res.label = obs::order_label(&self.g, mask, cfg.obs.ops.max_rearranges);
 		}
 		let a = if let Some(a) = a {
 			Some(a)
@@ -337,19 +409,22 @@ impl Slot {
 			res.invalid = true;
 			obs::fallback(&self.g, &self.ops)
 		};
+		let pending_cons = a.and_then(|act| consumable_event(&self.g, act));
 		// The known state without a legal action (the game's own pack softlock) is
 		// terminal via `is_stuck`. Any other one is a simulator bug, as is an
 		// offered action the game then rejects: dump the state and truncate the
 		// episode rather than kill a long training run.
-		let dead_end = if let Some(a) = a {
-			match self.g.step(a) {
+		let dead_end = if let Some(act) = a {
+			match self.g.step(act) {
 				Ok(()) => {
 					self.steps += 1;
+					res.cons_event = pending_cons;
+					self.record_action(act);
 					false
 				}
 				Err(e) => {
 					eprintln!(
-						"[vecenv] {a:?} was offered and then rejected ({e}), episode truncated. ops: {:?}\n{:#?}",
+						"[vecenv] {act:?} was offered and then rejected ({e}), episode truncated. ops: {:?}\n{:#?}",
 						self.ops, self.g
 					);
 					true
@@ -363,7 +438,16 @@ impl Slot {
 			true
 		};
 		let g = &self.g;
-		let r_true = rw.true_reward(blinds_before, won_before, g);
+		let r_true = match rw.mode {
+			RewardMode::Shaping => rw.true_reward(blinds_before, won_before, g),
+			RewardMode::Blinds => Reward::blinds_reward(
+				blinds_before,
+				skips_before,
+				won_before,
+				&mut self.deferred_skips,
+				g,
+			),
+		};
 		let terminal = g.is_terminal();
 		let end = if terminal {
 			Some(End::Terminal)
@@ -395,28 +479,66 @@ impl Slot {
 			});
 		}
 		if let Some(end) = end {
-			res.episode = Some(Episode {
-				slot: i,
-				seed: g.rng.seed().to_string(),
-				back: g.setup.back,
-				stake: g.setup.stake.into(),
-				ante: g.run.ante,
-				won: g.run_won(),
-				blinds_cleared: g.run.blinds_cleared,
-				steps: self.steps,
-				ret: self.ret,
-				truncated: end == End::Truncated,
-				from_snapshot: self.origin != Origin::Fresh,
-			});
-			if end == End::Truncated {
-				self.observe(final_row, cfg.obs);
-			}
-			self.resets += 1;
-			let n = run_number(ctx.base_seed, self.resets, ctx.n_slots, i);
-			let (g, origin) = start(n, ctx.backs, ctx.stakes, &cfg, ctx.reservoirs);
-			self.install(g, origin, &rw);
+			self.finish_episode(i, end, ctx, final_row, &mut res);
 		}
 		res
+	}
+
+	fn record_action(&mut self, act: Action) {
+		if matches!(act, Action::Play(_)) {
+			let played = self.g.history.last_hand_played;
+			self.hand_plays[played.expect("the game names a played hand")] += 1;
+			if self.g.run.last_hand_score > self.best_hand_score {
+				self.best_hand_score = self.g.run.last_hand_score;
+			}
+		}
+		self.jokers_seen.mark(&self.g);
+	}
+
+	/// Reports the episode that just ended and starts the slot's next one.
+	fn finish_episode(
+		&mut self, i: usize, end: End, ctx: &StepCtx<'_>, final_row: &mut Rows<'_>,
+		res: &mut StepOut,
+	) {
+		let g = &self.g;
+		res.ep_stats = Some(EpisodeStatsOut {
+			back: g.setup.back,
+			stake: g.setup.stake.into(),
+			ante: g.run.ante,
+			won: g.run_won(),
+			truncated: end == End::Truncated,
+			blinds_cleared: g.run.blinds_cleared,
+			jokers_seen: self.jokers_seen,
+			hand_plays: self.hand_plays,
+			best_hand_score: self.best_hand_score,
+		});
+		res.episode = Some(Episode {
+			slot: i,
+			seed: g.rng.seed().to_string(),
+			back: g.setup.back,
+			stake: g.setup.stake.into(),
+			ante: g.run.ante,
+			won: g.run_won(),
+			blinds_cleared: g.run.blinds_cleared,
+			steps: self.steps,
+			ret: self.ret,
+			truncated: end == End::Truncated,
+			from_snapshot: self.origin != Origin::Fresh,
+		});
+		if end == End::Truncated {
+			self.observe(final_row, ctx.cfg.obs);
+		}
+		self.resets += 1;
+		let n = run_number(ctx.base_seed, self.resets, ctx.n_slots, i);
+		let (g, origin) = start(
+			n,
+			ctx.backs,
+			ctx.stakes,
+			&ctx.cfg,
+			ctx.reservoirs,
+			ctx.start_pool,
+		);
+		self.install(g, origin, &ctx.cfg.reward);
 	}
 }
 
@@ -461,13 +583,15 @@ pub(crate) struct StepOut {
 	/// The choice was illegal and replaced by a fallback.
 	pub(crate) invalid: bool,
 	pub(crate) episode: Option<Episode>,
+	pub(crate) ep_stats: Option<EpisodeStatsOut>,
+	pub(crate) cons_event: Option<((&'static str, &'static str), ConsEvent)>,
 	pub(crate) snapshot: Option<Snapshot>,
 	/// The joker-order label of the play taken (`obs::order_label`), if
 	/// sampled.
 	pub(crate) label: Option<[u8; obs::ORDER_JOKERS]>,
 }
 
-pub(crate) fn make_game(n: u64, backs: &[Back], stakes: &[Stake], cfg: &Cfg) -> SimGame {
+fn make_game(n: u64, backs: &[Back], stakes: &[Stake], cfg: &Cfg) -> SimGame {
 	let h = n.wrapping_mul(0xd6e8_feb8_6659_fd93);
 	let back = backs[num::pick(h, backs.len())];
 	let stake = stakes[num::pick(h >> 20, stakes.len())];
@@ -476,11 +600,13 @@ pub(crate) fn make_game(n: u64, backs: &[Back], stakes: &[Stake], cfg: &Cfg) -> 
 	g
 }
 
-/// A fresh run, or a reservoir snapshot whose hidden state is resampled: a
-/// late ante start (with probability `snapshot_prob`) or an early one with a
-/// gift (with probability `practice_prob`).
+/// A fresh run, a reservoir snapshot whose hidden state is resampled (a
+/// late ante start with probability `snapshot_prob`, or an early one with a
+/// gift with probability `practice_prob`), or a state from the external
+/// `start_pool` (with probability `start_frac`), its hidden state resampled.
 fn start(
 	n: u64, backs: &[Back], stakes: &[Stake], cfg: &Cfg, reservoirs: &Reservoirs,
+	start_pool: &[SimGame],
 ) -> (SimGame, Origin) {
 	let u = unit(n ^ 0x5eed);
 	let pool = if u < cfg.snapshot_prob {
@@ -500,7 +626,37 @@ fn start(
 		}
 		return (g, Origin::Snapshot(pool));
 	}
+	if u >= cfg.snapshot_prob + cfg.practice_prob
+		&& u < cfg.snapshot_prob + cfg.practice_prob + cfg.start_frac
+	{
+		let mut g = start_pool[num::pick(splitmix64(n ^ 0xa11), start_pool.len())].clone();
+		g.resample_hidden(&seed_string(n));
+		configure(&mut g, cfg);
+		return (g, Origin::StartPool);
+	}
 	(make_game(n, backs, stakes, cfg), Origin::Fresh)
+}
+
+/// The first games of a new `VecEnv`'s `num_envs` slots.
+pub(crate) fn make_slots(
+	num_envs: usize, seed: u64, backs: &[Back], stakes: &[Stake], cfg: &Cfg, start_pool: &[SimGame],
+) -> Vec<Slot> {
+	let empty_res = Reservoirs::default();
+	let n_slots = num::index64(num_envs);
+	(0..num_envs)
+		.into_par_iter()
+		.map(|i| {
+			let (g, origin) = start(
+				run_number(seed, 0, n_slots, i),
+				backs,
+				stakes,
+				cfg,
+				&empty_res,
+				start_pool,
+			);
+			Slot::new(g, origin, &cfg.reward)
+		})
+		.collect()
 }
 
 /// Something to practise with that the run did not choose: a joker (half
