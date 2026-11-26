@@ -423,40 +423,87 @@ impl RuleScratch {
 		}
 	}
 
-	fn eval_straight(&mut self, x: &CoreCtx, chans: Range<usize>) {
-		let mode = (usize::from(x.ff) << 1) | usize::from(x.sc);
-		let mins = &straight_mins()[mode];
-		for c in chans {
-			let (mut pres, mut have) = (0u16, 0u16);
-			for v in 0..13 {
-				if self.cp[c][v] > 0 {
-					pres |= 1u16 << v;
-				}
-				if x.cnt[c][v] > 0 {
-					have |= 1u16 << v;
-				}
+	fn eval_straight(&mut self, x: &CoreCtx) {
+		let (pres, have) = (ranks(&self.cp[0]), ranks(&x.cnt[0]));
+		for &m in straight_sets(x) {
+			if (m & !have) != 0 {
+				continue;
 			}
-			for &m in mins {
+			let d = count(m & !pres);
+			self.cost = self.cost.min(d);
+			if d <= self.rem_budget {
+				self.use_mask[0] |= m & !pres;
+			}
+		}
+	}
+
+	/// A straight and a flush among the cards played, as the game finds them:
+	/// each on its own. With Four Fingers both take four cards, so one card
+	/// of a five-card play may be off suit and one may be off the straight.
+	///
+	/// For a suit and a straight, each rank of the straight that the
+	/// selection lacks costs a card. A card of the suit also counts towards
+	/// the flush, and the cards the flush still lacks after those cost one
+	/// more each. So a card lowers the cost if it has a missing rank and is
+	/// of the suit, or no card of the suit has that rank, or the flush has
+	/// cards to spare; and any card of the suit does while the flush lacks
+	/// more cards than the missing ranks can give it.
+	fn eval_straight_flush(&mut self, x: &CoreCtx) {
+		let need: u8 = if x.ff { 4 } else { 5 };
+		let (pres, have) = (ranks(&self.cp[0]), ranks(&x.cnt[0]));
+		for q in 0..4 {
+			if x.scnt[q] < need {
+				continue;
+			}
+			let suited = ranks(&x.cnt[1 + q]);
+			let lacking = i32::from(need.saturating_sub(self.sp[q]));
+			for &m in straight_sets(x) {
 				if (m & !have) != 0 {
 					continue;
 				}
-				let d = i32::try_from((m & !pres).count_ones()).unwrap_or(CORE_INF);
+				let missing = m & !pres;
+				let spare = count(missing & suited) - lacking;
+				let d = count(missing) + (-spare).max(0);
 				self.cost = self.cost.min(d);
-				if d <= self.rem_budget {
-					self.use_mask[c] |= m & !pres;
+				if d > self.rem_budget {
+					continue;
+				}
+				self.use_mask[1 + q] |= missing;
+				self.use_mask[0] |= if spare > 0 {
+					missing
+				} else {
+					missing & !suited
+				};
+				if spare < 0 {
+					self.use_suit |= 1u8 << q;
 				}
 			}
 		}
 	}
 }
 
+/// The ranks `counts` has a card of, as a [`straight_lut`] rank set.
+fn ranks(counts: &[u8; 13]) -> u16 {
+	let mut set = 0u16;
+	for (v, &n) in counts.iter().enumerate() {
+		if n > 0 {
+			set |= 1u16 << v;
+		}
+	}
+	set
+}
+
+/// The smallest rank sets that hold a straight under the hand's jokers.
+fn straight_sets(x: &CoreCtx) -> &'static [u16] {
+	&straight_mins()[(usize::from(x.ff) << 1) | usize::from(x.sc)]
+}
+
+fn count(set: u16) -> i32 {
+	set.count_ones().cast_signed()
+}
+
 /// Returns `(legal_next_cards_mask, can_stop)` for declared hand `hand` (`0..=11`,
 /// or `HS_ANY = 12`) and current selection bitmask `prefix` (forced cards included).
-///
-/// With Four Fingers the real game also scores a flush and a straight that
-/// use different cards as a Straight Flush, which a declared Straight Flush
-/// does not offer (its straight must lie inside one suit); the trainer's
-/// hand masker mirrors this rule, so the two change together.
 pub(super) fn core_rule(ctx: &CoreCtx, hand: usize, prefix: u32) -> (u32, bool) {
 	let budget = num::id(ctx.hi);
 	let lo = num::id(ctx.lo);
@@ -497,7 +544,7 @@ pub(super) fn core_rule(ctx: &CoreCtx, hand: usize, prefix: u32) -> (u32, bool) 
 		0 => sc.eval_kind(ctx, 1..5, 5),
 		1 => sc.eval_groups(ctx, 1..5, 3, 2),
 		2 => sc.eval_kind(ctx, 0..1, 5),
-		3 => sc.eval_straight(ctx, 1..5),
+		3 => sc.eval_straight_flush(ctx),
 		4 => sc.eval_kind(ctx, 0..1, 4),
 		5 => sc.eval_groups(ctx, 0..1, 3, 2),
 		6 => {
@@ -513,7 +560,7 @@ pub(super) fn core_rule(ctx: &CoreCtx, hand: usize, prefix: u32) -> (u32, bool) 
 				}
 			}
 		}
-		7 => sc.eval_straight(ctx, 0..1),
+		7 => sc.eval_straight(ctx),
 		8 => sc.eval_kind(ctx, 0..1, 3),
 		9 => {
 			sc.eval_groups(ctx, 0..1, 2, 2);

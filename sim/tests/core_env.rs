@@ -1,14 +1,19 @@
 //! The native environment (`sim::balatro`) against the game it wraps: what
-//! it hides stays hidden, and what it reports is the game's state.
+//! it lets a policy declare is what the game scores, what it hides stays
+//! hidden, and what it reports is the game's state.
 
 use std::mem;
 use std::sync::Arc;
 
 use sim::balatro::{
-	ACT_DISCARD, BalConfig, BalEnv, HS_CTX, N_ACTIONS, N_SEL_VERBS, OBS_SIZE, SEL_F, StartPoint,
+	ACT_DISCARD, ACT_PLAY_HAND, BalConfig, BalEnv, HS_CTX, N_ACTIONS, N_SEL_VERBS, OBS_SIZE, SEL_F,
+	StartPoint, sel_verb_index,
 };
-use sim::data::{Back, Seal};
-use sim::{Action, Game, Stake, num};
+use sim::data::{Back, HandType, Joker, Rank, Seal, Suit};
+use sim::hand_eval::{self, EvalFlags};
+use sim::inject::Inject;
+use sim::rng::Xorshift;
+use sim::{Action, Game, PlayingCard, Stake, num};
 
 /// An environment whose episode starts in `game`.
 fn env_at(game: Game, cfg: BalConfig) -> BalEnv {
@@ -50,6 +55,133 @@ fn see(env: &mut BalEnv) -> Seen {
 		&mut seen.hctx,
 	);
 	seen
+}
+
+/// A game in its first round, holding `jokers` and exactly the hand `cards`.
+fn round_with(jokers: &[Joker], cards: &[(Rank, Suit)]) -> Game {
+	let mut game = Game::new_run("COREENV", Back::Red, Stake::White);
+	for &joker in jokers {
+		game.inject(Inject::joker(joker));
+	}
+	game.step(Action::SelectBlind)
+		.expect("the first blind can be played");
+	let hand = &mut game.areas.hand.cards;
+	hand.truncate(cards.len());
+	assert_eq!(hand.len(), cards.len(), "the hand is dealt enough cards");
+	for (card, &(rank, suit)) in hand.iter_mut().zip(cards) {
+		(card.rank, card.suit) = (rank, suit);
+	}
+	game
+}
+
+const STRAIGHT_FLUSH: usize = HandType::StraightFlush as usize;
+
+/// A straight and a flush that Four Fingers finds in five cards without one
+/// suit holding the straight.
+const SPLIT_STRAIGHT_FLUSHES: [[(Rank, Suit); 5]; 2] = [
+	[
+		(Rank::Two, Suit::Hearts),
+		(Rank::Three, Suit::Hearts),
+		(Rank::Four, Suit::Hearts),
+		(Rank::Five, Suit::Clubs),
+		(Rank::King, Suit::Hearts),
+	],
+	[
+		(Rank::Two, Suit::Hearts),
+		(Rank::Three, Suit::Hearts),
+		(Rank::Four, Suit::Hearts),
+		(Rank::Seven, Suit::Hearts),
+		(Rank::Five, Suit::Clubs),
+	],
+];
+
+#[test]
+fn a_straight_flush_four_fingers_makes_across_suits_can_be_declared_and_scores() {
+	let declare = ACT_PLAY_HAND + STRAIGHT_FLUSH;
+	for cards in SPLIT_STRAIGHT_FLUSHES {
+		let mut env = env_at(
+			round_with(&[Joker::FourFingers], &cards),
+			BalConfig::default(),
+		);
+		assert_eq!(see(&mut env).mask[declare], 1, "{cards:?} can be declared");
+		let info = env.step_select(num::id(declare), &[0, 1, 2, 3, 4]);
+		assert_eq!(info.illegal, 0, "{cards:?} can be picked");
+		assert_eq!(
+			(info.hand_played, info.hs_declared),
+			(num::id(STRAIGHT_FLUSH), num::id(STRAIGHT_FLUSH)),
+			"{cards:?} is scored as declared"
+		);
+
+		let mut plain = env_at(round_with(&[], &cards), BalConfig::default());
+		assert_eq!(see(&mut plain).mask[declare], 0, "not without Four Fingers");
+	}
+}
+
+/// A hand of eight cards of few suits and ranks, so that straights and
+/// flushes are common.
+fn crowded_hand(rng: &mut Xorshift) -> Vec<(Rank, Suit)> {
+	(0..8)
+		.map(|_| {
+			let suit = if rng.chance(0.7) {
+				Suit::Hearts
+			} else {
+				Suit::Clubs
+			};
+			(Rank::ALL[rng.below(8)], suit)
+		})
+		.collect()
+}
+
+#[test]
+fn the_picks_of_a_declared_straight_flush_are_the_ones_the_scorer_completes() {
+	let verb = sel_verb_index(ACT_PLAY_HAND + STRAIGHT_FLUSH).expect("a selection verb");
+	let rng = &mut Xorshift::new(0x5eed);
+	let (mut stops, mut narrowed) = (0, 0);
+	for round in 0..240 {
+		let flags = EvalFlags {
+			four_fingers: round % 4 != 0,
+			shortcut: round % 3 == 0,
+			smeared: false,
+		};
+		let mut jokers = Vec::new();
+		if flags.four_fingers {
+			jokers.push(Joker::FourFingers);
+		}
+		if flags.shortcut {
+			jokers.push(Joker::Shortcut);
+		}
+		let cards = crowded_hand(rng);
+		let env = env_at(round_with(&jokers, &cards), BalConfig::default());
+		let hand = &env.game().areas.hand.cards;
+		let selections: Vec<u32> = (0..1u32 << hand.len())
+			.filter(|set| set.count_ones() <= 5)
+			.collect();
+		let scores = |set: u32| {
+			let picked: Vec<&PlayingCard> = (0..hand.len())
+				.filter(|i| set >> i & 1 != 0)
+				.map(|i| &hand[i])
+				.collect();
+			hand_eval::evaluate(&picked, flags).has(HandType::StraightFlush)
+		};
+		let complete: Vec<u32> = selections.iter().copied().filter(|&s| scores(s)).collect();
+		for &picked in &selections {
+			let reaches = |card: usize| {
+				let with = picked | 1 << card;
+				with != picked && complete.iter().any(|&set| set & with == with)
+			};
+			let expected: u32 = (0..hand.len())
+				.filter(|&card| reaches(card))
+				.map(|card| 1 << card)
+				.sum();
+			let (allowed, stop) = env.pick_rule(verb, 1, 5, 0, picked, 0);
+			let what = format!("{cards:?} with {flags:?} after picking {picked:#b}");
+			assert_eq!(allowed, expected, "the next cards of {what}");
+			assert_eq!(stop, complete.contains(&picked), "stopping in {what}");
+			stops += u32::from(stop);
+			narrowed += u32::from(allowed != 0 && allowed.count_ones() + picked.count_ones() < 8);
+		}
+	}
+	assert!(stops > 100 && narrowed > 100, "{stops} {narrowed}");
 }
 
 #[test]
