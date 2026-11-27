@@ -1,7 +1,7 @@
 //! What the simulator's Steamodded mode plays as the real game (which runs
 //! Steamodded) does, where it differs from vanilla.
 
-use sim::data::{Back, Center, Joker, Spectral, Voucher};
+use sim::data::{Back, Center, Edition, Joker, Seal, Spectral, Voucher};
 use sim::inject::{Consumable, Inject};
 use sim::json::Json;
 use sim::{Action, Game, Phase, Stake};
@@ -84,6 +84,70 @@ fn a_legendary_joker_takes_no_rarity_roll() {
 		assert_eq!(g.areas.jokers.len(), 1, "The Soul made a joker");
 		let rolled = g.to_dump().get("rng").get("rarity1sou") != &Json::Null;
 		assert_eq!(rolled, !steamodded, "steamodded: {steamodded}");
+	}
+}
+
+/// The run the real game played under Steamodded 26.1002 (seed `MARBCERT`,
+/// Red Deck, White Stake, these five jokers in this order), up to its first
+/// hand.
+fn first_hand_with_marble_joker_and_certificate(steamodded: bool) -> Game {
+	let mut g = Game::new_run("MARBCERT", Back::Red, Stake::White);
+	g.setup.steamodded = steamodded;
+	for joker in [Joker::Cavendish, Joker::GrosMichel, Joker::Stuntman] {
+		g.inject(Inject::Joker {
+			joker,
+			edition: Some(Edition::Negative),
+			eternal: false,
+		});
+	}
+	g.inject(Inject::joker(Joker::Marble));
+	g.inject(Inject::joker(Joker::Certificate));
+	act(&mut g, "select");
+	g
+}
+
+/// Marble Joker's Stone card is in the deck when the blind shuffles it, under
+/// Steamodded as in vanilla: in the real game it was the 24th of the 47 cards
+/// left after the deal. (Steamodded builds before its "make marble joker
+/// timing work like vanilla" change of May 2026 shuffled first and put the
+/// card under the deck.)
+#[test]
+fn marble_jokers_stone_card_is_shuffled_into_the_deck() {
+	for steamodded in [false, true] {
+		let g = first_hand_with_marble_joker_and_certificate(steamodded);
+		let stones: Vec<usize> = (0..g.areas.deck.len())
+			.filter(|&at| g.areas.deck[at].is_stone())
+			.collect();
+		assert_eq!(g.areas.deck.len(), 47, "steamodded: {steamodded}");
+		assert_eq!(stones, [23], "steamodded: {steamodded}");
+	}
+}
+
+/// Certificate's seal takes one roll of `certsl` and none of the Standard
+/// Pack's `stdseal<ante>`, under Steamodded as in vanilla: its
+/// `SMODS.poll_seal` call is `guaranteed`, which skips that roll. In the real
+/// game the card was a 10 of Diamonds with a Purple Seal.
+#[test]
+fn certificate_rolls_no_standard_pack_seal() {
+	for steamodded in [false, true] {
+		let mut g = first_hand_with_marble_joker_and_certificate(steamodded);
+		let sealed: Vec<(String, Option<Seal>)> = g
+			.areas
+			.hand
+			.cards
+			.iter()
+			.filter(|c| c.seal.is_some())
+			.map(|c| (format!("{:?} of {:?}", c.rank, c.suit), c.seal))
+			.collect();
+		assert_eq!(
+			sealed,
+			[("Ten of Diamonds".to_string(), Some(Seal::Purple))],
+			"steamodded: {steamodded}"
+		);
+		let rng = g.to_dump();
+		let rng = rng.get("rng");
+		assert_ne!(rng.get("certsl"), &Json::Null, "steamodded: {steamodded}");
+		assert_eq!(rng.get("stdseal1"), &Json::Null, "steamodded: {steamodded}");
 	}
 }
 
