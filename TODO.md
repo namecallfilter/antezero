@@ -18,6 +18,7 @@ Sizes are unknown until tested. Most of these are worth a point or two at best, 
 - [ ] **KL after the last optimizer step, and KL of the first minibatch.** The learning-rate controller uses the mean of KLs measured before each step, which under-reads the real update. Needed before touching batch size or the KL target.
 - [ ] **Value and policy gradient size before clipping.** `vf_coef` 0.5 and `max_grad_norm` 0.5 were never varied. This decides whether the value head needs changing.
 - [ ] **Steps played after the ante-8 win, and timeouts.** Sizes the endless-cap test below.
+- [ ] **Deck-fixing metrics at each round start: rank, suit and card ("idol") entropy, and unreachable cards.** Unreachable is the cards still undrawn at the last hand if every hand and discard used 5 cards (Red at Gold: 52 - 8 - 5 x 6 = 14). Neither agent deck-fixes: on 100 fixed seeds `az_run95` (update 10k) and `0098` gain about 7 cards by ante 8, and unreachable rises by about 5. Kyle's 47 Gold recordings lose 0.74 bits of card entropy and about 9.4 unreachable cards, and his CEF9MWJQ run won with 23 Jacks of Hearts (all three entropies 0). The measuring code is on the `deckfix-metrics` branch (`python -m antezero_agent.deckfix`). Its `deck_stats` needs porting to master's `StartPool`; log the per-ante means and the change from the deck's start.
 - [ ] **Action counts per game.** A six-game probe of `0095` had joker reorders on 26% of steps. Unconfirmed in training.
 
 ## 3. Ten-minute speed benchmark (one card, after compile warm-up)
@@ -41,6 +42,8 @@ Sizes are unknown until tested. Most of these are worth a point or two at best, 
 - [ ] **Minibatch 8,192 or 16,384 late in training.** Never above 4,096 in any run. Kyle's 2,048-environment runs were all before Gold.
 - [ ] **Less blind reward once wins pass 30%.** Blinds pay about four times what the win does over a full game. Needs `reward_blind` exposed in the config.
 - [ ] **Pool: add Baron states, sweep the share.** Baron has 0 points in the pool. Only shares 0.1 and 0.2 were ever run.
+
+- [ ] **Deck fixing as a second objective: does paying for it win more?** Two forms, each against the same checkpoint on paired seeds. (a) Shaping: pay for the drop in card entropy or unreachable cards between round starts, as a potential difference (gamma x phi(next) - phi(now)) so the best policy stays the same and only learning speeds up. Measure from the deck's own start, since Abandoned and Checkered begin lower. (b) An extra prediction head for next round's entropy, with no reward change. Check that wins go up, not just entropy: a thin deck of weak cards scores 0 bits too. Needs the logging above first.
 
 ## 6. Next fresh run
 
