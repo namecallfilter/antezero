@@ -14,7 +14,10 @@ Results are written under each item as it is tested. Test code is on a local bra
   - **Result:** greedy 32.0% (2,563 of 8,010), sampled 26.8% (2,147) on the same games. Greedy is +5.2 points (± 0.5).
   - Greedy by deck: Blue 54%, Yellow 48%, Zodiac 40%, Ghost 38%, Checkered 35%, Magic 32%, Painted 32%, Red 31%, Green 31%, Abandoned 31%, Anaglyph 30%, Nebula 26%, Erratic 26%, Plasma 16%, Black 10%.
   - 8,010 games take 5 minutes on a 4060 Ti: `python -m antezero_agent.rl_eval CKPT`.
-- [ ] **Latest checkpoint against a short-window average, same seeds.** On ours averaging gave +3.7 on a plateau and lost 0.7 and 1.5 on climbing runs. Needs checkpoints kept more often than every 500 updates (`keep_ckpt_every`), or a running average of the weights.
+- [x] **Latest checkpoint against a short-window average, same seeds.** On ours averaging gave +3.7 on a plateau and lost 0.7 and 1.5 on climbing runs. Needs checkpoints kept more often than every 500 updates (`keep_ckpt_every`), or a running average of the weights.
+  - **Result:** the average wins by 1.4 points greedy. Averaging the control arm's last 5 checkpoints (25 updates apart, updates 12,300 to 12,400) gives 33.8% (2,707 of 8,010) against 32.4% for the latest one alone, ± 0.45 on the same games.
+  - Nine checkpoints give the same 33.8%. Sampled play does not change (27.8% and 28.6% against 27.9%).
+  - So greedy evals and any deployed model should use the average. It needs `keep_ckpt_every` 25, or a running average of the weights.
 
 ## 2. Add logging (no behaviour change)
 
@@ -58,7 +61,7 @@ Run on a rented 4090 (compile on, 4,096-row chunks, the L4 settings) and on a 40
 
 Sections 4 to 6 are running now, one arm at a time on a 4060 Ti (about 4 hours per arm). Each arm continues update 11,900 for 500 updates (32.8M steps), then plays the same 8,010 games greedy and sampled. Arms that are not clearly worse then go on to 1,000 updates. A control arm and a second control with another seed give the noise.
 
-Control arm after 500 updates: greedy 32.4% (32.0% at the start), sampled 27.9% (26.8% at the start).
+Three control arms after 500 updates (two seeds on the 4060 Ti, one on a rented 4090): greedy 32.4%, 31.9% and 32.3%, sampled 27.9%, 25.9% and 27.1%. The start was 32.0% and 26.8%. So 500 updates move the control by about +0.2 greedy, and a difference under about 1 point greedy or 2 points sampled is noise at this length. Results below are against the mean of the three (32.2% greedy, 26.9% sampled).
 
 - [ ] **Stop at the ante-8 win: `endless_ante` 8 against 16.** After the win every blind still pays +1, and the win itself pays about 5.8. Changes the objective and saves steps.
 
