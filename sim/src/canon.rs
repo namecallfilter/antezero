@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::areas::Cards;
-use crate::card::{AnyCard, Card, CardCore, Kind, PlayingCard, Sticker};
+use crate::card::{AnyCard, Card, CardCore, Forced, Kind, PlayingCard, Sticker};
 use crate::data::{
 	ALL_VOUCHERS, BlindKind, Center, Edition, HandType, Joker, Seal, TagKind, Voucher,
 };
@@ -288,7 +288,12 @@ fn sim_playing_card(out: &mut Canon, p: &str, c: &PlayingCard, area: CanonArea) 
 	}
 	if area.shows_facing() {
 		out.insert(format!("{p}.facing"), facing(c.core.face_down));
-		out.insert(format!("{p}.forced"), c.forced_selection.to_string());
+		let forced = match c.forced {
+			Forced::No => "false",
+			Forced::Flagged => "flagged",
+			Forced::Locked => "true",
+		};
+		out.insert(format!("{p}.forced"), forced.into());
 	}
 	out.insert(
 		format!("{p}.played_this_ante"),

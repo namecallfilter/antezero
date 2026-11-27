@@ -6,7 +6,7 @@ use super::parse::{
 	raw_named, text, whole,
 };
 use crate::canon::JokerField;
-use crate::card::{AnyCard, Card, CardCore, Kind, PlayingCard, Sticker};
+use crate::card::{AnyCard, Card, CardCore, Forced, Kind, PlayingCard, Sticker};
 use crate::data::{Edition, Enhancement, HandType, Rank, Seal, Suit};
 use crate::json::Json;
 
@@ -73,7 +73,11 @@ fn playing_card(c: &Json) -> Result<PlayingCard, DumpError> {
 		enhancement: named(c, "key", Enhancement::from_key)?,
 		seal: opt_named(c, "seal", |s| by_name(&Seal::ALL, Seal::name, s))?,
 		perma_bonus: number(ab, "perma_bonus")?,
-		forced_selection: raw_flag(ab, "forced_selection")?,
+		forced: match (raw_flag(ab, "forced_selection")?, flag(c, "highlighted")?) {
+			(false, _) => Forced::No,
+			(true, false) => Forced::Flagged,
+			(true, true) => Forced::Locked,
+		},
 		played_this_ante: raw_flag(ab, "played_this_ante")?,
 		wheel_flipped: raw_flag(ab, "wheel_flipped")?,
 		times_played: int(c, "times_played")?,

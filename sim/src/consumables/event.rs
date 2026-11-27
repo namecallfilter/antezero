@@ -465,8 +465,9 @@ fn copy_into(areas: &mut Areas, discount_percent: f64, si: usize, ti: usize) {
 	c.core.face_down = t.core.face_down;
 	c.times_played = 0;
 	// set_ability keeps the target's forced_selection; the copied
-	// ability table only overrides it when the source has one.
-	c.forced_selection |= t.forced_selection;
+	// ability table only overrides it when the source has one. Both cards
+	// are highlighted.
+	c.forced = c.forced.max(t.forced);
 	c.shattered = t.shattered;
 	c.destroyed = t.destroyed;
 	Pricing::new(discount_percent, &areas.jokers).set_cost(&mut c, Some(Area::Hand));

@@ -2,7 +2,7 @@
 //! easing helpers.
 
 use crate::areas::{self, Pile};
-use crate::card::{AnyCard, Card, CardLike, PlayingCard, Pricing};
+use crate::card::{AnyCard, Card, CardLike, Forced, PlayingCard, Pricing};
 use crate::data::{BlindKind, Joker};
 use crate::event::{Draw, Event, EventQueue};
 use crate::game::{Area, Areas, Blind, Flow, Game, HandLevels, State};
@@ -169,6 +169,7 @@ pub(crate) fn remove_card_by_id(g: &mut Game, id: u32) {
 	} else {
 		card::destroy_card(g, c);
 	}
+	g.areas.hand.highlight_forced();
 }
 
 /// `copy_card(other, nil, nil, nil, strip_edition)` for a joker or a
@@ -207,6 +208,9 @@ pub(crate) fn copy_playing_card(
 	// from the current suit.
 	c.times_played = 0;
 	c.orig_suit = c.suit;
+	// The copy has the original's forced_selection, but a new card is not
+	// highlighted.
+	c.forced = c.forced.min(Forced::Flagged);
 	copy_core(areas, discount_percent, c, /* strip_edition= */ false)
 }
 

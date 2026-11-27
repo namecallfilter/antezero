@@ -329,7 +329,7 @@ pub(super) fn core_ctx(g: &Game, hide: bool) -> CoreCtx {
 			x.rank[i] = -1;
 			x.suit[i] = 0;
 		}
-		if cd.forced_selection {
+		if cd.forced.is_locked() {
 			x.forced |= 1u32 << i;
 		}
 		for (q, sc) in x.scnt.iter_mut().enumerate() {

@@ -8,10 +8,11 @@ use oracle::canon;
 use oracle::dumpcheck::part_diffs;
 use oracle::fingerprint::obs_fingerprint;
 use oracle::policy::Policy;
+use sim::actions::Action;
 use sim::data::Back;
 use sim::game::Game;
 use sim::json::Json;
-use sim::{Stake, json, num};
+use sim::{Forced, Stake, json, num};
 
 const GAMES: u64 = 60;
 const STEPS: usize = 250;
@@ -33,6 +34,16 @@ fn check(g: &mut Game, n: u64, step: usize) {
 		obs_fingerprint(g),
 		"game {n} step {step}: the observation differs"
 	);
+}
+
+#[test]
+fn a_dump_keeps_which_cards_with_the_forced_flag_are_highlighted() {
+	let mut g = Game::new_run("BELLDUMP", Back::Red, Stake::White);
+	g.step(Action::SelectBlind)
+		.expect("the first blind can be played");
+	let hand = &mut g.areas.hand.cards;
+	(hand[0].forced, hand[1].forced) = (Forced::Locked, Forced::Flagged);
+	check(&mut g, 0, 0);
 }
 
 #[test]

@@ -10,10 +10,12 @@ use oracle::command::{Command, Start};
 use oracle::difftest::{Checks, Comparison, compare};
 use oracle::policy::{highest_scoring_play, unused_cards};
 use sim::actions::Action;
-use sim::data::{Back, BlindKind, Enhancement, Joker, Rank, Suit, TagKind};
+use sim::data::{
+	Back, BlindKind, Edition, Enhancement, Joker, Rank, Spectral, Suit, TagKind, Tarot,
+};
 use sim::game::{Game, Phase, Scratch};
-use sim::inject::Inject;
-use sim::{CardMask, Stake, json};
+use sim::inject::{Consumable, Inject};
+use sim::{CardMask, Forced, Stake, json};
 
 struct Both {
 	o: Oracle,
@@ -254,4 +256,89 @@ fn vampire_midas_vampire() {
 			.filter(|c| c.enhancement == Enhancement::Gold)
 			.count();
 	assert!(gold > 0, "Midas Mask gilded nothing");
+}
+
+/// The hand positions of the cards Cerulean Bell holds in a given way.
+fn held(g: &Game, how: Forced) -> Vec<usize> {
+	let hand = g.areas.hand.cards.iter().enumerate();
+	hand.filter(|(_, c)| c.forced == how)
+		.map(|(i, _)| i)
+		.collect()
+}
+
+/// Cerulean Bell with copies of its forced card: the copies have the flag
+/// (`copy_card` copies the ability table), but the game only keeps the
+/// highlighted card in the selection. A copy is held once a consumable has
+/// been used on it, and the first one is when no held card is left.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn cerulean_bell_holds_only_the_highlighted_card() {
+	let quiet = |tag| {
+		matches!(
+			tag,
+			Some(TagKind::Economy | TagKind::Handy | TagKind::Garbage | TagKind::Skip)
+		)
+	};
+	let seed =
+		find_seed(|g| quiet(g.blind_select.skip_tags.small) && quiet(g.blind_select.skip_tags.big));
+	let mut b = Both::start(red_white(&seed));
+	b.g.blind_select.boss = BlindKind::FinalBell;
+	b.o.exec("G.GAME.round_resets.blind_choices.Boss = 'bl_final_bell'")
+		.expect("the game takes the boss");
+	for card in [
+		Consumable::Spectral(Spectral::Cryptid),
+		Consumable::Spectral(Spectral::Cryptid),
+		Consumable::Tarot(Tarot::Magician),
+		Consumable::Tarot(Tarot::Death),
+		Consumable::Tarot(Tarot::HangedMan),
+	] {
+		b.inject(Inject::Consumable {
+			card,
+			edition: Some(Edition::Negative),
+		});
+	}
+	b.act(Action::SkipBlind);
+	b.act(Action::SkipBlind);
+	b.act(Action::SelectBlind);
+	assert_eq!(b.g.blind.kind, Some(BlindKind::FinalBell));
+	let bell = held(&b.g, Forced::Locked);
+	assert_eq!(bell.len(), 1, "the Bell holds one card");
+	let use_on = |b: &mut Both, cards: &[usize]| {
+		b.act(Action::UseConsumable {
+			index: 0,
+			targets: cards.iter().copied().collect(),
+		});
+	};
+
+	// Two Cryptids on the held card: the second needs the copies to be free.
+	use_on(&mut b, &bell);
+	use_on(&mut b, &bell);
+	assert_eq!(held(&b.g, Forced::Locked), bell);
+	let copies = held(&b.g, Forced::Flagged);
+	assert_eq!(copies.len(), 4, "the copies have the flag");
+
+	// The Magician on the held card and a copy: the copy is held from now on.
+	use_on(&mut b, &[bell[0], copies[0]]);
+	assert_eq!(held(&b.g, Forced::Locked), [bell[0], copies[0]]);
+
+	// Death takes two cards, so it has to take the two held ones. The
+	// Hanged Man then destroys them, and the first copy left is held.
+	let free = held(&b.g, Forced::No)[0];
+	let without_a_held_card = Action::UseConsumable {
+		index: 0,
+		targets: [bell[0], free].into_iter().collect(),
+	};
+	assert!(b.g.check(without_a_held_card).is_err());
+	use_on(&mut b, &[bell[0], copies[0]]);
+	assert_eq!(held(&b.g, Forced::Locked), [bell[0], copies[0]]);
+	use_on(&mut b, &[bell[0], copies[0]]);
+	let next = held(&b.g, Forced::Locked);
+	assert_eq!(next.len(), 1, "one copy is held: {next:?}");
+	assert_eq!(held(&b.g, Forced::Flagged).len(), 2);
+
+	// A discard of the held card alone, then the Bell holds a new card.
+	b.act(Action::Discard(next.iter().copied().collect()));
+	assert_eq!(held(&b.g, Forced::Locked).len(), 1);
+	assert_eq!(held(&b.g, Forced::Flagged), [0; 0], "no card has the flag");
+	b.win_round();
 }

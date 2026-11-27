@@ -1,7 +1,7 @@
 //! The card areas: `G.deck`, `G.hand`, `G.play`, `G.discard`, `G.jokers`,
 //! `G.consumeables`, the shop's areas and `G.pack_cards`.
 
-use crate::card::{AnyCard, Card, CardLike, HandSort, Kind, PlayingCard};
+use crate::card::{AnyCard, Card, CardLike, Forced, HandSort, Kind, PlayingCard};
 use crate::data::Joker;
 use crate::hand_eval::EvalFlags;
 use crate::rng::PseudoRandom;
@@ -126,6 +126,17 @@ impl Hand {
 		let order = self.order;
 		self.cards
 			.sort_by(|a, b| b.nominal(order).total_cmp(&a.nominal(order)));
+	}
+
+	/// `CardArea:update` for the hand: while no card is highlighted, the
+	/// game highlights the first card that has the forced flag.
+	pub(crate) fn highlight_forced(&mut self) {
+		if self.cards.iter().any(|c| c.forced.is_locked()) {
+			return;
+		}
+		if let Some(c) = self.cards.iter_mut().find(|c| c.forced.is_flagged()) {
+			c.forced = Forced::Locked;
+		}
 	}
 }
 

@@ -460,6 +460,7 @@ local function card_info(c)
   }
   if c.ability.set == 'Default' or c.ability.set == 'Enhanced' then
     t.card = c.config.card_key
+    t.highlighted = c.highlighted or false
     t.seal = c.seal or json.null
     t.rank = c.base.id
     t.suit = c.base.suit

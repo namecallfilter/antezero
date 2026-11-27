@@ -17,4 +17,4 @@ pub(crate) use lifecycle::{
 };
 pub(crate) use mask::CardMask;
 pub(crate) use playing_card::{CanonKey, CardFace, canon_key};
-pub use playing_card::{HandSort, PlayingCard, SuitTest, UNIQUE_ID_SCALE};
+pub use playing_card::{Forced, HandSort, PlayingCard, SuitTest, UNIQUE_ID_SCALE};

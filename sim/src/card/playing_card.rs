@@ -21,6 +21,36 @@ pub enum SuitTest {
 	Flush,
 }
 
+/// Cerulean Bell's hold on a hand card: `ability.forced_selection`, and for
+/// a card that has it, whether the card is highlighted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Forced {
+	#[default]
+	No,
+	/// The card has the flag but is not highlighted: a copy of a forced card
+	/// (Cryptid) that no selection has held since. The game does not ask
+	/// for it.
+	Flagged,
+	/// The card has the flag and is highlighted. The game refuses to
+	/// unhighlight it (`CardArea:remove_from_highlighted`), so every
+	/// selection holds it.
+	Locked,
+}
+
+impl Forced {
+	/// Whether the card has the flag.
+	#[must_use]
+	pub fn is_flagged(self) -> bool {
+		self != Forced::No
+	}
+
+	/// Whether every selection must hold the card.
+	#[must_use]
+	pub fn is_locked(self) -> bool {
+		self == Forced::Locked
+	}
+}
+
 /// A playing card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayingCard {
@@ -34,7 +64,7 @@ pub struct PlayingCard {
 	pub seal: Option<Seal>,
 	/// `ability.perma_bonus`: permanent chip bonus (Hiker).
 	pub perma_bonus: f64,
-	pub forced_selection: bool,
+	pub forced: Forced,
 	pub played_this_ante: bool,
 	pub wheel_flipped: bool,
 	pub times_played: u32,
@@ -58,7 +88,7 @@ impl PlayingCard {
 			enhancement: Enhancement::Base,
 			seal: None,
 			perma_bonus: 0.0,
-			forced_selection: false,
+			forced: Forced::No,
 			played_this_ante: false,
 			wheel_flipped: false,
 			times_played: 0,

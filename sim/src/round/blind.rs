@@ -5,7 +5,7 @@ use std::slice;
 
 use super::state::Round;
 use crate::areas::Pile;
-use crate::card::{Card, PlayingCard, SuitTest};
+use crate::card::{Card, Forced, PlayingCard, SuitTest};
 use crate::data::{ALL_BLINDS, BlindKind, HandSet, HandType, Joker, Suit, TagKind};
 use crate::event::{Blocks, Event, EventQueue, Trigger};
 use crate::flow::FlowEvent;
@@ -397,7 +397,7 @@ pub(crate) fn disable_blind(g: &mut Game) {
 		Some(BlindKind::Wall) => g.blind.chips /= 2.0,
 		Some(BlindKind::FinalBell) => {
 			for c in g.areas.playing_cards_mut() {
-				c.forced_selection = false;
+				c.forced = Forced::No;
 			}
 		}
 		Some(BlindKind::Manacle) => {
@@ -515,13 +515,13 @@ pub(super) fn debuff_hand(
 pub(crate) fn drawn_to_hand(g: &mut Game) {
 	if !g.blind.disabled {
 		if g.blind.kind == Some(BlindKind::FinalBell) && !g.areas.hand.cards.is_empty() {
-			let any = g.areas.hand.cards.iter().any(|c| c.forced_selection);
+			let any = g.areas.hand.cards.iter().any(|c| c.forced.is_flagged());
 			if !any
 				&& let Some(pick) =
 					areas::pick_card(&mut g.rng, "cerulean_bell", &g.areas.hand.cards, |_, _| {
 						true
 					}) {
-				g.areas.hand.cards[pick].forced_selection = true;
+				g.areas.hand.cards[pick].forced = Forced::Locked;
 			}
 		}
 		if g.blind.kind == Some(BlindKind::FinalHeart)

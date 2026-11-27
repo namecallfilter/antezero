@@ -13,7 +13,7 @@ use sim::data::{Back, BlindKind, HandType, Joker, Rank, Seal, Suit};
 use sim::hand_eval::{self, EvalFlags};
 use sim::inject::Inject;
 use sim::rng::Xorshift;
-use sim::{Action, Game, Kind, PlayingCard, Stake, num};
+use sim::{Action, Forced, Game, Kind, PlayingCard, Stake, num};
 
 /// An environment whose episode starts in `game`.
 fn env_at(game: Game, cfg: BalConfig) -> BalEnv {
@@ -299,7 +299,7 @@ fn a_forced_card_past_the_observed_hand_is_part_of_every_selection() {
 	areas.hand.cards.extend(areas.deck.drain(..20));
 	let held = areas.hand.cards.len();
 	let forced = &mut areas.hand.cards[held - 1];
-	forced.forced_selection = true;
+	forced.forced = Forced::Locked;
 	let forced = forced.core.id;
 
 	for action in [ACT_PLAY, ACT_DISCARD] {
@@ -348,7 +348,7 @@ fn a_card_forced_during_a_step_is_moved_into_the_observed_hand() {
 		let info = env.step_select(num::id(ACT_DISCARD), &[pick]);
 		assert_eq!(info.illegal, 0, "the discard takes the forced card");
 		let hand = &env.game().areas.hand.cards;
-		let forced = hand.iter().rposition(|card| card.forced_selection);
+		let forced = hand.iter().rposition(|card| card.forced.is_locked());
 		let forced = forced.expect("Cerulean Bell forces a card after every discard");
 		assert!(forced < rows, "the forced card has a row");
 	}

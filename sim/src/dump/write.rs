@@ -452,6 +452,7 @@ fn playing_card(c: &PlayingCard) -> Json {
 		c.key(),
 		vec![
 			("card", c.card_key().into()),
+			("highlighted", c.forced.is_locked().into()),
 			("rank", f64::from(c.rank.id()).into()),
 			("suit", c.suit.name().into()),
 			("seal", c.seal.map(Seal::name).into()),
@@ -465,7 +466,7 @@ fn playing_card(c: &PlayingCard) -> Json {
 		vec![
 			("set", set.into()),
 			("perma_bonus", c.perma_bonus.into()),
-			("forced_selection", c.forced_selection.into()),
+			("forced_selection", c.forced.is_flagged().into()),
 			("played_this_ante", c.played_this_ante.into()),
 			("wheel_flipped", c.wheel_flipped.into()),
 		],
