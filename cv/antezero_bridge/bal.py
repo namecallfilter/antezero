@@ -29,4 +29,40 @@ def script(seed: str, back: str, stake: int, codes: list[str]) -> str:
 def check(text: str) -> None:
     """Raises `ValueError` unless the simulator replays every line of the recording."""
     actions = sum(bool(row.split("#")[0].strip()) for row in text.splitlines()) - 1
-    antezero_sim.StartPool().add(text, [actions])
+    try:
+        antezero_sim.StartPool().add(text, [actions])
+    except ValueError as e:
+        # A finished run replays to its last line and has no start point after it.
+        if str(e) != f"the run is over after line {actions}":
+            raise
+
+
+def code(row: str) -> str:
+    """The action code of a recording line (the inverse of `line`)."""
+    for action, name in _SORTS.items():
+        if row.split() == [name]:
+            return action
+    name, *operands = row.split()
+    action = next((a for a, n in _VERBS.items() if n == name), name)
+    if action in _MASKED:
+        slots = 0 if action in ("play", "discard") else 1
+        mask = sum(1 << int(i) for i in operands[slots:])
+        operands = [*operands[:slots], str(mask)]
+    return " ".join([action, *operands])
+
+
+def legal_code(game: antezero_sim.Game, row: str) -> str:
+    """The code that plays a recording line in `game`.
+
+    A recording keeps the hand cards that were highlighted when a card was used or picked; the
+    game ignores them for a card that takes no targets, and `Game.step` refuses them.
+    """
+    action = code(row)
+    name, *operands = action.split()
+    if name in ("use", "buy_use", "pick") and operands[-1] != "0":
+        probe = game.clone()
+        try:
+            probe.step(action)
+        except RuntimeError:
+            return " ".join([name, *operands[:-1], "0"])
+    return action
