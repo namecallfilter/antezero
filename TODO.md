@@ -30,9 +30,9 @@ All but the deck-fixing metrics are added. Numbers are from the first updates af
   - The first minibatch reads 0.00001, so rounding noise is not a problem.
 - [x] **Value and policy gradient size before clipping.** `vf_coef` 0.5 and `max_grad_norm` 0.5 were never varied. This decides whether the value head needs changing.
   - **Result:** logged as `grad_norm`, and every 10 updates as `grad_pg`, `grad_v` and `grad_cos`. The norm before clipping is about 8.6 against a limit of 0.5, so every step is clipped about 17 times over.
-  - The value part is 3 to 4 times the policy part (4.4 to 5.2 against 1.3 to 1.8 on 4,096 rows). The two point slightly against each other (cosine -0.16). This supports the value-head item in section 6.
+  - The value part is 3 to 4 times the policy part (4.4 to 5.2 against 1.3 to 1.8 on 4,096 rows). The two are close to unrelated (cosine -0.03 over 40 readings). This supports the value-head items below.
 - [x] **Steps played after the ante-8 win, and timeouts.** Sizes the endless-cap test below.
-  - **Result:** logged as `post_win_share` and `timeouts`. 14% of all steps are played after the win. No timeouts. No game got past ante 16.
+  - **Result:** logged as `post_win_share` and `timeouts`. 14% of all steps are played after the win. One game timed out in 32.8M steps. No game got past ante 16.
 - [ ] **Deck-fixing metrics at each round start: rank, suit and card ("idol") entropy, and unreachable cards.** Unreachable is the cards still undrawn at the last hand if every hand and discard used 5 cards (Red at Gold: 52 - 8 - 5 x 6 = 14). Neither agent deck-fixes: on 100 fixed seeds `az_run95` (update 10k) and `0098` gain about 7 cards by ante 8, and unreachable rises by about 5. Kyle's 47 Gold recordings lose 0.74 bits of card entropy and about 9.4 unreachable cards, and his CEF9MWJQ run won with 23 Jacks of Hearts (all three entropies 0). The measuring code is on the `deckfix-metrics` branch (`python -m antezero_agent.deckfix`). Its `deck_stats` needs porting to master's `StartPool`; log the per-ante means and the change from the deck's start.
 - [x] **Action counts per game.** A six-game probe of `0095` had joker reorders on 26% of steps. Unconfirmed in training.
   - **Result:** confirmed. Logged as `act_*`. Joker reorders are 24.7% of training steps and 24.8% of greedy steps. Plays are 15.8%.
@@ -56,6 +56,8 @@ Run on a rented 4090 (compile on, 4,096-row chunks, the L4 settings) and on a 40
 ## 4. One-flag tests (from the latest checkpoint, one at a time)
 
 Sections 4 to 6 are running now, one arm at a time on a 4060 Ti (about 4 hours per arm). Each arm continues update 11,900 for 500 updates (32.8M steps), then plays the same 8,010 games greedy and sampled. Arms that are not clearly worse then go on to 1,000 updates. A control arm and a second control with another seed give the noise.
+
+Control arm after 500 updates: greedy 32.4% (32.0% at the start), sampled 27.9% (26.8% at the start).
 
 - [ ] **Stop at the ante-8 win: `endless_ante` 8 against 16.** After the win every blind still pays +1, and the win itself pays about 5.8. Changes the objective and saves steps.
 
@@ -83,7 +85,9 @@ Judge each arm by greedy win rate on 8,000+ fixed-seed games across all decks, a
 - [ ] **Train the value head more than the policy.** `epochs` is 1, so the value head sees each sample once. Phasic Policy Gradient (Cobbe et al. 2020, https://arxiv.org/abs/2009.04416) found the value function tolerates much more sample reuse than the policy: it adds a phase of extra value epochs, with a KL term holding the policy still. Cheapest version: after the PPO step, one or two more epochs on the value loss alone. Compare value loss on held-out games, then wins. Run after the gradient-size logging.
 - [ ] **Keep feature changes small (Proximal Feature Optimization).** In PPO, collapsing feature rank goes with the trust region failing; an extra loss on how much the features change per update reduced the collapse on Atari and MuJoCo (Moalla et al. 2024, https://arxiv.org/abs/2405.00662). Log feature rank first.
 - [ ] **Rescale value targets as returns grow (PopArt).** With gamma 1 the returns' scale drifts as the agent improves, and the value loss is plain squared error on unscaled targets. PopArt rescales the targets and adjusts the last layer so outputs stay the same, so it fits the live run (van Hasselt et al. 2016, https://arxiv.org/abs/1602.07714). A categorical value head (HL-Gauss) scaled better and coped with moving targets (Farebrother et al. 2024, https://arxiv.org/abs/2403.03950); that one needs a fresh head.
-- [ ] **Bootstrap games cut by the 3,000-step limit.** `train.py` treats `term | trunc` as game over, so a timed-out state learns a value of 0 instead of its own estimate. Rare, but wrong.
+- [x] **Bootstrap games cut by the 3,000-step limit.** `train.py` treats `term | trunc` as game over, so a timed-out state learns a value of 0 instead of its own estimate. Rare, but wrong.
+  - **Result:** fixed in the test code, but it changes nothing today: one game timed out in 32.8M steps of the control arm.
+  - The fix is approximate. The env resets before the trainer sees the cut game's last state, so the value before the last step stands in.
 - [ ] **Constant win reward.** The bonus is log10 of the final hand's chips, so a bigger-scoring win pays more than a safe one.
 - [ ] **Minibatch 8,192 or 16,384 late in training.** Never above 4,096 in any run. Kyle's 2,048-environment runs were all before Gold.
 - [ ] **Less blind reward once wins pass 30%.** Blinds pay about four times what the win does over a full game. Needs `reward_blind` exposed in the config.
