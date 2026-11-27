@@ -798,7 +798,6 @@ impl BalEnv {
 		&mut self, obs_out: &mut [f32], sel_out: &mut [f32], mask_out: &mut [u8],
 		specs_out: &mut [i32], hctx_out: &mut [i32],
 	) {
-		self.refresh_core();
 		write_obs(&mut self.g, self.cfg.hide_face_down, obs_out);
 		write_obs_selection(&self.g, sel_out);
 		self.mask(mask_out);
@@ -862,6 +861,7 @@ impl BalEnv {
 		let ok = step.apply(&mut self.g);
 		if ok {
 			self.record(step);
+			self.refresh_core();
 		}
 		if ok && act == Action::SkipBlind {
 			self.skips_pending += 1;
@@ -954,7 +954,6 @@ impl BalEnv {
 	/// not allow, change nothing but the step count: the step is `illegal`.
 	/// After a step that ends the episode, call [`reset`](Self::reset).
 	pub fn step_select(&mut self, action: i32, cards: &[i32]) -> BalStepInfo {
-		self.refresh_core();
 		let mut m = [0u8; N_ACTIONS];
 		self.mask(&mut m);
 		let Some(a) = usize::try_from(action)

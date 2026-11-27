@@ -6,8 +6,8 @@ use std::mem;
 use std::sync::Arc;
 
 use sim::balatro::{
-	ACT_DISCARD, ACT_PLAY, ACT_PLAY_HAND, BalConfig, BalEnv, HS_CTX, N_ACTIONS, N_SEL_VERBS,
-	OBS_SIZE, SEL_F, StartPoint, sel_verb_index,
+	ACT_DISCARD, ACT_PLAY, ACT_PLAY_HAND, ACT_SELECT_BLIND, BalConfig, BalEnv, HS_CTX, N_ACTIONS,
+	N_SEL_VERBS, OBS_SIZE, SEL_F, StartPoint, sel_verb_index,
 };
 use sim::data::{Back, HandType, Joker, Rank, Seal, Suit};
 use sim::hand_eval::{self, EvalFlags};
@@ -247,6 +247,21 @@ fn a_forced_card_past_the_observed_hand_is_part_of_every_selection() {
 		);
 		assert!(hand.iter().all(|card| !card.forced_selection));
 	}
+}
+
+#[test]
+fn a_round_that_starts_without_discards_is_not_a_dead_end() {
+	let mut game = Game::new_run("NODISCARD", Back::Red, Stake::White);
+	game.inject(Inject::Joker {
+		joker: Joker::Burglar,
+		edition: None,
+		eternal: true,
+	});
+	let mut env = env_at(game, BalConfig::default());
+	let info = env.step_select(num::id(ACT_SELECT_BLIND), &[]);
+	assert_eq!(env.game().round.discards_left, 0.0, "Burglar took them");
+	assert_eq!((info.illegal, info.terminated, info.dead_end), (0, 0, 0));
+	assert_eq!(see(&mut env).mask[ACT_PLAY], 1, "a hand can be played");
 }
 
 #[test]
