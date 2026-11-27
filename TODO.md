@@ -52,6 +52,7 @@ Run on a rented 4090 (compile on, 4,096-row chunks, the L4 settings) and on a 40
 - [x] **Rented 4090 against the L4.** The L4 does about 4,100 steps/s at $0.71/h on demand. A 4090 is an estimated 3x, unmeasured, and costs cash where the L4 uses credit.
   - **Result:** the real trainer did 11,500 steps/s on a 4090 at $0.48/h, 2.8 times the L4. That is about 4 times the steps per dollar of an on-demand L4.
   - The host had a 32-thread Threadripper PRO 7995WX. Hosts with slower CPUs will do less.
+  - A rented 3090 (Core i5-14400 host, $0.19/h) did 6,040 steps/s: 3.1 s rollout and 7.8 s learning per update. That is about half the 4090 and 1.5 times the L4, at the best steps per dollar of the three.
 
 ## 4. One-flag tests (from the latest checkpoint, one at a time)
 
