@@ -65,6 +65,8 @@ Sections 4 to 6 are running now, one arm at a time on a 4060 Ti (about 4 hours p
 Three control arms after 500 updates (two seeds on the 4060 Ti, one on a rented 4090): greedy 32.4%, 31.9% and 32.3%, sampled 27.9%, 25.9% and 27.1%. The start was 32.0% and 26.8%. So 500 updates move the control by about +0.2 greedy, and a difference under about 1 point greedy or 2 points sampled is noise at this length. Results below are against the mean of the three (32.2% greedy, 26.9% sampled).
 
 - [ ] **Stop at the ante-8 win: `endless_ante` 8 against 16.** After the win every blind still pays +1, and the win itself pays about 5.8. Changes the objective and saves steps.
+  - **Result:** slightly worse at 500 updates. Greedy 30.9% against 32.2% for the controls (-1.3), sampled 24.5% (-2.4). Both are at the edge of the noise.
+  - It plays 19% more games in the same steps (255 steps a game against 286), but the training win rate drifted from 26.0% down to 25.0%. The value head has to relearn its targets after the change, so 500 updates may be too short to judge it.
 
 ## 5. Hyperparameters (forks of the latest checkpoint, paired seeds, about 1,000 to 1,500 updates each)
 
