@@ -136,6 +136,8 @@ Judge each arm by greedy win rate on 8,000+ fixed-seed games across all decks, a
   - **Result (a fixed 5.8 in place of log10 of the chips):** no change at 500 updates. Greedy 32.6% against 32.2% for the controls (+0.4), sampled 26.9% (0.0).
 - [ ] **Minibatch 8,192 or 16,384 late in training.** Never above 4,096 in any run. Kyle's 2,048-environment runs were all before Gold.
 - [ ] **Less blind reward once wins pass 30%.** Blinds pay about four times what the win does over a full game. Needs `reward_blind` exposed in the config.
+  - **Result (each blind pays 0.5):** no clear change at 500 updates. Greedy 33.0% against 32.2% for the controls (+0.8), sampled 27.6% (+0.6). It is just above the best control (32.4%).
+  - Not fully clean: the controller cut the learning rate late in the run (2.0e-5 to 1.6e-5, mean 1.9e-5), which favours the arm a little. The value part of the gradient halved, as expected with smaller returns.
 - [ ] **Pool: add Baron states, sweep the share.** Baron has 0 points in the pool. Only shares 0.1 and 0.2 were ever run.
 
 - [ ] **Deck fixing as a second objective: does paying for it win more?** Two forms, each against the same checkpoint on paired seeds. (a) Shaping: pay for the drop in card entropy or unreachable cards between round starts, as a potential difference (gamma x phi(next) - phi(now)) so the best policy stays the same and only learning speeds up. Measure from the deck's own start, since Abandoned and Checkered begin lower. (b) An extra prediction head for next round's entropy, with no reward change. Check that wins go up, not just entropy: a thin deck of weak cards scores 0 bits too. Needs the logging above first.
