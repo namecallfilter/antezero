@@ -5,8 +5,10 @@ BalatroEngine at `a3fea4c`, imported under `cv/`.
 
 ## Answers
 
-**Can AnteZero's simulator replace their engine?** Yes for the game rules, with one gap to
-close first: the game in the videos runs under Steamodded, and the simulator plays vanilla.
+**Can AnteZero's simulator replace their engine?** Yes for the game rules. One gap is left:
+their ground-truth log comes from an old Steamodded build that starts a blind differently
+with Marble Joker or Certificate (section 2). The Steamodded of today does not, so the
+simulator does not model it, and a video recorded on such a build stops at that point.
 
 - On a real video it was exact. For `youtube.com/watch?v=wInI1W_EaEw` (Magic Deck, Gold
   Stake, seed `LNDW2KK8` from the description) the simulator, given only the seed, deck and
@@ -18,8 +20,9 @@ close first: the game in the videos runs under Steamodded, and the simulator pla
 - On their one ground-truth log (299 entries, a stress run with 89 jokers) the simulator
   reproduces 273 of 299 logged states exactly, RNG streams included, when each transition is
   tested on its own; 7 more differ only because the log's snapshot was taken mid-action. The
-  other 19 are two ways that game's Steamodded build departs from vanilla (below). Given
-  only the actions, it diverges at the first blind (entry 3) for the same reason.
+  other 19 are two ways that game's old Steamodded build departs from vanilla, and from
+  the Steamodded of today (below). Given only the actions, it diverges at the first blind
+  (entry 3) for the same reason.
 - Their engine passes its own parity test on that log (0 discrepancies), but that test copies
   the hand, shop, pack, consumables, jokers, blind and score from the log before every step
   and checks a few counters. Their engine cannot deal a hand or fill a shop from a seed.
@@ -131,17 +134,27 @@ The 7 timing entries: the setup snapshot itself, a $1 payout still easing, and f
 that are the game's own doing logged as actions (four packs opened by skip tags, one Boss
 Tag reroll).
 
-The 19 misses have two causes. Both are ways the logged game, which ran under Steamodded,
-departs from vanilla; the log does not say which Steamodded version it was.
+The 19 misses have two causes. Both are ways the logged game, which ran under an old
+Steamodded build, departs from vanilla; the log does not say which version it was.
 
 1. **Blind start with Marble Joker and Certificate (13 entries, every blind of the run).**
-   The game shuffled before Marble Joker's Stone card joined the deck; vanilla, and the
-   simulator, shuffle after. Checked directly: with Marble Joker removed the simulator deals
-   the logged hand and draw pile exactly. Certificate advanced the `stdseal<ante>` stream,
-   which vanilla keeps for Standard Packs. The Steamodded copy installed on this PC
-   (`%APPDATA%\Balatro\Mods\smods` and lovely's dump of the patched game) shows why:
-   Certificate's seal comes from `SMODS.poll_seal`, which rolls that stream first, and
-   Marble Joker's code is rewritten.
+   The game shuffled before Marble Joker's Stone card joined the deck (the card is the
+   bottom card of the logged draw pile at every blind); vanilla, and the simulator, shuffle
+   after. Checked directly: with Marble Joker removed the simulator deals the logged hand
+   and draw pile exactly. Certificate advanced the `stdseal<ante>` stream, which vanilla
+   keeps for Standard Packs.
+
+   **Neither is what Steamodded does today.** Checked in the real game on this PC
+   (Steamodded 26.1002, seed `MARBCERT`, both jokers held, six blinds): the vanilla
+   simulator matched all 24 transitions in every compared field, the deck's order and every
+   RNG stream included. The Stone card is shuffled in, and no `stdseal` stream is rolled.
+   The installed code agrees: `SMODS.poll_seal` is called with `guaranteed = true`, which
+   skips the `stdseal` roll (`if guaranteed or pseudorandom(...)`), and Marble Joker's events
+   are queued before the shuffle. Upstream's history has "make marble joker timing work like
+   vanilla (#1386)" on 2026-05-20, and its current `poll_seal` (26.1121) is the same as the
+   installed one. So the simulator's `steamodded` rules leave both jokers as in vanilla
+   (`sim/tests/steamodded.rs` holds the real game's deal), and the 13 entries stay misses of
+   this log.
 2. **Sigil, Grim, Familiar, Incantation (6 entries).** Same RNG stream values, different
    suit or rank. The picks fit a suit list in the order Spades, Hearts, Clubs, Diamonds
    (Steamodded's suit table) where vanilla has Spades, Hearts, Diamonds, Clubs. This one
@@ -155,7 +168,7 @@ Two more differences are harmless and ignored by the comparison: Steamodded keep
 `soul_smods_*` streams, and the art of the first shop's Buffoon Pack comes from
 `math.random`.
 
-The first divergence the brief asks for is therefore entry 3: Steamodded's blind start. With
+The first divergence the brief asks for is therefore entry 3: the old build's blind start. With
 5 ordinary jokers it would not happen; with Marble Joker in the lineup it happens every round.
 
 The simulator's Steamodded rounding flag made no difference on this log.
@@ -175,25 +188,41 @@ discards. That is one video; see the open points.
 Stage 1 stays as it is. Stage 2 becomes a walk over the clicks with the simulator holding
 the game:
 
-1. **Start** `Game(seed, deck, stake)` with the Steamodded flag on. The description gives
-   all three before any frame is decoded.
+1. **Start** `Game(seed, deck, stake)` with the Steamodded rules on (`--rules steamodded`).
+   The description gives all three before any frame is decoded.
 2. **For each click**, ask the simulator for the legal actions of that button.
    - One legal action (Cash Out, Next Round, Select Blind, Reroll, Skip Pack, a shop with one
      card): take it. No classifier runs. 33 of 90 clicks in the test clip.
    - Several: the hand detector's boxes say which cards are raised (their geometric test, no
      card classifier), and the item detector's boxes say which slot the button sits at.
-3. **Check against the next screen.** Before the next click the HUD (money, hands, discards,
-   ante, round) is read and compared with the result of every legal action of that button,
-   and of "nothing happened". If the HUD cannot tell the leaders apart, the joker bar,
-   consumables and hand are read too. The best-fitting action is recorded; ties go to the
-   action nearest the read. This is where wrong reads are repaired (3 sell slots in the
-   clip) and clicks that did nothing are rejected (3 in the clip).
+3. **Check against the next screen** (`reconcile.settle`). Before the next click the HUD
+   (money, round score, hands, discards, ante, round) is read and compared with the result
+   of every legal action of that button, and of "nothing happened". If the HUD cannot tell
+   the leaders apart, the joker bar, consumables and hand are read too. This is where wrong
+   reads are repaired (3 sell slots in the clip) and clicks that did nothing are rejected (3
+   in the clip). Nothing is recorded on a guess:
+   - the read is recorded if it is one of the best fits. If other actions with another
+     result fit as well, its line gets the comment `# unconfirmed: N other actions fit the
+     next screen`: it rests on the classifiers alone (13 of the clip's 88 lines, the first
+     of them the fifth action, so cutting at the first one would leave nothing);
+   - a read that is not a best fit is replaced only if all the best fits have one result;
+   - the walk stops if they have several, or if they differ in a HUD number the OCR did not
+     read (the round score tells a 324-chip straight from a 308-chip flush that both win the
+     blind; without it nothing does).
 4. **Missed clicks.** A click that is not legal now may be legal after a forced step (Cash
    Out, Next Round, Skip Pack, Select Blind); that step is inserted. A joker missing from the
    bar while the money is up by its sell value is a missed sale (1 in the clip, the one their
    stage 2 flagged).
-5. **Write** the header and one line per action as a `.bal` file and replay it through
-   `antezero_sim.StartPool` as the last check.
+5. **Hold the result to the screen.** After the action (and any missed sale) every HUD
+   number the OCR read must be the simulator's, and at least 4 of the 6 must have been read
+   (the OCR leaves the ante and the round score unread on 4 of the clip's 89 screens). If
+   not, the walk stops and the click is not recorded. The first screen is held to the new
+   run the same way.
+6. **Write** the header and one line per action as a `.bal` file and replay it through
+   `antezero_sim.StartPool` as the last check. The header ends in `rules steamodded` for a
+   run played by Steamodded's rules, and a replay follows it; a header without it is a
+   vanilla run, as every older recording is. A walk that stopped ends in a `# stopped at`
+   comment with the reason.
 
 What happens to their models:
 
@@ -216,14 +245,17 @@ the few look-alike readings (8/B, 5/S, 1/I, 2/Z) can be tried and the one whose 
 matches kept. A video with no readable seed cannot use the simulator and stays on their
 stage 2; it also cannot become a `.bal` file, whose header is the seed.
 
-**When the simulator and the video part ways** (a Steamodded difference, a drag not yet
-read, a classifier failure nothing repairs): the next screens stop fitting any legal action.
-The walk should stop there and keep what came before, which is exact. This replaces their
-quarantine rules: a step is either reproduced by the simulator or not written.
+**When the simulator and the video part ways** (an old Steamodded build's difference, a
+drag not yet read, a classifier failure nothing repairs): the next screen is not the
+simulator's game after any legal action. The walk stops there (steps 3 and 5) and keeps what
+came before. This replaces their quarantine rules: a step is either reproduced by the
+simulator or not written. What it cannot rule out is a wrong read that the next screen fits
+as well as the right one; those lines are the ones marked `unconfirmed`.
 
 ### Estimates
 
-Accuracy. In the clip, 100% of 446 HUD checks and the final deck. On 2,859 actions of 8
+Accuracy. In the clip, 100% of 532 HUD checks (446 before the round score was read too)
+and the final deck. On 2,859 actions of 8
 human Gold Stake games (`antezero_bridge/measure.py`):
 
 | what is read after the action | actions it pins to one legal action |
@@ -235,10 +267,12 @@ human Gold Stake games (`antezero_bridge/measure.py`):
 So the screen cannot replace reading which cards are raised, but it checks the read: with
 3.2% of actions misread by one card or one slot, the check repaired 75 of 91 and changed no
 correct read, leaving 0.56% wrong. Most of those are a kicker in a round's last play, which
-leaves the same game. I expect the walk to be exact or to stop; how often it reaches the end
-of a full run is the number to measure.
+leaves the same game. (`measure.py` still breaks ties by the action nearest the read; the
+walk now stops instead, so its share of wrong lines is lower and its share of stops is not
+measured.) How often the walk reaches the end of a full run is the number to measure.
 
-Speed. Stage 2 is no longer a cost: the prototype took 58 s for the clip on CPU (frame
+Speed. Stage 2 is no longer a cost: the prototype took 58 s for the clip on CPU (68 s with
+the checks above, next to a training job; frame
 decode 21.6, item detector 18.7, hand detector 9.1, simulator 6.7, OCR 1.8), unbatched and
 with model loading. Total time stays stage 1. The simulator opens three savings there:
 fewer frames (see the experiment below), no second decode pass if stage 1 hands the frames
@@ -289,19 +323,23 @@ $PY main.py --input-video assets/local/wInI1W_EaEw_0-600.mp4 --full-video \
     --skip-post-processing --no-use-hwaccel --max-workers 3 \
     --actions-out output/vod_actions/clip.json --deck magic --stake gold --seed LNDW2KK8
 PYTHONPATH=. $PY antezero_bridge/video.py assets/local/wInI1W_EaEw_0-600.mp4 \
-    output/vod_actions/clip.json --seed LNDW2KK8 --deck b_magic --stake 8 --out output/clip.bal
+    output/vod_actions/clip.json --seed LNDW2KK8 --deck b_magic --stake 8 --rules steamodded \
+    --out output/clip.bal
 ```
 
 ## 5. Open: GPU, and the owner's decisions
 
 Decisions:
 
-1. **Steamodded in the simulator.** Without it, a run with Marble Joker or Certificate, and
-   on some Steamodded versions one that uses Sigil, Grim, Familiar or Incantation, leaves
-   the video at that point. The differences found are small and deterministic, and the
-   oracle can be pointed at lovely's dump of the patched game to find the rest. They change
-   between versions (the spectral picks differ between the log's build and the one installed
-   here), so the version Doc ran on each video's date matters, and I do not know it.
+1. **Old Steamodded builds in the simulator.** All three differences of the log (Marble
+   Joker, Certificate, the picks of Sigil, Grim, Familiar and Incantation) are an old
+   build's: the Steamodded installed here plays these cards as vanilla does (the two jokers
+   checked in the real game, the spectral cards read in its code), and upstream's current
+   code agrees for the two jokers. A video recorded on such a build stops where one of these
+   cards acts. Marble Joker's changed on 2026-05-20; when the other two changed, and which
+   build Doc ran on each video's date, I do not know. Modelling them would need a second set of rules for
+   old builds, chosen per video; whether that is worth it depends on how many videos stop
+   there (point 4).
 2. **Unseeded videos**: keep their stage 2 for them, or leave them out.
 3. **License**: upstream has none; nothing here can be published as is.
 
