@@ -225,6 +225,14 @@ pub struct BalConfig {
 	/// no rank and no suit in the rule for declared hands. The deck rows of
 	/// the observation then hold the draw pile together with the face-down
 	/// hand cards and the cards discarded face down.
+	///
+	/// A face-down joker still takes effect, and what the game shows of that
+	/// stays: the numbers of the run are the game's (the hand size, the
+	/// hands and discards, the odds, the debt limit, the interest, the
+	/// reroll cost), and the declared hands follow Four Fingers, Shortcut
+	/// and Smeared Joker like the game's name for the selected cards. The
+	/// mask tells what the game's buttons tell: whether a face-down joker
+	/// can be sold, and whether a face-down hand card can take Aura.
 	pub hide_face_down: bool,
 	/// Keep the script of the episode, see [`BalEnv::script`].
 	pub record: bool,

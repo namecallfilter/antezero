@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use sim::balatro::{
 	ACT_DISCARD, ACT_PLAY, ACT_PLAY_HAND, ACT_SELECT_BLIND, BalConfig, BalEnv, HS_CTX, N_ACTIONS,
-	N_SEL_VERBS, OBS_SIZE, SEL_F, StartPoint, sel_verb_index,
+	N_SEL_VERBS, OBS_GROUPS, OBS_SIZE, SEL_F, StartPoint, sel_verb_index,
 };
 use sim::data::{Back, HandType, Joker, Rank, Seal, Suit};
 use sim::hand_eval::{self, EvalFlags};
 use sim::inject::Inject;
 use sim::rng::Xorshift;
-use sim::{Action, Game, PlayingCard, Stake, num};
+use sim::{Action, Game, Kind, PlayingCard, Stake, num};
 
 /// An environment whose episode starts in `game`.
 fn env_at(game: Game, cfg: BalConfig) -> BalEnv {
@@ -216,6 +216,54 @@ fn hiding_face_down_cards_shows_the_same_whichever_unseen_card_is_in_the_hand() 
 		shown(&game, true) == shown(&swapped, true),
 		"with face-down cards hidden they show the same"
 	);
+}
+
+#[test]
+fn hiding_face_down_cards_shows_the_same_whichever_joker_lies_face_down() {
+	let before_hand: usize = OBS_GROUPS
+		.iter()
+		.take_while(|(name, ..)| *name != "hand")
+		.map(|(_, rows, columns)| rows * columns)
+		.sum();
+	let (_, rows, columns) = OBS_GROUPS
+		.iter()
+		.find(|(name, ..)| *name == "hand")
+		.expect("the observation has hand rows");
+	let hand_rows = before_hand..before_hand + rows * columns;
+	let shown = |game: &Game, hide_face_down: bool| {
+		let cfg = BalConfig {
+			hide_face_down,
+			..BalConfig::default()
+		};
+		see(&mut env_at(game.clone(), cfg))
+	};
+	for joker in [
+		Joker::Pareidolia,
+		Joker::Idol,
+		Joker::Mail,
+		Joker::Ancient,
+		Joker::Castle,
+	] {
+		let mut game = round_with(&[joker], &[(Rank::Two, Suit::Hearts); 3]);
+		let round = game.round;
+		let hand = &mut game.areas.hand.cards;
+		(hand[0].rank, hand[0].suit) = (round.idol_card.rank, round.idol_card.suit);
+		(hand[1].rank, hand[1].suit) = (round.mail_rank.rank, round.ancient_suit);
+		hand[2].suit = round.castle_suit;
+		game.areas.jokers[0].core.face_down = true;
+		let mut other = game.clone();
+		other.areas.jokers[0].kind = Kind::Joker(Joker::Joker);
+
+		assert!(
+			shown(&game, false).obs[hand_rows.clone()]
+				!= shown(&other, false).obs[hand_rows.clone()],
+			"{joker:?} shows on the hand cards"
+		);
+		assert!(
+			shown(&game, true) == shown(&other, true),
+			"a face-down {joker:?} shows nothing"
+		);
+	}
 }
 
 #[test]
