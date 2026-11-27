@@ -226,13 +226,31 @@ pub struct BalConfig {
 	/// the observation then hold the draw pile together with the face-down
 	/// hand cards and the cards discarded face down.
 	///
-	/// A face-down joker still takes effect, and what the game shows of that
-	/// stays: the numbers of the run are the game's (the hand size, the
-	/// hands and discards, the odds, the debt limit, the interest, the
-	/// reroll cost), and the declared hands follow Four Fingers, Shortcut
-	/// and Smeared Joker like the game's name for the selected cards. The
-	/// mask tells what the game's buttons tell: whether a face-down joker
-	/// can be sold, and whether a face-down hand card can take Aura.
+	/// A face-down joker still takes effect, and these effects stay visible:
+	///
+	/// - The suits of a Smeared Joker and the face cards of a Pareidolia in
+	///   the card rows, unless the joker is debuffed. The game's deck view
+	///   counts them.
+	/// - Four Fingers, Shortcut and Smeared Joker in the rule for declared
+	///   hands and in the hand context, from which the pick masks are
+	///   computed. The game names the hand of the selected cards with them,
+	///   so it only tells them when a selection differs by them; the hand
+	///   context always does.
+	/// - The numbers of the run that a joker changed when it was bought. The
+	///   observation copies them from the game: the hand size, the hands,
+	///   the discards and the joker slots, which the game shows during a
+	///   round, and the odds, the debt limit, the interest, the free rerolls,
+	///   the reroll cost and the price of a held Planet under Astronomer,
+	///   which it does not.
+	/// - What a face-up joker's own row counts of the other jokers (Joker
+	///   Stencil, Swashbuckler), as on its card in the game.
+	/// - In the mask, what the game's buttons tell: whether a face-down
+	///   joker can be sold, whether a face-down hand card can take Aura,
+	///   whether a joker is left without an edition (The Wheel of Fortune,
+	///   Ectoplasm, Hex) and whether a joker slot is free.
+	///
+	/// A face-down hand card still sorts into the hand by its rank or suit,
+	/// as in the game.
 	pub hide_face_down: bool,
 	/// Keep the script of the episode, see [`BalEnv::script`].
 	pub record: bool,
