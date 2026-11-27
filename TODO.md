@@ -34,10 +34,13 @@ Sizes are unknown until tested. Most of these are worth a point or two at best, 
 - [ ] **GAE lambda 0.99 against 0.95.** 0.95 in every run. Games are about 270 steps long and lambda 0.95 looks about 20 steps ahead.
 - [ ] **KL target 0.0025 against 0.0012.** 0.0012 in every Gold run, and it has pushed the learning rate down to 2e-5. Run after the KL logging.
 
+- [ ] **Rollout shape at the same 65,536 steps: 512 envs x 128 steps (now) against 256 x 256 and 1,024 x 64.** Each step is already played by the policy of its own update, so carrying a game over an update isn't off-policy; the cost is the cut at the end of each segment, where advantages lean on the value estimate. With lambda 0.95 and gamma 1 that is roughly the last 20 steps, about 15% of samples at 128 steps and 8% at 256. Whole games per rollout (collect until N games end) is the extreme: no cut, but envs wait on the longest game (`max_steps` 3,000 against about 270 on average) and every batch starts in sync at ante 1. Keep minibatch 4,096; fewer envs also means less rollout parallelism, so log steps/s too.
+
 ## 5. Small code changes
 
 - [ ] **Pick the start-pool deck first, then a point in it.** 581 of the 1,341 pool points are Blue, and Blue is already the best deck. About 10 lines in `curriculum.py`.
 - [ ] **Deck weights for fresh games.** Black wins 7%, Plasma 14%, Blue 45%. On ours a larger Plasma share gave +5.4 on Plasma with other decks level.
+- [ ] **Train the value head more than the policy.** `epochs` is 1, so the value head sees each sample once. Phasic Policy Gradient (Cobbe et al. 2020, https://arxiv.org/abs/2009.04416) found the value function tolerates much more sample reuse than the policy: it adds a phase of extra value epochs, with a KL term holding the policy still. Cheapest version: after the PPO step, one or two more epochs on the value loss alone. Compare value loss on held-out games, then wins. Run after the gradient-size logging.
 - [ ] **Constant win reward.** The bonus is log10 of the final hand's chips, so a bigger-scoring win pays more than a safe one.
 - [ ] **Minibatch 8,192 or 16,384 late in training.** Never above 4,096 in any run. Kyle's 2,048-environment runs were all before Gold.
 - [ ] **Less blind reward once wins pass 30%.** Blinds pay about four times what the win does over a full game. Needs `reward_blind` exposed in the config.
