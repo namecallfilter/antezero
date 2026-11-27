@@ -9,6 +9,9 @@ that is.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 import json
 from typing import Any
 
@@ -85,3 +88,106 @@ def repair(game: antezero_sim.Game, read: str, screen: dict[str, Any]) -> str | 
     that give `screen`; None if no action of that button does (the click or the HUD was misread)."""
     fits = consistent(game, candidates(game, verb(read)), screen)
     return min(fits, key=lambda code: distance(read, code), default=None)
+
+
+# The HUD's numbers that the video walk reads on every screen, by their names in the simulator's state.
+HUD_NUMBERS = ("dollars", "chips", "hands_left", "discards_left", "ante", "round")
+# How many of them a screen must show for it to be checked against the simulator at all: the OCR
+# leaves a number unread when it is not sure of it (on some screens the ante and the round score).
+MIN_AGREEMENT = 4
+# The cards the detectors read when the HUD leaves a choice.
+CARDS = ("jokers", "consumables", "hand")
+# From here the game prints a number as four digits and an exponent (`number_format`).
+E_SWITCH_POINT = 1e11
+
+
+class Unresolved(Exception):
+    """The screen does not say what a click did: nothing is recorded for it, and the walk stops."""
+
+
+@dataclass(frozen=True)
+class Settled:
+    # The action to record; None for a click that did nothing.
+    code: str | None
+    # "forced", "read", "repaired" or "rejected", as `video.Walk.outcomes` counts them.
+    outcome: str
+    # The other actions with another result that the screen fits as well. Only a read that is
+    # itself one of the fits is recorded with any: it then rests on the classifiers alone.
+    rivals: int = 0
+
+
+def predicted(game: antezero_sim.Game) -> dict[str, Any]:
+    """What the HUD OCR and the detectors should read in `game`, and its state."""
+    state = json.loads(game.state_json())
+    return {**{name: state[name] for name in HUD_NUMBERS},
+            "jokers": sorted(c["key"] for c in state["jokers"]),
+            "consumables": sorted(c["key"] for c in state["consumables"]),
+            "hand": sorted(c["card"] for c in state["hand"] if c["facing"] == "front"), "state": state}
+
+
+def _shown(expected: Any, read: Any) -> bool:
+    numbers = isinstance(expected, (int, float)) and isinstance(read, (int, float))
+    if numbers and abs(expected) >= E_SWITCH_POINT:
+        return abs(expected - read) <= 1e-3 * abs(expected)
+    return expected == read
+
+
+def agreement(expected: dict[str, Any], screen: dict[str, Any]) -> float:
+    """How many of the things read off the screen are as expected (a hand counts by the share of its cards)."""
+    score = 0.0
+    for key, value in screen.items():
+        if key == "hand":
+            both = Counter(value) & Counter(expected["hand"])
+            score += sum(both.values()) / max(len(value), len(expected["hand"]), 1)
+        else:
+            score += _shown(expected[key], value)
+    return score
+
+
+def shows(game: antezero_sim.Game, hud: dict[str, Any]) -> bool:
+    """Whether a screen with the HUD numbers `hud` is `game`: `MIN_AGREEMENT` numbers were read, and each is the game's."""
+    return len(hud) >= MIN_AGREEMENT and agreement(predicted(game), hud) == len(hud)
+
+
+def _fits(scores: dict[str | None, float]) -> list[str | None]:
+    return [option for option, score in scores.items() if score == max(scores.values())]
+
+
+def settle(game: antezero_sim.Game, legal: list[str], guess: str, hud: dict[str, Any],
+           cards: Callable[[dict[str, Any]], dict[str, Any]]) -> Settled:
+    """What the click of a button did, by the screen before the next click.
+
+    `legal` are the button's legal actions, `guess` the classifiers' read of the click, and `hud`
+    the HUD numbers read on that screen, by their names in `HUD_NUMBERS`. `cards` reads the
+    screen's jokers, consumables and hand, given the state the simulator expects there; it is
+    called only if the HUD leaves a choice that those cards would settle.
+
+    The result is the read if it is one of the actions that fit the screen best, and otherwise the
+    one result that does (another action, or nothing at all). Raises `Unresolved` if the fits
+    differ in a HUD number that was not read, or if the read is not a fit and the fits differ in
+    their results. The caller holds the result to the screen (`shows`).
+    """
+    after = {None: predicted(game)}
+    for code in legal:
+        ahead = game.clone()
+        ahead.step(code)
+        after[code] = predicted(ahead)
+    scores = {option: agreement(view, hud) for option, view in after.items()}
+    best = _fits(scores)
+    if len({json.dumps([after[option][area] for area in CARDS]) for option in best}) > 1:
+        seen = cards(after[guess if guess in best else best[-1]]["state"])
+        scores = {option: scores[option] + agreement(after[option], seen) for option in best}
+        best = _fits(scores)
+    for name in HUD_NUMBERS:
+        if name not in hud and len({after[option][name] for option in best}) > 1:
+            raise Unresolved(f"the HUD's {name} was not read, and the results that fit the screen differ in it")
+
+    results = {option: json.dumps(after[option]["state"], sort_keys=True) for option in best}
+    if guess in best:
+        others = {result for option, result in results.items() if option is not None} - {results[guess]}
+        return Settled(guess, "forced" if len(legal) == 1 else "read", len(others))
+    if len(set(results.values())) > 1:
+        raise Unresolved(f"the read {guess} does not fit the screen, and {len(best)} results that differ fit it equally")
+    if None in best:
+        return Settled(None, "rejected")
+    return Settled(min(best, key=lambda other: distance(guess, other)), "repaired")

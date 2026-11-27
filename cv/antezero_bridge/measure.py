@@ -12,7 +12,6 @@ from pathlib import Path
 import random
 import time
 
-import antezero_sim
 
 from antezero_bridge import bal, reconcile
 
@@ -21,8 +20,7 @@ def actions(path: Path):
     """Each action of a recording with the game it is taken in."""
     rows = [row.split("#")[0].strip() for row in path.read_text().splitlines()]
     rows = [row for row in rows if row]
-    _, seed, _, back, _, stake = rows[0].split()
-    game = antezero_sim.Game(seed, back, int(stake))
+    game = bal.start(rows[0])
     for row in rows[1:]:
         if row == "endless":
             game.endless = True

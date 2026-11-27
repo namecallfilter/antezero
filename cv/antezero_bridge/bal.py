@@ -9,6 +9,8 @@ _VERBS = {"sell_consumable": "sell_cons"}
 _SORTS = {"sort 0": "sort_rank", "sort 1": "sort_suit"}
 # Codes whose last operand is a mask of hand positions, which a recording lists one by one.
 _MASKED = {"play", "discard", "use", "buy_use", "pick"}
+# What a header ends in if its run played by Steamodded's rules; vanilla's otherwise.
+_STEAMODDED = ["rules", "steamodded"]
 
 
 def line(code: str) -> str:
@@ -22,8 +24,24 @@ def line(code: str) -> str:
     return " ".join([_VERBS.get(verb, verb), *operands])
 
 
-def script(seed: str, back: str, stake: int, codes: list[str]) -> str:
-    return "\n".join([f"seed {seed} deck {back} stake {stake}", *map(line, codes)]) + "\n"
+def script(seed: str, back: str, stake: int, codes: list[str], *, steamodded: bool,
+           comments: dict[int, str] | None = None) -> str:
+    """The recording of `codes` played in a new run, which followed Steamodded's rules or vanilla's.
+
+    `comments` are written after the lines of the codes at their places.
+    """
+    rows = [" ".join(["seed", seed, "deck", back, "stake", str(stake), *(_STEAMODDED if steamodded else [])])]
+    for at, code in enumerate(codes):
+        rows.append(line(code) + (f"  # {comments[at]}" if comments and at in comments else ""))
+    return "\n".join(rows) + "\n"
+
+
+def start(text: str) -> antezero_sim.Game:
+    """The new run of a recording's header, playing by the rules it names (`check` holds a header to the format)."""
+    _, seed, _, back, _, stake, *rules = text.splitlines()[0].split()
+    game = antezero_sim.Game(seed, back, int(stake))
+    game.steamodded = rules == _STEAMODDED
+    return game
 
 
 def check(text: str) -> None:
@@ -39,10 +57,11 @@ def check(text: str) -> None:
 
 def code(row: str) -> str:
     """The action code of a recording line (the inverse of `line`)."""
+    words = row.split("#")[0].split()
     for action, name in _SORTS.items():
-        if row.split() == [name]:
+        if words == [name]:
             return action
-    name, *operands = row.split()
+    name, *operands = words
     action = next((a for a, n in _VERBS.items() if n == name), name)
     if action in _MASKED:
         slots = 0 if action in ("play", "discard") else 1
