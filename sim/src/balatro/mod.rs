@@ -23,7 +23,7 @@ pub use self::obs::{OBS_GROUPS, OBS_SIZE, SEL_F};
 use self::script::{Header, Step, skip_refused};
 pub use self::script::{ScriptError, StartPoint, load_starts};
 use crate::actions::Action;
-use crate::card::{AnyCard, Card, CardLike, CardMask, Kind};
+use crate::card::{AnyCard, Card, CardLike, CardMask, Kind, PlayingCard};
 use crate::data::{Back, Edition, Seal, Spectral, Tarot};
 use crate::game::{Area, BlindSlot, Game, Phase, State};
 use crate::{SEED_CHARS, Stake, consumables, num};
@@ -475,6 +475,7 @@ impl BalEnv {
 		}
 		let mut unused = BalStepInfo::default();
 		self.auto_advance(&mut unused);
+		self.show_forced_cards();
 		self.refresh_core();
 	}
 
@@ -1025,6 +1026,25 @@ impl BalEnv {
 		);
 	}
 
+	/// Moves the forced cards past the first [`MAX_HAND`] hand cards to the
+	/// front of the hand. Every selection must hold the forced cards, and
+	/// the observation and the pick rules only cover those first cards.
+	fn show_forced_cards(&mut self) {
+		if self.g.flow.phase != Phase::Round {
+			return;
+		}
+		let unseen = |hand: &[PlayingCard]| {
+			let mut past = hand.iter().skip(MAX_HAND);
+			Some(MAX_HAND + past.position(|card| card.forced_selection)?)
+		};
+		while let Some(from) = unseen(&self.g.areas.hand.cards) {
+			self.reorder(Action::MoveHand {
+				from: num::byte(from),
+				to: 0,
+			});
+		}
+	}
+
 	fn hs_order_play(&mut self, order: &[usize]) -> CardMask {
 		let ids: Vec<u32> = order
 			.iter()
@@ -1126,6 +1146,7 @@ impl BalEnv {
 			}
 			Some((a, sel_order)) => self.step_valid_action(a, sel_order, &mut info),
 		}
+		self.show_forced_cards();
 		self.finalize_step_info(earned0, softlocks0, &mut info);
 		info
 	}

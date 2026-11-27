@@ -6,8 +6,8 @@ use std::mem;
 use std::sync::Arc;
 
 use sim::balatro::{
-	ACT_DISCARD, ACT_PLAY_HAND, BalConfig, BalEnv, HS_CTX, N_ACTIONS, N_SEL_VERBS, OBS_SIZE, SEL_F,
-	StartPoint, sel_verb_index,
+	ACT_DISCARD, ACT_PLAY, ACT_PLAY_HAND, BalConfig, BalEnv, HS_CTX, N_ACTIONS, N_SEL_VERBS,
+	OBS_SIZE, SEL_F, StartPoint, sel_verb_index,
 };
 use sim::data::{Back, HandType, Joker, Rank, Seal, Suit};
 use sim::hand_eval::{self, EvalFlags};
@@ -216,6 +216,37 @@ fn hiding_face_down_cards_shows_the_same_whichever_unseen_card_is_in_the_hand() 
 		shown(&game, true) == shown(&swapped, true),
 		"with face-down cards hidden they show the same"
 	);
+}
+
+#[test]
+fn a_forced_card_past_the_observed_hand_is_part_of_every_selection() {
+	let mut game = Game::new_run("FORCED", Back::Red, Stake::White);
+	game.step(Action::SelectBlind)
+		.expect("the first blind can be played");
+	let areas = &mut game.areas;
+	areas.hand.cards.extend(areas.deck.drain(..20));
+	let held = areas.hand.cards.len();
+	areas.hand.cards[held - 1].forced_selection = true;
+
+	for action in [ACT_PLAY, ACT_DISCARD] {
+		let mut env = env_at(game.clone(), BalConfig::default());
+		let seen = see(&mut env);
+		assert!(
+			seen.hctx.iter().any(|card| card >> 9 & 1 == 1),
+			"the forced card is one of the cards shown"
+		);
+		let verb = sel_verb_index(action).expect("a selection verb");
+		let pick = seen.specs[verb * 3 + 2].trailing_zeros().cast_signed();
+		let info = env.step_select(num::id(action), &[pick]);
+		assert_eq!(info.illegal, 0, "action {action} takes the forced card");
+		let hand = &env.game().areas.hand.cards;
+		assert_eq!(
+			hand.len(),
+			held - 2,
+			"the pick and the forced card are gone"
+		);
+		assert!(hand.iter().all(|card| !card.forced_selection));
+	}
 }
 
 #[test]
