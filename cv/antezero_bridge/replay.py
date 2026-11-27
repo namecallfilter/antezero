@@ -95,7 +95,7 @@ def replay(entries: list[dict[str, Any]], resync_on_divergence: bool = False) ->
     return out
 
 
-# Spectral cards whose random suit or rank Steamodded draws from its own tables.
+# Spectral cards whose random suit or rank the logged game drew from Steamodded's tables, in another order.
 _SMODS_PICKS = {"c_sigil", "c_ouija", "c_grim", "c_familiar", "c_incantation"}
 
 

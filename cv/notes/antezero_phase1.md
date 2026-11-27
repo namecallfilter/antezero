@@ -18,8 +18,8 @@ close first: the game in the videos runs under Steamodded, and the simulator pla
 - On their one ground-truth log (299 entries, a stress run with 89 jokers) the simulator
   reproduces 273 of 299 logged states exactly, RNG streams included, when each transition is
   tested on its own; 7 more differ only because the log's snapshot was taken mid-action. The
-  other 19 are Steamodded differences (below). Given only the actions, it diverges at the
-  first blind (entry 3) for the same reason.
+  other 19 are two ways that game's Steamodded build departs from vanilla (below). Given
+  only the actions, it diverges at the first blind (entry 3) for the same reason.
 - Their engine passes its own parity test on that log (0 discrepancies), but that test copies
   the hand, shop, pack, consumables, jokers, blind and score from the log before every step
   and checks a few counters. Their engine cannot deal a hand or fill a shop from a seed.
@@ -131,17 +131,25 @@ The 7 timing entries: the setup snapshot itself, a $1 payout still easing, and f
 that are the game's own doing logged as actions (four packs opened by skip tags, one Boss
 Tag reroll).
 
-The 19 misses have two causes, both confirmed in the Steamodded source installed on this PC
-(`%APPDATA%\Balatro\Mods\smods`, and lovely's dump of the patched game):
+The 19 misses have two causes. Both are ways the logged game, which ran under Steamodded,
+departs from vanilla; the log does not say which Steamodded version it was.
 
 1. **Blind start with Marble Joker and Certificate (13 entries, every blind of the run).**
    The game shuffled before Marble Joker's Stone card joined the deck; vanilla, and the
    simulator, shuffle after. Checked directly: with Marble Joker removed the simulator deals
-   the logged hand and draw pile exactly. Certificate's seal comes from `SMODS.poll_seal`,
-   which also advances the `stdseal<ante>` stream that vanilla keeps for Standard Packs.
+   the logged hand and draw pile exactly. Certificate advanced the `stdseal<ante>` stream,
+   which vanilla keeps for Standard Packs. The Steamodded copy installed on this PC
+   (`%APPDATA%\Balatro\Mods\smods` and lovely's dump of the patched game) shows why:
+   Certificate's seal comes from `SMODS.poll_seal`, which rolls that stream first, and
+   Marble Joker's code is rewritten.
 2. **Sigil, Grim, Familiar, Incantation (6 entries).** Same RNG stream values, different
-   suit or rank: Steamodded picks from its own suit and rank tables, in another order.
+   suit or rank. The picks fit a suit list in the order Spades, Hearts, Clubs, Diamonds
+   (Steamodded's suit table) where vanilla has Spades, Hearts, Diamonds, Clubs. This one
+   depends on the version: the copy installed here uses the vanilla lists for these cards.
    Ouija, used once, matched.
+
+I took the simulator to be right about vanilla in both cases (its oracle tests are for
+that); I did not rerun the oracle on these cards.
 
 Two more differences are harmless and ignored by the comparison: Steamodded keeps extra
 `soul_smods_*` streams, and the art of the first shop's Buffoon Pack comes from
@@ -288,11 +296,12 @@ PYTHONPATH=. $PY antezero_bridge/video.py assets/local/wInI1W_EaEw_0-600.mp4 \
 
 Decisions:
 
-1. **Steamodded in the simulator.** Without it, runs with Marble Joker, Certificate, Sigil,
-   Grim, Familiar or Incantation leave the video at that point. The differences found are
-   small and deterministic, and the oracle can be pointed at lovely's dump of the patched
-   game to find the rest. Steamodded changes between versions, so the version Doc ran on
-   each video's date matters. I did not check any version but the one installed here.
+1. **Steamodded in the simulator.** Without it, a run with Marble Joker or Certificate, and
+   on some Steamodded versions one that uses Sigil, Grim, Familiar or Incantation, leaves
+   the video at that point. The differences found are small and deterministic, and the
+   oracle can be pointed at lovely's dump of the patched game to find the rest. They change
+   between versions (the spectral picks differ between the log's build and the one installed
+   here), so the version Doc ran on each video's date matters, and I do not know it.
 2. **Unseeded videos**: keep their stage 2 for them, or leave them out.
 3. **License**: upstream has none; nothing here can be published as is.
 
