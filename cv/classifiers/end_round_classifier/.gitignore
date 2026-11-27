@@ -1,0 +1,6 @@
+# End-Round Temporal Classifier artifacts
+dataset/
+runs/
+weights/
+figures/
+__pycache__/

@@ -1,0 +1,90 @@
+-- Generated automatically by update_bumod_variants.py
+-- Contains historical BUMod Joker texture variants.
+local BU_VARIANTS = {
+    ["j_cloud_9"] = {
+        { filename = "j_cloud_9_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_duo"] = {
+        { filename = "j_duo_v1_d257e6a.png", commit = "d257e6a", version = 1 },
+        { filename = "j_duo_v2_94cf85c.png", commit = "94cf85c", version = 2 },
+    },
+    ["j_family"] = {
+        { filename = "j_family_v1_d257e6a.png", commit = "d257e6a", version = 1 },
+        { filename = "j_family_v2_94cf85c.png", commit = "94cf85c", version = 2 },
+    },
+    ["j_fibonacci"] = {
+        { filename = "j_fibonacci_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_hit_the_road"] = {
+        { filename = "j_hit_the_road_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_idol"] = {
+        { filename = "j_idol_v1_d257e6a.png", commit = "d257e6a", version = 1 },
+        { filename = "j_idol_v2_94cf85c.png", commit = "94cf85c", version = 2 },
+    },
+    ["j_joker"] = {
+        { filename = "j_joker_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_lucky_cat"] = {
+        { filename = "j_lucky_cat_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_lusty_joker"] = {
+        { filename = "j_lusty_joker_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_photograph"] = {
+        { filename = "j_photograph_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_ring_master"] = {
+        { filename = "j_ring_master_v1_99aa0c3.png", commit = "99aa0c3", version = 1 },
+        { filename = "j_ring_master_v2_d257e6a.png", commit = "d257e6a", version = 2 },
+        { filename = "j_ring_master_v3_94cf85c.png", commit = "94cf85c", version = 3 },
+        { filename = "j_ring_master_v4_0ea1b19.png", commit = "0ea1b19", version = 4 },
+    },
+    ["j_rocket"] = {
+        { filename = "j_rocket_v1_f16f235.png", commit = "f16f235", version = 1 },
+        { filename = "j_rocket_v2_a7b2957.png", commit = "a7b2957", version = 2 },
+        { filename = "j_rocket_v3_94cf85c.png", commit = "94cf85c", version = 3 },
+    },
+    ["j_runner"] = {
+        { filename = "j_runner_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_scholar"] = {
+        { filename = "j_scholar_v1_99aa0c3.png", commit = "99aa0c3", version = 1 },
+        { filename = "j_scholar_v2_d257e6a.png", commit = "d257e6a", version = 2 },
+        { filename = "j_scholar_v3_94cf85c.png", commit = "94cf85c", version = 3 },
+    },
+    ["j_smiley"] = {
+        { filename = "j_smiley_v1_94cf85c.png", commit = "94cf85c", version = 1 },
+    },
+    ["j_space"] = {
+        { filename = "j_space_v1_99aa0c3.png", commit = "99aa0c3", version = 1 },
+        { filename = "j_space_v2_d257e6a.png", commit = "d257e6a", version = 2 },
+        { filename = "j_space_v3_f46d884.png", commit = "f46d884", version = 3 },
+        { filename = "j_space_v4_94cf85c.png", commit = "94cf85c", version = 4 },
+    },
+    ["j_trading"] = {
+        { filename = "j_trading_v1_26eb797.png", commit = "26eb797", version = 1 },
+        { filename = "j_trading_v2_94cf85c.png", commit = "94cf85c", version = 2 },
+    },
+    ["j_troubadour"] = {
+        { filename = "j_troubadour_v1_f16f235.png", commit = "f16f235", version = 1 },
+        { filename = "j_troubadour_v2_a7b2957.png", commit = "a7b2957", version = 2 },
+        { filename = "j_troubadour_v3_94cf85c.png", commit = "94cf85c", version = 3 },
+    },
+    ["j_turtle_bean"] = {
+        { filename = "j_turtle_bean_v1_bdc636d.png", commit = "bdc636d", version = 1 },
+        { filename = "j_turtle_bean_v2_94cf85c.png", commit = "94cf85c", version = 2 },
+    },
+    ["j_vampire"] = {
+        { filename = "j_vampire_v1_f16f235.png", commit = "f16f235", version = 1 },
+        { filename = "j_vampire_v2_a7b2957.png", commit = "a7b2957", version = 2 },
+        { filename = "j_vampire_v3_94cf85c.png", commit = "94cf85c", version = 3 },
+    },
+    ["jokers_trans"] = {
+        { filename = "jokers_trans_v1_f16f235.png", commit = "f16f235", version = 1 },
+        { filename = "jokers_trans_v2_a7b2957.png", commit = "a7b2957", version = 2 },
+        { filename = "jokers_trans_v3_94cf85c.png", commit = "94cf85c", version = 3 },
+    },
+}
+
+return BU_VARIANTS

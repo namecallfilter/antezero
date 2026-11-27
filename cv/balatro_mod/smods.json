@@ -1,0 +1,11 @@
+{
+  "id": "gamestate_dataset_cv",
+  "name": "Game State Dataset CV",
+  "author": [
+    "Dukky"
+  ],
+  "description": "Generates synchronized screenshot and card attribute training data for Balatro CV",
+  "prefix": "gdcv",
+  "main_file": "main.lua",
+  "version": "1.0.0"
+}
