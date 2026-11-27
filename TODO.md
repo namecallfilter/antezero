@@ -106,7 +106,8 @@ Judge each arm by greedy win rate on 8,000+ fixed-seed games across all decks, a
 - [ ] **Soft shrink-and-perturb, or L2 toward the initial weights.** In PPO only these "regenerative" fixes consistently stopped plasticity loss; ReDo, last-layer resets and plasticity injection were weak or worse than nothing, and shrink-and-perturb with LayerNorm was best (Juliani and Ash 2024, https://arxiv.org/abs/2405.19153; Ash and Adams 2019, https://arxiv.org/abs/1910.08475). Their runs are grid worlds and ProcGen, not billion-step. Shrink factor and noise size are the knobs.
   - L2 toward the initial weights can't be run: no checkpoint holds the run's first weights. Shrink-and-perturb is queued.
 - [ ] **Muon weight decay that doesn't shrink with the learning rate.** Decoupled decay is lr x wd, so the controller's cuts weaken it too, weight norms grow, and with normalised layers that lowers the effective learning rate further (Lyle et al. 2024, https://arxiv.org/abs/2407.01800). LayerNorm and weight decay together keep a network trainable where either alone can fail (Lyle et al. 2024, https://arxiv.org/abs/2402.18762). Log weight norms first.
-  - **Checked:** weight norms are not growing in `az_run95`. The Muon weights' RMS fell from 0.0355 at update 1,200 to 0.0328 at update 12,800 (W&B `weights/rms_muon`). Adam's group is flat at 0.7206. The test is still queued.
+  - **Checked:** weight norms are not growing in `az_run95`. The Muon weights' RMS fell from 0.0355 at update 1,200 to 0.0328 at update 12,800 (W&B `weights/rms_muon`). Adam's group is flat at 0.7206.
+  - **Result (decay at a fixed 5e-5, 2.5 times today's, learning rate fixed at 2e-5):** no gain. Greedy 31.2% against 32.2% for the controls (-1.0) and 32.0% for the fixed-rate control, sampled 26.3% (-0.6). The Muon weights' RMS fell from 0.0330 to 0.0325 over the 500 updates, about four times as fast as before. Inside the noise, and leaning the wrong way.
 
 ## 6. Small code changes
 
