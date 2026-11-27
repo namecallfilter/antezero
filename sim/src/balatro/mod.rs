@@ -23,7 +23,7 @@ pub use self::obs::{OBS_GROUPS, OBS_SIZE, SEL_F};
 use self::script::{Header, Step, skip_refused};
 pub use self::script::{ScriptError, StartPoint, load_starts};
 use crate::actions::Action;
-use crate::card::{AnyCard, Card, CardLike, CardMask, Kind};
+use crate::card::{AnyCard, Card, CardLike, CardMask, Kind, PlayingCard};
 use crate::data::{Back, Edition, Seal, Spectral, Tarot};
 use crate::game::{Area, BlindSlot, Game, Phase, State};
 use crate::{SEED_CHARS, Stake, consumables, num};
@@ -225,6 +225,32 @@ pub struct BalConfig {
 	/// no rank and no suit in the rule for declared hands. The deck rows of
 	/// the observation then hold the draw pile together with the face-down
 	/// hand cards and the cards discarded face down.
+	///
+	/// A face-down joker still takes effect, and these effects stay visible:
+	///
+	/// - The suits of a Smeared Joker and the face cards of a Pareidolia in
+	///   the card rows, unless the joker is debuffed. The game's deck view
+	///   counts them.
+	/// - Four Fingers, Shortcut and Smeared Joker in the rule for declared
+	///   hands and in the hand context, from which the pick masks are
+	///   computed. The game names the hand of the selected cards with them,
+	///   so it only tells them when a selection differs by them; the hand
+	///   context always does.
+	/// - The numbers of the run that a joker changed when it was bought. The
+	///   observation copies them from the game: the hand size, the hands,
+	///   the discards and the joker slots, which the game shows during a
+	///   round, and the odds, the debt limit, the interest, the free rerolls,
+	///   the reroll cost and the price of a held Planet under Astronomer,
+	///   which it does not.
+	/// - What a face-up joker's own row counts of the other jokers (Joker
+	///   Stencil, Swashbuckler), as on its card in the game.
+	/// - In the mask, what the game's buttons tell: whether a face-down
+	///   joker can be sold, whether a face-down hand card can take Aura,
+	///   whether a joker is left without an edition (The Wheel of Fortune,
+	///   Ectoplasm, Hex) and whether a joker slot is free.
+	///
+	/// A face-down hand card still sorts into the hand by its rank or suit,
+	/// as in the game.
 	pub hide_face_down: bool,
 	/// Keep the script of the episode, see [`BalEnv::script`].
 	pub record: bool,
@@ -475,6 +501,7 @@ impl BalEnv {
 		}
 		let mut unused = BalStepInfo::default();
 		self.auto_advance(&mut unused);
+		self.show_forced_cards();
 		self.refresh_core();
 	}
 
@@ -797,7 +824,6 @@ impl BalEnv {
 		&mut self, obs_out: &mut [f32], sel_out: &mut [f32], mask_out: &mut [u8],
 		specs_out: &mut [i32], hctx_out: &mut [i32],
 	) {
-		self.refresh_core();
 		write_obs(&mut self.g, self.cfg.hide_face_down, obs_out);
 		write_obs_selection(&self.g, sel_out);
 		self.mask(mask_out);
@@ -861,6 +887,7 @@ impl BalEnv {
 		let ok = step.apply(&mut self.g);
 		if ok {
 			self.record(step);
+			self.refresh_core();
 		}
 		if ok && act == Action::SkipBlind {
 			self.skips_pending += 1;
@@ -953,7 +980,6 @@ impl BalEnv {
 	/// not allow, change nothing but the step count: the step is `illegal`.
 	/// After a step that ends the episode, call [`reset`](Self::reset).
 	pub fn step_select(&mut self, action: i32, cards: &[i32]) -> BalStepInfo {
-		self.refresh_core();
 		let mut m = [0u8; N_ACTIONS];
 		self.mask(&mut m);
 		let Some(a) = usize::try_from(action)
@@ -1023,6 +1049,25 @@ impl BalEnv {
 			self.exec_action(act),
 			"the game refused {act:?} between two cards it holds"
 		);
+	}
+
+	/// Moves the forced cards past the first [`MAX_HAND`] hand cards to the
+	/// front of the hand. Every selection must hold the forced cards, and
+	/// the observation and the pick rules only cover those first cards.
+	fn show_forced_cards(&mut self) {
+		if self.g.flow.phase != Phase::Round {
+			return;
+		}
+		let unseen = |hand: &[PlayingCard]| {
+			let mut past = hand.iter().skip(MAX_HAND);
+			Some(MAX_HAND + past.position(|card| card.forced_selection)?)
+		};
+		while let Some(from) = unseen(&self.g.areas.hand.cards) {
+			self.reorder(Action::MoveHand {
+				from: num::byte(from),
+				to: 0,
+			});
+		}
 	}
 
 	fn hs_order_play(&mut self, order: &[usize]) -> CardMask {
@@ -1126,6 +1171,7 @@ impl BalEnv {
 			}
 			Some((a, sel_order)) => self.step_valid_action(a, sel_order, &mut info),
 		}
+		self.show_forced_cards();
 		self.finalize_step_info(earned0, softlocks0, &mut info);
 		info
 	}

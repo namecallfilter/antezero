@@ -109,10 +109,19 @@ struct ObsCtx {
 	castle_suit: Suit,
 }
 
+/// What the card rows read of the jokers. With `hide`, a face-down joker
+/// only counts if it is a Smeared Joker or a Pareidolia that is not debuffed:
+/// the game's deck view counts the cards of each suit and the face cards
+/// with them whichever side the joker lies on.
 fn obs_ctx(g: &Game, hide: bool) -> ObsCtx {
 	let (mut pareidolia, mut smeared, mut idol, mut mail, mut ancient, mut castle) =
 		(false, false, false, false, false, false);
-	for c in &g.areas.jokers {
+	let shown = |c: &&Card| {
+		!(hide && c.core.face_down)
+			|| c.is_active_joker(Joker::Smeared)
+			|| c.is_active_joker(Joker::Pareidolia)
+	};
+	for c in g.areas.jokers.iter().filter(shown) {
 		match c.kind {
 			Kind::Joker(Joker::Pareidolia) => pareidolia = true,
 			Kind::Joker(Joker::Smeared) => smeared = true,
