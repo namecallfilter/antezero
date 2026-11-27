@@ -17,6 +17,7 @@ Results are written under each item as it is tested. Test code is on a local bra
 - [x] **Latest checkpoint against a short-window average, same seeds.** On ours averaging gave +3.7 on a plateau and lost 0.7 and 1.5 on climbing runs. Needs checkpoints kept more often than every 500 updates (`keep_ckpt_every`), or a running average of the weights.
   - **Result:** the average wins by 1.4 points greedy. Averaging the control arm's last 5 checkpoints (25 updates apart, updates 12,300 to 12,400) gives 33.8% (2,707 of 8,010) against 32.4% for the latest one alone, ± 0.45 on the same games.
   - Nine checkpoints give the same 33.8%. Sampled play does not change (27.8% and 28.6% against 27.9%).
+  - It repeats on the second control arm with only 3 checkpoints 100 updates apart: 33.0% greedy against 31.9% for its latest (+1.1), sampled 27.9% against 25.9%.
   - So greedy evals and any deployed model should use the average. It needs `keep_ckpt_every` 25, or a running average of the weights.
 
 ## 2. Add logging (no behaviour change)
