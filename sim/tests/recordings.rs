@@ -340,3 +340,58 @@ fn a_header_is_a_seed_a_deck_and_a_stake() {
 	);
 	assert_eq!(run_of("# nothing\n\n"), Err(ScriptError::Empty));
 }
+
+#[test]
+fn a_header_names_steamodded_rules_and_a_recording_keeps_them() {
+	let steamodded =
+		|header: &str| load_starts(header, &[0]).map(|points| points[0].game.setup.steamodded);
+	assert_eq!(steamodded("seed TEST deck b_red stake 1"), Ok(false));
+	assert_eq!(
+		steamodded("seed TEST deck b_red stake 1 rules steamodded"),
+		Ok(true)
+	);
+	for header in [
+		"seed TEST deck b_red stake 1 rules",
+		"seed TEST deck b_red stake 1 rules vanilla",
+		"seed TEST deck b_red stake 1 steamodded",
+		"seed TEST deck b_red stake 1 rules steamodded twice",
+	] {
+		assert_eq!(
+			steamodded(header),
+			Err(ScriptError::Header(header.to_string()))
+		);
+	}
+
+	let header = "seed TEST deck b_red stake 1 rules steamodded
+";
+	let point = load_starts(
+		&format!(
+			"{header}select
+"
+		),
+		&[1],
+	)
+	.expect("a Steamodded recording replays")
+	.pop()
+	.expect("a start point for the step");
+	let mut env = recording_env();
+	env.set_start(Some(Arc::new(point)), false);
+	env.reset("UNUSED");
+	assert!(
+		env.game().setup.steamodded,
+		"the episode plays by the rules"
+	);
+	let live = play(&mut env, &mut Xorshift::new(WALK_SEED), 40);
+	assert!(env.script().starts_with(&format!(
+		"{header}select
+"
+	)));
+	assert!(live.len() > 3, "the game goes on from the start point");
+	assert_replays(env.script(), &live);
+	let steps: Vec<usize> = live.iter().map(|&(step, _)| step).collect();
+	let replayed = load_starts(env.script(), &steps[..1]).expect("the recording replays");
+	assert!(
+		replayed[0].game.setup.steamodded,
+		"the replay plays by them"
+	);
+}
