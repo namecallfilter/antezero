@@ -41,8 +41,27 @@ class TestAnteZeroParity(unittest.TestCase):
                 settled = entries[1] if entries[0]["action"] == "Setup Test Suite" else entries[0]
                 self.assertEqual(telemetry.compare(telemetry.dump(game), settled["state"]), [])
 
+    def test_a_card_turned_over_is_a_difference(self) -> None:
+        """A card that is the same card but lies the other way up does not pass as equal."""
+        import copy
+
+        from antezero_bridge import telemetry
+
+        for name, entries in self.logs.items():
+            with self.subTest(log=name):
+                sim = telemetry.dump(telemetry.start_game(entries))
+                settled = entries[1] if entries[0]["action"] == "Setup Test Suite" else entries[0]
+                for area, at in (("draw_pile", 0), ("jokers", 2)):
+                    lua = copy.deepcopy(settled["state"])
+                    card = lua[area][at]
+                    card["facing_back"] = not card["facing_back"]
+                    diffs = telemetry.compare(sim, lua)
+                    self.assertEqual(len(diffs), 1, diffs)
+                    self.assertRegex(diffs[0], rf"^{area}\[{at}\] \S+ facing: sim (back game front|front game back)$")
+
     def test_transitions_match_but_for_steamodded(self) -> None:
-        """Every logged action is legal, and each state the simulator gets wrong is a known Steamodded difference."""
+        """Every logged action is legal, and each state the simulator gets wrong is a known difference of the
+        log's Steamodded build from vanilla (and from the Steamodded of today, see `replay.steamodded_cause`)."""
         from antezero_bridge import bal, replay
 
         for name, entries in self.logs.items():
@@ -59,7 +78,7 @@ class TestAnteZeroParity(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_open_loop(self) -> None:
-        """Given only the actions, the simulator follows the whole game (fails until it models Steamodded)."""
+        """Given only the actions, the simulator follows the whole game (fails: it does not model the log's old Steamodded build)."""
         from antezero_bridge import replay
 
         for name, entries in self.logs.items():

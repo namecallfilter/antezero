@@ -122,6 +122,8 @@ def _cards(name: str, sim: list[dict], lua: list[dict], out: list[str], extra: t
                        f"game-only {sorted(map(str, (Counter(b) - Counter(a)).elements()))}")
         return
     for i, (s, g) in enumerate(zip(sim, lua)):
+        if (s["facing"] == "back") != g["facing_back"]:
+            out.append(f"{name}[{i}] {g.get('key')} facing: sim {s['facing']} game {'back' if g['facing_back'] else 'front'}")
         for key in extra:
             sv = s["ability"].get(key, s.get(key)) if key not in ("cost", "sell_cost") else s[key]
             if key == "debuffed":

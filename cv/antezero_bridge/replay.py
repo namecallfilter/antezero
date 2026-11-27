@@ -100,7 +100,14 @@ _SMODS_PICKS = {"c_sigil", "c_ouija", "c_grim", "c_familiar", "c_incantation"}
 
 
 def steamodded_cause(entries: list[dict[str, Any]], step: Step) -> str | None:
-    """Which known difference between Steamodded and the vanilla game explains a divergence, if any."""
+    """Which known difference between the logged game's Steamodded build and vanilla explains a divergence, if any.
+
+    These are an old build's: the log's game shuffled the deck before Marble Joker's Stone card
+    joined it and gave Certificate's seal a roll of `stdseal<ante>`, which Steamodded stopped
+    doing ("make marble joker timing work like vanilla", May 2026). The real game under
+    Steamodded 26.1002 starts a blind with both jokers exactly as vanilla does, so the
+    simulator's `steamodded` rules do not have them (`sim/tests/steamodded.rs`).
+    """
     previous = entries[step.step - 2]
     fields = {d.split(":")[0] for d in step.diffs}
     if previous["action_metadata"].get("key") in _SMODS_PICKS and fields <= {"hand", "draw_pile"}:
