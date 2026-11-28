@@ -35,7 +35,7 @@
   - KL target 0.0025 (LR rose to 3.7e-5): **Worse** — 29.7% greedy / 25.1% sampled (-2.5 / -1.8).
   - Fixed `1e-5` (two seeds): **34.1% and 33.7% greedy** (+1.9, +1.5), **28.1% and 28.3% sampled** (+1.2, +1.4). At 1,000 updates: **35.3% vs 33.5% control** (+1.8), sampled 28.8% vs 28.1%.
   - Fixed `5e-6`: **33.4% greedy** (+1.2), 27.6% sampled (+0.7) — levels off around `1e-5`.
-- [ ] **Entropy controller (`az_0099_d256_l6_ent075`)** — **Running** (from scratch at d256×6 on `run95-entctl`, targeting 0.75 entropy from u1,000; needs a matched fixed-0.01 control).
+- [ ] **Entropy controller (`az_0099_d256_l6_ent075`)** — **Stopped at u4,246 of 20,000, no verdict** (from scratch at d256×6 on `run95-entctl`, targeting 0.75 entropy from u1,000): the controller held entropy at 0.74–0.76 by cutting the coefficient 0.01 → 0.004. Training win 13.3% vs 17.1% for d384×8 `az_run95` at the same update, but the gap was already there at u1,000 (2.9% vs 4.0%) and the model is smaller; still needs a matched d256×6 fixed-0.01 control.
 - [x] **Anneal entropy bonus (0.01 → 0.003)** — **No greedy gain (+1.3 sampled):** 31.7% greedy (-0.5) / 28.2% sampled (+1.3); entropy 1.21 → 1.10, vouchers intact. Paired with fixed 5e-5: **Worse** — 25.2% greedy / 22.0% sampled (-7.0 / -5.0).
 - [x] **GAE lambda 0.99 vs 0.95** — **Worse (-0.9 greedy, -2.7 sampled):** clean fixed-2e-5 rerun = 31.3% greedy / 24.3% sampled. Keep 0.95.
 - [x] **Rollout shape (256×256 vs 512×128 vs 1,024×64, fixed 2e-5)** — **Gain at `1,024×64` (+1.2 to +1.7 greedy, repeated, same speed):**
