@@ -13,8 +13,8 @@ simulator does not model it, and a video recorded on such a build stops at that 
 - On a real video it was exact. For `youtube.com/watch?v=wInI1W_EaEw` (Magic Deck, Gold
   Stake, seed `LNDW2KK8` from the description) the simulator, given only the seed, deck and
   stake, predicted the first hand, both redraws, the score, the first shop and the jokers
-  Riff-Raff created. The prototype below then followed the first 10 minutes (88 actions,
-  into ante 3): all 446 HUD numbers read along the way equal the simulator's, and the deck at
+  Riff-Raff created. The prototype below then followed the first 10 minutes (87 actions,
+  into ante 3): all 532 HUD numbers read along the way equal the simulator's, and the deck at
   the end equals the deck view on the video's last frame (47 cards, same count for every suit
   and every rank).
 - On their one ground-truth log (299 entries, a stress run with 89 jokers) the simulator
@@ -197,32 +197,43 @@ the game:
      card classifier), and the item detector's boxes say which slot the button sits at.
 3. **Check against the next screen** (`reconcile.settle`). Before the next click the HUD
    (money, round score, hands, discards, ante, round) is read and compared with the result
-   of every legal action of that button, and of "nothing happened". If the HUD cannot tell
-   the leaders apart, the joker bar, consumables and hand are read too. This is where wrong
-   reads are repaired (3 sell slots in the clip) and clicks that did nothing are rejected (3
-   in the clip). Nothing is recorded on a guess:
-   - the read is recorded if it is one of the best fits. If other actions with another
-     result fit as well, its line gets the comment `# unconfirmed: N other actions fit the
-     next screen`: it rests on the classifiers alone (13 of the clip's 88 lines, the first
-     of them the fifth action, so cutting at the first one would leave nothing);
-   - a read that is not a best fit is replaced only if all the best fits have one result;
-   - the walk stops if they have several, or if they differ in a HUD number the OCR did not
-     read (the round score tells a 324-chip straight from a 308-chip flush that both win the
-     blind; without it nothing does).
+   of every legal action of that button, and of "nothing happened", each with the sales the
+   joker bar shows (step 4). A result fits if no other has more of the HUD's numbers and the
+   next click's button is legal after it: a Next Round click after which the shop's buttons
+   are still clicked did nothing. If the fits differ in the joker bar, the consumables or
+   the hand, those are read too. This is where wrong reads are repaired (3 sell slots in the
+   clip) and clicks that did nothing are rejected (3 in the clip).
+   - The read is recorded if it is one of the fits. If results other than its own fit as
+     well, its line gets the comment `# unconfirmed: N other results fit the next screen`:
+     it rests on the classifiers alone (12 of the clip's 87 lines, the first of them the
+     fifth action, so cutting at the first one would leave nothing). A Skip Blind click is
+     always one of these: no number or card read tells it from a click that did nothing.
+   - A read that does not fit, or a click the classifiers read nothing of, is replaced only
+     if all the fits have one result, and on the cards' word only if they are exactly the
+     cards read: a partly matching hand never replaces a read.
+   - The walk stops if the fits have several results, if they differ in a HUD number the
+     OCR did not read (the round score tells a 324-chip straight from a 308-chip flush that
+     both win the blind; without it nothing does), or if the next click's button is legal
+     after none of them.
 4. **Missed clicks.** A click that is not legal now may be legal after a forced step (Cash
    Out, Next Round, Skip Pack, Select Blind); that step is inserted. A joker missing from the
    bar while the money is up by its sell value is a missed sale (1 in the clip, the one their
-   stage 2 flagged).
+   stage 2 flagged); none is inferred of a joker held twice, since the bar does not say which
+   copy went. A click whose button is legal neither way stops the walk.
 5. **Hold the result to the screen.** After the action (and any missed sale) every HUD
    number the OCR read must be the simulator's, and at least 4 of the 6 must have been read
-   (the OCR leaves the ante and the round score unread on 4 of the clip's 89 screens). If
+   (the OCR leaves the ante and the round score unread on 4 of the clip's 90 screens). If
    not, the walk stops and the click is not recorded. The first screen is held to the new
-   run the same way.
+   run the same way. The last click has no screen after it and is not recorded (the clip's
+   last, a reroll).
 6. **Write** the header and one line per action as a `.bal` file and replay it through
    `antezero_sim.StartPool` as the last check. The header ends in `rules steamodded` for a
-   run played by Steamodded's rules, and a replay follows it; a header without it is a
-   vanilla run, as every older recording is. A walk that stopped ends in a `# stopped at`
-   comment with the reason.
+   run played by Steamodded's rules, and a replay follows it (`Game.from_recording`); a
+   header without it is a vanilla run. Recordings this walk wrote before the header had the
+   rules were Steamodded runs with no mark and have to be relabelled, as the fixture was.
+   The screen cannot tell the two rule sets apart (on the clip both give the same lines), so
+   `--rules` has to be right. A walk that stopped ends in a `# stopped at` comment with the
+   reason. Comments are not part of a recording: a start point's script does not keep them.
 
 What happens to their models:
 
@@ -240,17 +251,20 @@ What happens to their models:
 
 **Seed unknown until the end.** Stage 1 does not use the seed, so it runs first either way.
 Before stage 2, read the seed from the end screen (seeking to the tail costs seconds). A
-misread seed shows at once: the first hand the simulator deals is not the one on screen, so
-the few look-alike readings (8/B, 5/S, 1/I, 2/Z) can be tried and the one whose first hand
-matches kept. A video with no readable seed cannot use the simulator and stays on their
-stage 2; it also cannot become a `.bal` file, whose header is the seed.
+misread seed shows in the first hand, which is not the one the simulator deals, so the few
+look-alike readings (8/B, 5/S, 1/I, 2/Z) can be tried and the one whose first hand matches
+kept. The walk does not make that comparison yet: with a wrong seed it stops at the first
+play, whose score is not the simulator's, after recording the blind's selection and any
+discards before it. A video with no readable seed cannot use the simulator and stays on
+their stage 2; it also cannot become a `.bal` file, whose header is the seed.
 
 **When the simulator and the video part ways** (an old Steamodded build's difference, a
 drag not yet read, a classifier failure nothing repairs): the next screen is not the
 simulator's game after any legal action. The walk stops there (steps 3 and 5) and keeps what
 came before. This replaces their quarantine rules: a step is either reproduced by the
 simulator or not written. What it cannot rule out is a wrong read that the next screen fits
-as well as the right one; those lines are the ones marked `unconfirmed`.
+as well as the right one; those lines are the ones marked `unconfirmed`, and a wrong one
+among them stays in the recording when the walk stops later.
 
 ### Estimates
 
@@ -271,8 +285,8 @@ leaves the same game. (`measure.py` still breaks ties by the action nearest the 
 walk now stops instead, so its share of wrong lines is lower and its share of stops is not
 measured.) How often the walk reaches the end of a full run is the number to measure.
 
-Speed. Stage 2 is no longer a cost: the prototype took 58 s for the clip on CPU (68 s with
-the checks above, next to a training job; frame
+Speed. Stage 2 is no longer a cost: the prototype took 58 s for the clip on CPU (48 s with
+the checks above; frame
 decode 21.6, item detector 18.7, hand detector 9.1, simulator 6.7, OCR 1.8), unbatched and
 with model loading. Total time stays stage 1. The simulator opens three savings there:
 fewer frames (see the experiment below), no second decode pass if stage 1 hands the frames
@@ -281,7 +295,7 @@ today's time on the same hardware; it has to be measured.
 
 Frame rate experiment, same clip, CPU: stage 1 on every fourth frame (`--skip-frames 3`, 15
 per second) took 241 s instead of 445 s (on 4 threads instead of 3), and the walk produced
-the same 88-line recording with the same 446 HUD agreements. On every sixth frame
+the same recording with the same HUD agreements. On every sixth frame
 (`--skip-frames 5`, 189 s) stage 1 missed a Discard click in the first round and the walk
 lost the game: the prototype fills in missed forced clicks and missed sales, not missed
 plays or discards. So half the frames is free on this clip, and going further needs plays
@@ -304,7 +318,7 @@ All under `cv/` in the worktree `C:\Users\Admin\Code\antezero-wt-cv`, branch `cv
 | `cv/antezero_bridge/video.py` | the prototype stage 2: stage 1's clicks to a `.bal` file |
 | `cv/testing/test_antezero_parity.py` | the parity test of section 2 |
 | `cv/testing/test_antezero_bridge.py` | `.bal` round trip, repair, and the clip's recording against the video's deck view |
-| `cv/testing/antezero_fixtures/wInI1W_EaEw_0-600.bal` | the 88 actions of the clip |
+| `cv/testing/antezero_fixtures/wInI1W_EaEw_0-600.bal` | the 87 recorded actions of the clip |
 | `cv/notes/antezero_phase1.md` | this report |
 
 On disk but ignored: the clip `cv/assets/local/wInI1W_EaEw_0-600.mp4` (233 MB, the only
