@@ -1,0 +1,3 @@
+Left todos:
+- Seed / deck / stake data collection
+- Generic optimizations and big-picture events (i.e., before game start (video intro etc), only scan for the "PLAY" button click or Select Blind click and then initialize gamestate)

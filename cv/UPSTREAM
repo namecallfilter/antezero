@@ -1,0 +1,3 @@
+Imported from https://github.com/manwhar/BalatroEngine at commit a3fea4c (2026-11-24).
+That repository has no license. This copy is on the `cv` branch only, for a draft pull request: it is not to be merged into `master` unless its author agrees to it living here.
+Weights, test images and telemetry are on disk under this folder but ignored by git (see .gitignore).

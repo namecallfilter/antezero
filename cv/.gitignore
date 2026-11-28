@@ -1,0 +1,25 @@
+assets/sample_inputs/scraped_frames
+assets/sample_inputs/videos
+assets/local
+
+__pycache__
+
+output
+
+# Artifacts that belong inside classifiers/ or other submodules
+dataset
+dataset_shop
+runs
+weights
+classifiers/old_models
+balatro_source
+JokerDisplay-2.0.8
+batch_runs
+# Large upstream files kept on disk but out of this repo
+classifiers/prod_weights/
+classifiers/prod_weights_backup/
+assets/testing/
+assets/sample_inputs/
+testing/real_image_fixtures/
+testing/telemetry_data/
+.venv/

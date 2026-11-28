@@ -2,6 +2,7 @@ use numpy::{PyArray1, PyArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use sim::balatro::load_starts;
 use sim::data::{Back, Center};
 use sim::game::Game as SimGame;
 use sim::inject::Inject;
@@ -128,6 +129,21 @@ impl Game {
 		let mut g = Game::from(py.detach(|| SimGame::new_run(seed, b, stake)));
 		g.g.setup.endless = endless;
 		Ok(g)
+	}
+
+	/// The game after the first `actions` action lines of the `.bal`
+	/// recording `script` (`0`: the new run of its header), playing by the
+	/// rules the header names. Raises `ValueError` as `StartPool.add` does:
+	/// if the header or a line is not of the format, a line is not legal, the
+	/// script has fewer lines, or the run is over there.
+	#[staticmethod]
+	fn from_recording(py: Python<'_>, script: &str, actions: usize) -> PyResult<Game> {
+		let point = py
+			.detach(|| load_starts(script, &[actions]))
+			.map_err(|e| PyValueError::new_err(e.to_string()))?
+			.pop()
+			.expect("load_starts gives a start point for every step it is asked for");
+		Ok(Game::from(point.game))
 	}
 
 	/// The learning observation of this state (see `sim::obs`): a dict with

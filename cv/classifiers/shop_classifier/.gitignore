@@ -1,0 +1,12 @@
+# YOLO & Dataset artifacts
+runs/
+data_split/
+data.yaml
+*.pt
+dataset/
+weights/
+stage1_detector/data_split/
+stage1_detector/runs/
+stage2_classifier/runs/
+figures/
+old_data/

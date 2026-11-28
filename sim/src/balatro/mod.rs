@@ -496,6 +496,7 @@ impl BalEnv {
 				seed,
 				back: self.cfg.back,
 				stake: self.cfg.stake,
+				steamodded: self.g.setup.steamodded,
 			};
 			writeln!(self.script, "{header}").expect("a String takes every write");
 		}

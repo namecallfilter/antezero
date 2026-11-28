@@ -2,8 +2,11 @@
 //! writes and what [`load_starts`] replays.
 //!
 //! A script is the header line `seed S deck D stake N` followed by one line
-//! per action. Cards of the hand are listed by position (`play 0 3 4`,
-//! `use 1 2`). Text after a `#` is a comment, and blank lines do not count.
+//! per action. A header that ends in `rules steamodded` is of a run played
+//! by Steamodded's rules (the `setup.steamodded` of its [`Game`]); without it
+//! the run is vanilla's. Cards of the hand are listed by position
+//! (`play 0 3 4`, `use 1 2`). Text after a `#` is a comment, and blank lines
+//! do not count.
 
 use std::error::Error;
 use std::fmt;
@@ -32,7 +35,8 @@ pub struct StartPoint {
 pub enum ScriptError {
 	/// The script has no line.
 	Empty,
-	/// The first line is not `seed S deck D stake N`.
+	/// The first line is not `seed S deck D stake N`, with or without
+	/// `rules steamodded` after it.
 	Header(String),
 	/// The header's seed is longer than [`MAX_SEED_LEN`] bytes.
 	Seed(String),
@@ -83,6 +87,8 @@ pub(super) struct Header<'a> {
 	pub(super) seed: &'a str,
 	pub(super) back: Back,
 	pub(super) stake: Stake,
+	/// The run plays by Steamodded's rules, not vanilla's.
+	pub(super) steamodded: bool,
 }
 
 impl fmt::Display for Header<'_> {
@@ -93,15 +99,30 @@ impl fmt::Display for Header<'_> {
 			self.seed,
 			self.back.key(),
 			u8::from(self.stake)
-		)
+		)?;
+		if self.steamodded {
+			f.write_str(" rules steamodded")?;
+		}
+		Ok(())
 	}
 }
 
 impl<'a> Header<'a> {
 	fn parse(line: &'a str) -> Result<Header<'a>, ScriptError> {
 		let words: Vec<&str> = line.split_whitespace().collect();
-		let &["seed", seed, "deck", deck, "stake", stake] = words.as_slice() else {
-			return Err(ScriptError::Header(line.to_string()));
+		let (seed, deck, stake, steamodded) = match *words.as_slice() {
+			["seed", seed, "deck", deck, "stake", stake] => (seed, deck, stake, false),
+			[
+				"seed",
+				seed,
+				"deck",
+				deck,
+				"stake",
+				stake,
+				"rules",
+				"steamodded",
+			] => (seed, deck, stake, true),
+			_ => return Err(ScriptError::Header(line.to_string())),
 		};
 		if seed.len() > MAX_SEED_LEN {
 			return Err(ScriptError::Seed(seed.to_string()));
@@ -114,7 +135,12 @@ impl<'a> Header<'a> {
 			.ok()
 			.and_then(|number| Stake::try_from(number).ok())
 			.ok_or_else(|| ScriptError::Stake(stake.to_string()))?;
-		Ok(Header { seed, back, stake })
+		Ok(Header {
+			seed,
+			back,
+			stake,
+			steamodded,
+		})
 	}
 }
 
@@ -374,6 +400,7 @@ pub fn load_starts(script: &str, steps: &[usize]) -> Result<Vec<StartPoint>, Scr
 	let header_line = lines.next().ok_or(ScriptError::Empty)?;
 	let header = Header::parse(header_line)?;
 	let mut game = Game::new_run(header.seed, header.back, header.stake);
+	game.setup.steamodded = header.steamodded;
 	game.set_tracing(false);
 	let mut text = format!("{header_line}\n");
 
@@ -449,6 +476,27 @@ mod tests {
 		for line in lines {
 			let step = Step::parse(line).expect("a line of the format");
 			assert!(step.apply(game), "{line} is legal");
+		}
+	}
+
+	#[test]
+	fn a_header_is_written_as_it_is_read() {
+		for steamodded in [false, true] {
+			let written = Header {
+				seed: "TEST",
+				back: Back::Blue,
+				stake: Stake::Gold,
+				steamodded,
+			}
+			.to_string();
+			let Ok(read) = Header::parse(&written) else {
+				panic!("{written} is a header");
+			};
+			assert_eq!(
+				(read.seed, read.back, read.stake, read.steamodded),
+				("TEST", Back::Blue, Stake::Gold, steamodded),
+				"{written}"
+			);
 		}
 	}
 
