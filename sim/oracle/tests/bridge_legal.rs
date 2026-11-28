@@ -314,15 +314,15 @@ fn bridge_legal_actions_match_the_sim_with_the_held_card_out_of_reach() {
 	};
 	let sells = [Action::SellConsumable(0), Action::SellConsumable(1)];
 	assert_eq!(legal, [hermit, sells[0], sells[1]], "what takes no cards");
-	// The mod's handler refuses what would act on the held card unasked:
-	// a play without it, and Cryptid with no cards or none named.
+	// The mod's handler refuses what would act on a card unasked: a play
+	// without the held card, and Cryptid with no cards or none named.
 	let refused = "refused: the cards leave out one the blind holds";
+	assert_eq!(round.prepare("{type = 'play', cards = {1}}"), refused);
 	for action in [
-		"{type = 'play', cards = {1}}",
 		"{type = 'use', index = 1, cards = {}}",
 		"{type = 'use', index = 1}",
 	] {
-		assert_eq!(round.prepare(action), refused, "{action}");
+		assert_eq!(round.prepare(action), "refused: no cards", "{action}");
 	}
 	let held_card = format!("highlighted: {}", last + 1);
 	assert_eq!(round.prepare("{type = 'use', index = 2}"), held_card);

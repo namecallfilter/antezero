@@ -20,7 +20,7 @@ end
 
 -- By hand position, whatever order the cards are named in: the game keeps
 -- its highlights in the order they were made, and The Hanged Man destroys
--- its cards in that order.
+-- its cards from the last one made.
 local function highlight(indices)
   local by_position = {}
   for k, i in ipairs(indices or {}) do by_position[k] = i end
@@ -94,7 +94,6 @@ function AZB.act_prepare(a)
   if REQUIRES[k] and not in_states(REQUIRES[k]) then
     fail(k .. ' not allowed in state ' .. AZB.vanilla_state_name())
   end
-  if (k == 'play' or k == 'discard') and #(a.cards or {}) == 0 then fail('no cards') end
   if k == 'skip_blind' and G.GAME.blind_on_deck ~= 'Small' and G.GAME.blind_on_deck ~= 'Big' then
     fail('cannot skip ' .. tostring(G.GAME.blind_on_deck))
   end
@@ -107,11 +106,14 @@ function AZB.act_prepare(a)
   elseif k == 'move_joker' then area_card(G.jokers, a.from); area_card(G.jokers, a.to)
   elseif k == 'move_hand' then area_card(G.hand, a.from); area_card(G.hand, a.to)
   end
-  -- The game keeps a card the blind holds highlighted, so it would act on
-  -- that card too if the action did not name it.
+  -- An action on the highlighted cards names them all. The game keeps a
+  -- card the blind holds highlighted, and with none highlighted it
+  -- highlights a copy of one: it would act on a card the action did not
+  -- name.
   if acts_on_cards(a) then
+    if #(a.cards or {}) == 0 then fail('no cards') end
     local named = {}
-    for _, i in ipairs(a.cards or {}) do named[area_card(G.hand, i)] = true end
+    for _, i in ipairs(a.cards) do named[area_card(G.hand, i)] = true end
     for _, c in ipairs(G.hand.cards) do
       if c.ability.forced_selection and c.highlighted and not named[c] then
         fail('the cards leave out one the blind holds')

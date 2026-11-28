@@ -350,7 +350,7 @@ fn hand_reorder_ops(g: &Game, options: OpOptions, out: &mut Vec<Op>) {
 	}
 	// A held card past the shown hand is in no selection, so none is legal,
 	// and no op above names it: an op of its own moves it to the front,
-	// whatever the reorder allowance. Each held card needs the op once, as
+	// whatever the reorder allowance. No held card needs the op twice, as
 	// one at the front stays in the shown hand. A move names its card in a
 	// byte, so a card past that has no op.
 	for (i, c) in hand.cards.iter().enumerate().skip(nh) {

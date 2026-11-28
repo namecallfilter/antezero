@@ -300,9 +300,9 @@ fn bell_round(seed: &str, consumables: &[Consumable]) -> Both {
 			edition: Some(Edition::Negative),
 		});
 	}
-	b.act(Action::SkipBlind);
-	b.act(Action::SkipBlind);
-	b.act(Action::SelectBlind);
+	for action in [Action::SkipBlind, Action::SkipBlind, Action::SelectBlind] {
+		act_on_highlights(&mut b, action);
+	}
 	assert_eq!(b.g.blind.kind, Some(BlindKind::FinalBell));
 	assert_eq!(
 		held(&b.g, Forced::is_locked).len(),
