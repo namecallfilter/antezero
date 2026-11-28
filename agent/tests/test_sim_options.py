@@ -152,6 +152,19 @@ def test_a_malformed_start_pool_index_is_refused(tmp_path, index, error):
         az.VecEnv(1, start_pool=pool, start_frac=1.0)
 
 
+def test_a_game_is_replayed_from_a_recording_by_the_rules_of_its_header():
+    steamodded = "# a note\nseed TEST deck b_red stake 1 rules steamodded  # from a video\nselect\n"
+    start, after = az.Game.from_recording(steamodded, 0), az.Game.from_recording(steamodded, 1)
+    assert (start.phase, after.phase) == ("blind_select", "round")
+    assert start.steamodded and after.steamodded
+    assert not az.Game.from_recording("seed TEST deck b_red stake 1\nselect\n", 1).steamodded
+    assert after.canonical() == az.Game.from_recording("seed TEST deck b_red stake 1\nselect\n", 1).canonical()
+    with pytest.raises(ValueError, match="script has only 1 action lines"):
+        az.Game.from_recording(steamodded, 2)
+    with pytest.raises(ValueError, match="is not 'seed S deck D stake N'"):
+        az.Game.from_recording("seed TEST deck b_red stake 1 rules other\nselect\n", 0)
+
+
 @pytest.mark.parametrize(
     ("recording", "steps", "error"),
     [
