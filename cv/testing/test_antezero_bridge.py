@@ -6,6 +6,7 @@ Run from the `cv` folder: `python -m unittest testing.test_antezero_bridge`.
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import random
@@ -28,6 +29,13 @@ RECORDING = REPO_ROOT / "testing" / "antezero_fixtures" / "wInI1W_EaEw_0-600.bal
 # White Stake, Red Deck: the first hand holds a straight (`play 31`, 324 chips) and a flush
 # (`play 158`, 308 chips). Either wins the blind, so the screen after it differs in the score alone.
 CASE8 = ("CASE8", "play 31", "play 158")
+# Its first shop, with $10: Runner for $5 and Splash for $3.
+CASE8_SHOP = ["select", "play 31", "cash_out"]
+# White Stake, Red Deck: after this the shop has a Buffoon Pack, which deals no hand, and an
+# Arcana Pack, which does, at one price.
+PACKS = ("PACK63", ["select", "play 31", "cash_out"])
+# Jokers by their injection codes, and what they sell for.
+JOKER, CAVENDISH, BLUEPRINT = ("inject_joker 0 0 0", 1), ("inject_joker 60 0 0", 2), ("inject_joker 122 0 0", 5)
 # The first pack of this run holds The Soul, whose joker vanilla rolls a rarity for and Steamodded does not.
 SOUL = ("RULES2541", ["skip", "pick 0 96", "pick 1 0", "select"])
 
@@ -40,6 +48,13 @@ def random_game(seed: str, steps: int) -> tuple["antezero_sim.Game", list[str]]:
         codes.append(rng.choice(game.legal_codes()))
         game.step(codes[-1])
     return game, codes
+
+
+def played(seed: str, codes: list[str]) -> "antezero_sim.Game":
+    game = antezero_sim.Game(seed, "b_red", 1)
+    for code in codes:
+        game.inject(code) if code.startswith("inject") else game.step(code)
+    return game
 
 
 @unittest.skipIf(antezero_sim is None, "antezero_sim is not installed")
@@ -75,6 +90,7 @@ class TestBal(unittest.TestCase):
             for row in text.splitlines()[1:]:
                 game.step(bal.legal_code(game, row))
             rolled[steamodded] = "rng.rarity1sou" in game.canonical()
+            self.assertEqual(game.canonical(), antezero_sim.Game.from_recording(text, len(codes)).canonical())
         self.assertEqual(rolled, {False: True, True: False})
 
     def test_a_vanilla_header_is_the_one_older_recordings_have(self) -> None:
@@ -83,8 +99,18 @@ class TestBal(unittest.TestCase):
         self.assertEqual(bal.script("OLD", "b_red", 1, ["select"], steamodded=False), "seed OLD deck b_red stake 1\nselect\n")
         self.assertEqual(bal.script("NEW", "b_red", 1, ["select"], steamodded=True),
                          "seed NEW deck b_red stake 1 rules steamodded\nselect\n")
-        with self.assertRaises(ValueError):
-            bal.check("seed OLD deck b_red stake 1 rules other\nselect\n")
+
+    def test_a_header_is_read_as_the_simulator_reads_it(self) -> None:
+        from antezero_bridge import bal
+
+        commented = "# a note\n\nseed NEW deck b_red stake 1 rules steamodded  # from a video\nselect\n"
+        bal.check(commented)
+        self.assertTrue(bal.start(commented).steamodded)
+        self.assertFalse(bal.start("seed OLD deck b_red stake 1  # no rules named\n").steamodded)
+        for header in ("seed OLD deck b_red stake 1 rules other", "seed OLD deck b_red stake 1 rules", "select"):
+            for read in (bal.check, bal.start):
+                with self.assertRaises(ValueError, msg=(header, read.__name__)):
+                    read(header + "\nselect\n")
 
     def test_a_comment_on_a_line_is_not_part_of_its_action(self) -> None:
         from antezero_bridge import bal
@@ -111,7 +137,8 @@ class TestBal(unittest.TestCase):
             Counter(c[2] for c in cards),
             {"A": 5, "K": 4, "Q": 4, "J": 3, "T": 4, "9": 2, "8": 7, "7": 4, "6": 1, "5": 3, "4": 4, "3": 3, "2": 3},
         )
-        self.assertEqual((state["ante"], state["round"], state["dollars"]), (3, 7, 52))
+        # before the clip's last click, a $5 reroll that no later screen confirms
+        self.assertEqual((state["ante"], state["round"], state["dollars"]), (3, 7, 57))
 
 
 @unittest.skipIf(antezero_sim is None, "antezero_sim is not installed")
@@ -138,73 +165,187 @@ class TestReconcile(unittest.TestCase):
         self.assertIsNone(reconcile.repair(game, "play 3", screen))
 
 
-def _screen(game: "antezero_sim.Game") -> tuple[dict[str, Any], dict[str, Any]]:
-    """The HUD numbers and the cards that perfect classifiers read in `game`."""
-    from antezero_bridge import reconcile
+@dataclass
+class SimScreen:
+    """A screen of a game in the simulator, as perfect classifiers read it (`reconcile.Screen`)."""
 
-    view = reconcile.predicted(game)
-    return {name: view[name] for name in reconcile.HUD_NUMBERS}, {area: view[area] for area in reconcile.CARDS}
+    hud: dict[str, Any]
+    seen: dict[str, Any]
+    # The joker bar, for a screen on which a sale's click was missed.
+    bar: Counter | None = None
+
+    @classmethod
+    def of(cls, game: "antezero_sim.Game") -> "SimScreen":
+        from antezero_bridge import reconcile
+
+        view = reconcile.predicted(game)
+        return cls({name: view[name] for name in reconcile.HUD_NUMBERS}, {area: view[area] for area in reconcile.CARDS})
+
+    def cards(self, states: list[dict[str, Any]]) -> dict[str, Any]:
+        return self.seen
+
+    def sales(self, game: "antezero_sim.Game") -> list[str]:
+        from antezero_bridge import video
+
+        return [] if self.bar is None else video.missed_sells(game, self.hud.get("dollars"), lambda: self.bar)
 
 
 @unittest.skipIf(antezero_sim is None, "antezero_sim is not installed")
 class TestSettle(unittest.TestCase):
     def setUp(self) -> None:
         seed, self.straight, self.flush = CASE8
-        self.game = antezero_sim.Game(seed, "b_red", 1)
-        self.game.step("select")
+        self.game = played(seed, ["select"])
         self.plays = [code for code in self.game.legal_codes() if code.startswith("play")]
-        self.after = self.game.clone()
-        self.after.step(self.straight)
-        self.hud, self.cards = _screen(self.after)
+        self.won = played(seed, ["select", self.straight])
+        self.screen = SimScreen.of(self.won)
 
     def test_the_score_on_screen_tells_two_winning_plays_apart(self) -> None:
         from antezero_bridge import reconcile
 
-        wrong = self.game.clone()
-        wrong.step(self.flush)
-        differing = {name for name in reconcile.HUD_NUMBERS if _screen(wrong)[0][name] != self.hud[name]}
-        self.assertEqual(differing, {"chips"})
-        self.assertEqual(_screen(wrong)[1], self.cards)
+        wrong = SimScreen.of(played(CASE8[0], ["select", self.flush]))
+        self.assertEqual({name for name in reconcile.HUD_NUMBERS if wrong.hud[name] != self.screen.hud[name]}, {"chips"})
+        self.assertEqual(wrong.seen, self.screen.seen)
 
-        settled = reconcile.settle(self.game, self.plays, self.flush, self.hud, lambda state: self.cards)
+        settled = reconcile.settle(self.game, self.plays, self.flush, self.screen, ("cash_out",))
         self.assertEqual((settled.code, settled.outcome), (self.straight, "repaired"))
-        settled = reconcile.settle(self.game, self.plays, self.straight, self.hud, lambda state: self.cards)
+        settled = reconcile.settle(self.game, self.plays, self.straight, self.screen, ("cash_out",))
         self.assertEqual((settled.code, settled.outcome, settled.rivals), (self.straight, "read", 0))
 
     def test_an_unread_score_that_would_tell_them_apart_settles_nothing(self) -> None:
         from antezero_bridge import reconcile
 
-        hud = {name: value for name, value in self.hud.items() if name != "chips"}
+        del self.screen.hud["chips"]
         for read in (self.straight, self.flush):
             with self.assertRaisesRegex(reconcile.Unresolved, "chips was not read"):
-                reconcile.settle(self.game, self.plays, read, hud, lambda state: self.cards)
+                reconcile.settle(self.game, self.plays, read, self.screen, ("cash_out",))
 
     def test_a_read_that_does_not_fit_is_not_replaced_by_a_guess(self) -> None:
         """A pair with any three of the other cards scores the same; without the hand on screen nothing says which three."""
         from antezero_bridge import reconcile
 
         pair = "play 211"  # S_A, D_K and D_T with the pair of twos
-        after = self.game.clone()
-        after.step(pair)
-        hud, cards = _screen(after)
-        blind = {area: cards[area] for area in ("jokers", "consumables")}
-        settled = reconcile.settle(self.game, self.plays, "play 199", hud, lambda state: cards)
+        screen = SimScreen.of(played(CASE8[0], ["select", pair]))
+        settled = reconcile.settle(self.game, self.plays, "play 199", screen, ("play",))
         self.assertEqual((settled.code, settled.outcome), (pair, "repaired"))
-        with self.assertRaisesRegex(reconcile.Unresolved, "does not fit the screen"):
-            reconcile.settle(self.game, self.plays, "play 0", hud, lambda state: blind)
-        settled = reconcile.settle(self.game, self.plays, pair, hud, lambda state: blind)
+
+        del screen.seen["hand"]
+        for unread in (None, "play 0"):
+            with self.assertRaisesRegex(reconcile.Unresolved, "does not fit the screen"):
+                reconcile.settle(self.game, self.plays, unread, screen, ("play",))
+        settled = reconcile.settle(self.game, self.plays, pair, screen, ("play",))
         self.assertEqual((settled.code, settled.outcome), (pair, "read"))
         self.assertGreater(settled.rivals, 0, "the record rests on the read, and says so")
+
+    def test_cards_read_wrong_do_not_replace_a_read_that_fits_the_hud(self) -> None:
+        from antezero_bridge import reconcile
+
+        pair, other = "play 211", "play 199"
+        screen = SimScreen.of(played(CASE8[0], ["select", pair]))
+        # the detector sees most of the hand another play would leave, and a card that is in neither
+        screen.seen["hand"] = sorted([*SimScreen.of(played(CASE8[0], ["select", other])).seen["hand"][:-1], "X_X"])
+        settled = reconcile.settle(self.game, self.plays, pair, screen, ("play",))
+        self.assertEqual((settled.code, settled.outcome), (pair, "read"))
+        self.assertGreater(settled.rivals, 0)
+        with self.assertRaises(reconcile.Unresolved):
+            reconcile.settle(self.game, self.plays, "play 0", screen, ("play",))
+
+    def test_a_click_that_did_nothing_is_told_by_the_next_click(self) -> None:
+        from antezero_bridge import reconcile
+
+        shop = played(CASE8[0], CASE8_SHOP)
+        left = played(CASE8[0], [*CASE8_SHOP, "end_shop"])
+        self.assertEqual(SimScreen.of(shop).hud, SimScreen.of(left).hud)
+        # still in the shop: its Next Round button is clicked again
+        settled = reconcile.settle(shop, ["end_shop"], "end_shop", SimScreen.of(shop), ("end_shop",))
+        self.assertEqual((settled.code, settled.outcome), (None, "rejected"))
+        settled = reconcile.settle(shop, ["end_shop"], "end_shop", SimScreen.of(left), ("select", "skip"))
+        self.assertEqual((settled.code, settled.outcome, settled.rivals), ("end_shop", "forced", 0))
+        with self.assertRaisesRegex(reconcile.Unresolved, "legal after no result"):
+            reconcile.settle(shop, ["end_shop"], "end_shop", SimScreen.of(left), ("cash_out",))
+
+    def test_a_click_no_screen_tells_from_nothing_is_marked(self) -> None:
+        from antezero_bridge import reconcile
+
+        start = antezero_sim.Game(CASE8[0], "b_red", 1)
+        for screen in (SimScreen.of(start), SimScreen.of(played(CASE8[0], ["skip"]))):
+            settled = reconcile.settle(start, ["skip"], "skip", screen, ("select",))
+            self.assertEqual((settled.code, settled.outcome, settled.rivals), ("skip", "forced", 1))
+
+    def test_a_pack_that_deals_no_hand_is_told_from_one_that_does(self) -> None:
+        from antezero_bridge import reconcile
+
+        seed, codes = PACKS
+        shop = played(seed, codes)
+        opened = {code: played(seed, [*codes, code]) for code in ("open 0", "open 1")}
+        self.assertEqual({code: bool(SimScreen.of(game).seen["hand"]) for code, game in opened.items()},
+                         {"open 0": False, "open 1": True})
+        self.assertEqual(SimScreen.of(opened["open 0"]).hud, SimScreen.of(opened["open 1"]).hud)
+        for true, wrong in (("open 0", "open 1"), ("open 1", "open 0")):
+            screen = SimScreen.of(opened[true])
+            settled = reconcile.settle(shop, ["open 0", "open 1"], wrong, screen, ("skip_pack",))
+            self.assertEqual((settled.code, settled.outcome), (true, "repaired"))
+            settled = reconcile.settle(shop, ["open 0", "open 1"], true, screen, ("skip_pack",))
+            self.assertEqual((settled.code, settled.outcome, settled.rivals), (true, "read", 0))
+
+    def test_a_sale_missed_beside_a_purchase_is_not_taken_for_another_action(self) -> None:
+        from antezero_bridge import reconcile
+
+        buys = ["buy 0", "buy 1"]
+        # Runner bought and Blueprint sold, both for $5: the money is where it was
+        shop = played(CASE8[0], [*CASE8_SHOP, BLUEPRINT[0]])
+        after = played(CASE8[0], [*CASE8_SHOP, BLUEPRINT[0], "buy 0", "sell_joker 0"])
+        screen = SimScreen.of(after)
+        self.assertEqual(screen.hud, SimScreen.of(shop).hud)
+        screen.bar = Counter(screen.seen["jokers"])
+        settled = reconcile.settle(shop, buys, "buy 0", screen, ("end_shop",))
+        self.assertEqual((settled.code, settled.outcome, settled.sales), ("buy 0", "read", ("sell_joker 0",)))
+
+        # Runner bought for $5 and Cavendish sold for $2: the money of buying Splash for $3
+        shop = played(CASE8[0], [*CASE8_SHOP, CAVENDISH[0]])
+        after = played(CASE8[0], [*CASE8_SHOP, CAVENDISH[0], "buy 0", "sell_joker 0"])
+        screen = SimScreen.of(after)
+        self.assertEqual(screen.hud, SimScreen.of(played(CASE8[0], [*CASE8_SHOP, CAVENDISH[0], "buy 1"])).hud)
+        screen.bar = Counter(screen.seen["jokers"])
+        settled = reconcile.settle(shop, buys, "buy 0", screen, ("end_shop",))
+        self.assertEqual((settled.code, settled.outcome, settled.sales), ("buy 0", "read", ("sell_joker 0",)))
 
     def test_a_screen_is_the_simulators_only_in_every_number_read(self) -> None:
         from antezero_bridge import reconcile
 
-        self.assertTrue(reconcile.shows(self.after, self.hud))
-        self.assertFalse(reconcile.shows(self.after, self.hud | {"chips": 308}))
-        self.assertFalse(reconcile.shows(self.game, self.hud))
-        few = dict(list(self.hud.items())[: reconcile.MIN_AGREEMENT - 1])
-        self.assertFalse(reconcile.shows(self.after, few))
-        self.assertTrue(reconcile.shows(self.after, dict(list(self.hud.items())[: reconcile.MIN_AGREEMENT])))
+        hud = self.screen.hud
+        self.assertTrue(reconcile.shows(self.won, hud))
+        self.assertFalse(reconcile.shows(self.won, hud | {"chips": 308}))
+        self.assertFalse(reconcile.shows(self.game, hud))
+        self.assertFalse(reconcile.shows(self.won, dict(list(hud.items())[: reconcile.MIN_AGREEMENT - 1])))
+        self.assertTrue(reconcile.shows(self.won, dict(list(hud.items())[: reconcile.MIN_AGREEMENT])))
+
+    def test_a_large_score_is_compared_as_the_game_prints_it(self) -> None:
+        from antezero_bridge import reconcile
+
+        for chips, steamodded, vanilla in ((123_400_000_000, 1.23e11, 1.234e11), (899_400_000_000, 8.99e11, 8.994e11),
+                                           (99_999_999_999_999, 1.00e14, 1.000e14)):
+            for shown in (steamodded, vanilla):
+                self.assertEqual(reconcile.agreement({"chips": chips}, {"chips": shown}), 1, (chips, shown))
+        self.assertEqual(reconcile.agreement({"chips": 899_400_000_000}, {"chips": 9.00e11}), 0)
+        self.assertEqual(reconcile.agreement({"chips": 99_999_999_999}, {"chips": 1e11}), 0)
+
+
+@unittest.skipIf(antezero_sim is None, "antezero_sim is not installed")
+class TestMissedSells(unittest.TestCase):
+    def test_a_joker_gone_from_the_bar_was_sold_if_the_money_agrees(self) -> None:
+        from antezero_bridge import video
+
+        game = played(CASE8[0], [*CASE8_SHOP, JOKER[0], CAVENDISH[0]])
+        money = game.dollars + CAVENDISH[1]
+        self.assertEqual(video.missed_sells(game, money, lambda: Counter(["j_joker"])), ["sell_joker 1"])
+        self.assertEqual(video.missed_sells(game, money + 1, lambda: Counter(["j_joker"])), [])
+        self.assertEqual(video.missed_sells(game, money, lambda: Counter(["j_joker", "j_cavendish"])), [])
+
+    def test_no_sale_is_inferred_of_a_joker_held_twice(self) -> None:
+        from antezero_bridge import video
+
+        game = played(CASE8[0], [*CASE8_SHOP, JOKER[0], JOKER[0]])
+        self.assertEqual(video.missed_sells(game, game.dollars + JOKER[1], lambda: Counter(["j_joker"])), [])
 
 
 class SimScreens:
@@ -213,14 +354,12 @@ class SimScreens:
     def __init__(self, seed: str, codes: list[str]) -> None:
         game = antezero_sim.Game(seed, "b_red", 1)
         self.truth = codes
-        self.screens = [_screen(game)]
+        self.screens = [SimScreen.of(game)]
         for code in codes:
             game.step(code)
-            self.screens.append(_screen(game))
-        # What a test makes the classifiers get wrong: reads of clicks, HUD numbers by frame.
-        self.misreads: dict[int, str] = {}
-        self.unread: dict[int, str] = {}
-        self.wrong: dict[int, dict[str, Any]] = {}
+            self.screens.append(SimScreen.of(game))
+        # What a test makes the classifiers read of a click, by its frame.
+        self.misreads: dict[int, str | None] = {}
 
     def clicks(self) -> list[SimpleNamespace]:
         from antezero_bridge import video
@@ -231,41 +370,34 @@ class SimScreens:
         return [SimpleNamespace(action_type=types.get(code, types[code.split()[0]]), target_frame=at, frame_id=at)
                 for at, code in enumerate(self.truth)]
 
-    def hud(self, at: int) -> dict[str, Any]:
-        hud = self.screens[at][0] | self.wrong.get(at, {})
-        return {name: value for name, value in hud.items() if name != self.unread.get(at)}
+    def at(self, click: SimpleNamespace) -> SimScreen:
+        return self.screens[click.target_frame]
 
-    def read(self, game: "antezero_sim.Game", click: SimpleNamespace, legal: list[str]) -> str:
+    def read(self, game: "antezero_sim.Game", click: SimpleNamespace, legal: list[str]) -> str | None:
         return self.misreads.get(click.target_frame, self.truth[click.target_frame])
-
-    def cards(self, at: int, state: dict[str, Any]) -> dict[str, Any]:
-        return self.screens[at][1]
-
-    def missed_sells(self, at: int, game: "antezero_sim.Game") -> list[str]:
-        return []
 
 
 @unittest.skipIf(antezero_sim is None, "antezero_sim is not installed")
 class TestWalk(unittest.TestCase):
-    def walk(self, seed: str, screens: SimScreens) -> Any:
+    def walk(self, seed: str, screens: SimScreens, clicks: list[SimpleNamespace] | None = None) -> Any:
         from antezero_bridge import video
 
         walk = video.Walk()
-        video.follow(antezero_sim.Game(seed, "b_red", 1), screens.clicks(), screens, walk)
+        video.follow(antezero_sim.Game(seed, "b_red", 1), clicks or screens.clicks(), screens, walk)
         return walk
 
-    def test_true_screens_are_walked_to_the_last_click(self) -> None:
+    def test_true_screens_are_walked_to_the_last_click_which_no_screen_follows(self) -> None:
         for seed in ("BRIDGE1", "BRIDGE2", "BRIDGE3"):
             _, codes = random_game(seed, 300)
             walk = self.walk(seed, SimScreens(seed, codes))
-            # the last click has no screen after it, so it is recorded only if its button has one action
-            self.assertEqual(walk.codes[: len(codes) - 1], codes[:-1])
+            self.assertEqual(walk.codes, codes[:-1])
             self.assertGreater(len(walk.codes), 5)
+            self.assertIsNone(walk.stopped)
             self.assertNotIn("repaired", walk.outcomes)
 
     def test_a_misread_play_is_repaired_by_the_score(self) -> None:
         seed, straight, flush = CASE8
-        screens = SimScreens(seed, ["select", straight, "cash_out"])
+        screens = SimScreens(seed, ["select", straight, "cash_out", "end_shop"])
         screens.misreads[1] = flush
         walk = self.walk(seed, screens)
         self.assertEqual(walk.codes, ["select", straight, "cash_out"])
@@ -275,9 +407,9 @@ class TestWalk(unittest.TestCase):
     def test_the_walk_stops_before_a_play_the_screen_cannot_settle(self) -> None:
         seed, straight, flush = CASE8
         for read in (straight, flush):
-            screens = SimScreens(seed, ["select", straight, "cash_out"])
+            screens = SimScreens(seed, ["select", straight, "cash_out", "end_shop"])
             screens.misreads[1] = read
-            screens.unread[2] = "chips"
+            del screens.screens[2].hud["chips"]
             walk = self.walk(seed, screens)
             self.assertEqual(walk.codes, ["select"])
             self.assertIn("chips was not read", walk.stopped)
@@ -285,16 +417,46 @@ class TestWalk(unittest.TestCase):
     def test_the_walk_stops_at_a_screen_that_is_not_the_simulators(self) -> None:
         seed, straight, _ = CASE8
         screens = SimScreens(seed, ["select", straight, "cash_out", "end_shop", "select"])
-        screens.wrong[3] = {"dollars": screens.screens[3][0]["dollars"] + 1}
+        screens.screens[3].hud["dollars"] += 1
         walk = self.walk(seed, screens)
         self.assertEqual(walk.codes, ["select", straight])
         self.assertIn("is not the simulator's game after cash_out", walk.stopped)
 
-        screens = SimScreens("OTHER", ["select"])
-        screens.wrong[0] = {"dollars": 99}
+        screens = SimScreens("OTHER", ["select", "play 1"])
+        screens.screens[0].hud["dollars"] = 99
         walk = self.walk("OTHER", screens)
         self.assertEqual(walk.codes, [])
         self.assertIn("the first screen is not a new run", walk.stopped)
+
+    def test_the_walk_stops_at_a_click_whose_button_is_not_legal(self) -> None:
+        from game.balatro_models import ActionType
+
+        seed, straight, _ = CASE8
+        screens = SimScreens(seed, ["select", straight, "cash_out", "end_shop"])
+        clicks = screens.clicks()
+        clicks[1].action_type = ActionType.NEXT_ROUND
+        walk = self.walk(seed, screens, clicks)
+        self.assertEqual(walk.codes, [])
+        self.assertIn("legal after no result", walk.stopped)
+
+        clicks = screens.clicks()
+        clicks[0].action_type = ActionType.NEXT_ROUND
+        walk = self.walk(seed, screens, clicks)
+        self.assertEqual(walk.codes, [])
+        self.assertIn("no legal", walk.stopped)
+
+    def test_a_click_the_classifiers_read_nothing_of_is_recorded_only_if_the_screen_settles_it(self) -> None:
+        seed, straight, _ = CASE8
+        screens = SimScreens(seed, ["select", straight, "cash_out", "end_shop"])
+        screens.misreads[1] = None
+        self.assertEqual(self.walk(seed, screens).codes, ["select", straight, "cash_out"])
+
+        screens = SimScreens(seed, ["select", "play 211", "play 1"])
+        screens.misreads[1] = None
+        del screens.screens[2].seen["hand"]
+        walk = self.walk(seed, screens)
+        self.assertEqual(walk.codes, ["select"])
+        self.assertIn("does not fit the screen", walk.stopped)
 
 
 if __name__ == "__main__":

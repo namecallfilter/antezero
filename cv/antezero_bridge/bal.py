@@ -37,11 +37,8 @@ def script(seed: str, back: str, stake: int, codes: list[str], *, steamodded: bo
 
 
 def start(text: str) -> antezero_sim.Game:
-    """The new run of a recording's header, playing by the rules it names (`check` holds a header to the format)."""
-    _, seed, _, back, _, stake, *rules = text.splitlines()[0].split()
-    game = antezero_sim.Game(seed, back, int(stake))
-    game.steamodded = rules == _STEAMODDED
-    return game
+    """The new run of a recording's header, playing by the rules it names; `ValueError` if it is not a header."""
+    return antezero_sim.Game.from_recording(text, 0)
 
 
 def check(text: str) -> None:
