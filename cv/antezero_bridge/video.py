@@ -2,7 +2,7 @@
 as a `.bal` recording.
 
     python -m antezero_bridge.video <video> <actions json> --seed S --deck b_magic --stake 8 \
-        --rules steamodded --out run.bal
+        --rules steamodded --out run.bal [--device cuda]
 
 The simulator holds the game. A click whose button has one legal action needs no classifier.
 For the others the hand detector says which cards are raised and the item detector which
@@ -40,10 +40,11 @@ BUTTONS = {
     A.USE_IN_PACK: ("pick",), A.SKIP_PACK: ("skip_pack",), A.USE_CONSUMABLE: ("use",),
     A.SELL_CARD: ("sell_joker", "sell_consumable"), A.SORT_RANK: ("sort",), A.SORT_SUIT: ("sort",),
 }
-# The detector's shelf each button's slot is in.
-SHELVES = {"buy": "shop_items", "buy_use": "shop_items", "redeem": "vouchers", "open": "boosters",
-           "pick": "pack_items", "sell_joker": "joker_bar", "sell_consumable": "consumeables",
-           "use": "consumeables"}
+# The detector's shelf each button's slot is in, and the attribute a shelf's items come back in.
+SHELVES = {"buy": "shop", "buy_use": "shop", "redeem": "voucher", "open": "booster", "pick": "pack",
+           "sell_joker": "joker_bar", "sell_consumable": "consumeables", "use": "consumeables"}
+SHELF_ITEMS = {"shop": "shop_items", "voucher": "vouchers", "booster": "boosters", "pack": "pack_items",
+               "joker_bar": "joker_bar", "consumeables": "consumeables"}
 # The OCR's field of each HUD number.
 OCR_FIELDS = {"dollars": "hud_money", "chips": "hud_round_score", "hands_left": "hud_hands",
               "discards_left": "hud_discards", "ante": "hud_ante", "round": "hud_round"}
@@ -74,24 +75,6 @@ class Walk:
 RANKS = {"10": "T", "Jack": "J", "Queen": "Q", "King": "K", "Ace": "A"}
 
 
-def look(frame: Any, states: list[dict[str, Any]], walk: Walk) -> dict[str, Any]:
-    """The cards on a screen that shows one of `states`: the jokers, the consumables and, if any of them has one, the hand."""
-    walk.card_reads += 1
-    start = time.perf_counter()
-    bars = recognize_shop(frame, mode="bars", device="cpu")
-    seen = {"jokers": sorted(item.key for item in bars.joker_bar),
-            "consumables": sorted(item.key for item in bars.consumeables)}
-    walk.seconds["item detector"] += time.perf_counter() - start
-    dealt = [state for state in states if state["hand"]]
-    if dealt:
-        start = time.perf_counter()
-        roi = "pack_hand" if dealt[0]["pack_cards"] is not None else "card_hand"
-        cards = recognize_hand_cards(frame, device="cpu", roi_key=roi).cards
-        seen["hand"] = sorted(f"{c.suit[0]}_{RANKS.get(c.rank, c.rank)}" for c in cards if not c.face_down)
-        walk.seconds["hand detector"] += time.perf_counter() - start
-    return seen
-
-
 def hud_numbers(hud: Any) -> dict[str, Any]:
     """The HUD numbers the OCR read on a frame, by their names in the simulator's state."""
     values = {name: hud.values.get(OCR_FIELDS[name]) for name in reconcile.HUD_NUMBERS}
@@ -112,59 +95,16 @@ def _slot(box: list[int] | None, items: list[Any], side: bool) -> int | None:
     return min(range(len(items)), key=lambda i: far(items[i]))
 
 
-def _raised(frame: Any, hand_size: int, in_pack: bool) -> int | None:
-    """The mask of the raised hand cards, or None if the detector does not see the simulator's hand."""
-    cards = recognize_hand_cards(frame, device="cpu", roi_key="pack_hand" if in_pack else "card_hand").cards
-    cards = sorted(cards, key=lambda c: c.box[0])
-    if len(cards) != hand_size:
-        return None
-    return sum(1 << i for i, card in enumerate(cards) if card.selected)
-
-
-def read(game: antezero_sim.Game, action: Any, frame: Any, legal: list[str], walk: Walk) -> str | None:
-    """The classifiers' read of a click that has several legal actions; None if they do not see what it applied to."""
-    state = json.loads(game.state_json())
-    in_pack = state["pack_cards"] is not None
-    mask, seen = 0, None
-    if any(code.split()[-1] != "0" for code in legal if reconcile.verb(code) in ("play", "discard", "use", "pick", "buy_use")):
-        start = time.perf_counter()
-        seen = _raised(frame, len(state["hand"]), in_pack)
-        walk.seconds["hand detector"] += time.perf_counter() - start
-        if seen is None:
-            walk.notes.append(f"frame {action.frame_id}: hand not seen as {len(state['hand'])} cards")
-        mask = seen or 0
-    button = reconcile.verb(legal[0])
-    if button in ("play", "discard"):
-        return None if seen is None else f"{button} {mask}"
-    if button == "sort":
-        return "sort 0" if action.action_type == A.SORT_RANK else "sort 1"
-
-    start = time.perf_counter()
-    shelves = recognize_shop(frame, mode="pack" if in_pack else "shop", device="cpu")
-    walk.seconds["item detector"] += time.perf_counter() - start
-    best: tuple[float, str] | None = None
-    for name in {reconcile.verb(code) for code in legal}:
-        items = sorted(getattr(shelves, SHELVES[name]), key=lambda item: item.box[0])
-        side = name in ("sell_joker", "sell_consumable", "use")
-        slot = _slot(action.button_box, items, side)
-        if slot is None:
-            continue
-        x1, _, x2, _ = items[slot].box
-        gap = abs((action.button_box[0] + action.button_box[2]) / 2 - (x2 + 1.2 * (x2 - x1) if side else (x1 + x2) / 2))
-        code = f"{name} {slot}" + (f" {mask}" if name in ("use", "pick", "buy_use") else "")
-        if best is None or gap < best[0]:
-            best = (gap, code)
-    return best[1] if best else None
-
-
 def missed_sells(game: antezero_sim.Game, money: Any, bar: Callable[[], Counter]) -> list[str]:
     """The sales whose click the detector missed: jokers that are gone from the joker bar, if the money agrees.
 
     `bar()` reads the bar's jokers. Nothing is inferred for a joker the game holds twice: the bar
     does not say which of the two was sold.
     """
+    if money is None or money == game.dollars:
+        return []
     state = json.loads(game.state_json())
-    if money is None or money == state["dollars"] or not state["jokers"]:
+    if not state["jokers"]:
         return []
     owned = Counter(c["key"] for c in state["jokers"])
     gone = owned - bar()
@@ -182,45 +122,97 @@ def missed_sells(game: antezero_sim.Game, money: Any, bar: Callable[[], Counter]
 
 
 class Screen:
-    """What the classifiers read on one frame of a video (`reconcile.Screen`)."""
+    """What the classifiers read on one frame of a video (`reconcile.Screen`). Each detector looks at a part of it once."""
 
-    def __init__(self, frame: tuple[Any, int, float], hud: dict[str, Any], walk: Walk) -> None:
-        self.frame, self.hud, self.walk = frame, hud, walk
-        self.bar: Counter | None = None
+    def __init__(self, frame: tuple[Any, int, float], hud: dict[str, Any], walk: Walk, device: str) -> None:
+        self.frame, self.hud, self.walk, self.device = frame, hud, walk, device
+        self._shelves: dict[str, list[Any]] = {}
+        self._hands: dict[str, list[Any]] = {}
+
+    def shelf(self, name: str) -> list[Any]:
+        """The items the detector sees on one shelf."""
+        if name not in self._shelves:
+            start = time.perf_counter()
+            found = recognize_shop(self.frame, shelves=[name], device=self.device)
+            self._shelves[name] = getattr(found, SHELF_ITEMS[name])
+            self.walk.seconds["item detector"] += time.perf_counter() - start
+        return self._shelves[name]
+
+    def hand(self, in_pack: bool) -> list[Any]:
+        """The hand cards the detector sees, from the left."""
+        roi = "pack_hand" if in_pack else "card_hand"
+        if roi not in self._hands:
+            start = time.perf_counter()
+            cards = recognize_hand_cards(self.frame, device=self.device, roi_key=roi).cards
+            self._hands[roi] = sorted(cards, key=lambda c: c.box[0])
+            self.walk.seconds["hand detector"] += time.perf_counter() - start
+        return self._hands[roi]
 
     def cards(self, states: list[dict[str, Any]]) -> dict[str, Any]:
-        return look(self.frame, states, self.walk)
-
-    def _bar(self) -> Counter:
-        if self.bar is None:
-            start = time.perf_counter()
-            self.bar = Counter(item.key for item in recognize_shop(self.frame, mode="joker_only", device="cpu").joker_bar)
-            self.walk.seconds["item detector"] += time.perf_counter() - start
-        return self.bar
+        """The cards on a screen that shows one of `states`: the jokers, the consumables and, if any of them has one, the hand."""
+        self.walk.card_reads += 1
+        seen = {"jokers": sorted(item.key for item in self.shelf("joker_bar")),
+                "consumables": sorted(item.key for item in self.shelf("consumeables"))}
+        dealt = [state for state in states if state["hand"]]
+        if dealt:
+            cards = self.hand(dealt[0]["pack_cards"] is not None)
+            seen["hand"] = sorted(f"{c.suit[0]}_{RANKS.get(c.rank, c.rank)}" for c in cards if not c.face_down)
+        return seen
 
     def sales(self, game: antezero_sim.Game) -> list[str]:
-        return missed_sells(game, self.hud.get("dollars"), self._bar)
+        return missed_sells(game, self.hud.get("dollars"), lambda: Counter(item.key for item in self.shelf("joker_bar")))
+
+    def read(self, game: antezero_sim.Game, action: Any, legal: list[str]) -> str | None:
+        """The classifiers' read of a click that has several legal actions; None if they do not see what it applied to."""
+        state = json.loads(game.state_json())
+        in_pack = state["pack_cards"] is not None
+        mask, raised = 0, None
+        if any(code.split()[-1] != "0" for code in legal if reconcile.verb(code) in ("play", "discard", "use", "pick", "buy_use")):
+            cards = self.hand(in_pack)
+            if len(cards) == len(state["hand"]):
+                raised = sum(1 << i for i, card in enumerate(cards) if card.selected)
+            else:
+                self.walk.notes.append(f"frame {action.frame_id}: hand not seen as {len(state['hand'])} cards")
+            mask = raised or 0
+        button = reconcile.verb(legal[0])
+        if button in ("play", "discard"):
+            return None if raised is None else f"{button} {mask}"
+        if button == "sort":
+            return "sort 0" if action.action_type == A.SORT_RANK else "sort 1"
+
+        best: tuple[float, str] | None = None
+        for name in sorted({reconcile.verb(code) for code in legal}):
+            items = sorted(self.shelf(SHELVES[name]), key=lambda item: item.box[0])
+            side = name in ("sell_joker", "sell_consumable", "use")
+            slot = _slot(action.button_box, items, side)
+            if slot is None:
+                continue
+            x1, _, x2, _ = items[slot].box
+            gap = abs((action.button_box[0] + action.button_box[2]) / 2 - (x2 + 1.2 * (x2 - x1) if side else (x1 + x2) / 2))
+            code = f"{name} {slot}" + (f" {mask}" if name in ("use", "pick", "buy_use") else "")
+            if best is None or gap < best[0]:
+                best = (gap, code)
+        return best[1] if best else None
 
 
 class Screens:
     """What the classifiers read on the frames just before the clicks of a video."""
 
-    def __init__(self, video: Path, clicks: list[Any], walk: Walk) -> None:
-        self.walk = walk
+    def __init__(self, video: Path, clicks: list[Any], walk: Walk, device: str) -> None:
         start = time.perf_counter()
         images = extract_video_frames(video, [click.target_frame for click in clicks])
         walk.seconds["frame extraction"] = time.perf_counter() - start
         start = time.perf_counter()
         frames = {click.target_frame: (images[click.target_frame], click.target_frame, 0.0) for click in clicks}
-        huds = batch_recognize_hud(list(frames.values()), fields=tuple(OCR_FIELDS.values()), device="cpu")
-        self.screens = {out.frame_index: Screen(frames[out.frame_index], hud_numbers(out), walk) for out in huds}
+        huds = batch_recognize_hud(list(frames.values()), fields=tuple(OCR_FIELDS.values()), device=device)
+        self.screens = {out.frame_index: Screen(frames[out.frame_index], hud_numbers(out), walk, device) for out in huds}
         walk.seconds["HUD OCR"] = time.perf_counter() - start
 
     def at(self, click: Any) -> Screen:
         return self.screens[click.target_frame]
 
     def read(self, game: antezero_sim.Game, click: Any, legal: list[str]) -> str | None:
-        return read(game, click, self.at(click).frame, legal, self.walk)
+        return self.at(click).read(game, click, legal)
 
 
 def follow(game: antezero_sim.Game, clicks: list[Any], screens: Any, walk: Walk) -> None:
@@ -282,13 +274,14 @@ def follow(game: antezero_sim.Game, clicks: list[Any], screens: Any, walk: Walk)
                       "no screen after it shows what it did, and it is not recorded")
 
 
-def walk_clicks(video: Path, actions: dict[str, Any], seed: str, back: str, stake: int, steamodded: bool) -> Walk:
+def walk_clicks(video: Path, actions: dict[str, Any], seed: str, back: str, stake: int, steamodded: bool,
+                device: str = "cpu") -> Walk:
     game = antezero_sim.Game(seed, back, stake)
     game.steamodded = steamodded
     walk = Walk()
     frames = filter_premature_next_rounds(remove_duplicates(actions["frames"]), actions["key"])
     clicks = plan_action_pipeline({"key": actions["key"], "frames": frames})["scheduled_actions"]
-    follow(game, clicks, Screens(video, clicks, walk), walk)
+    follow(game, clicks, Screens(video, clicks, walk, device), walk)
     return walk
 
 
@@ -301,12 +294,14 @@ def main() -> None:
     parser.add_argument("--stake", type=int, required=True, help="1 (white) to 8 (gold)")
     parser.add_argument("--rules", choices=("steamodded", "vanilla"), required=True,
                         help="whether the game in the video ran under Steamodded")
+    parser.add_argument("--device", default="cpu", help="the torch device of the classifiers, e.g. cuda")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
     start = time.perf_counter()
     steamodded = args.rules == "steamodded"
-    walk = walk_clicks(args.video, json.loads(args.actions.read_text()), args.seed, args.deck, args.stake, steamodded)
+    walk = walk_clicks(args.video, json.loads(args.actions.read_text()), args.seed, args.deck, args.stake, steamodded,
+                       args.device)
     comments = {at: f"unconfirmed: {rivals} other results fit the next screen" for at, rivals in walk.unconfirmed.items()}
     text = bal.script(args.seed, args.deck, args.stake, walk.codes, steamodded=steamodded, comments=comments)
     bal.check(text)

@@ -55,7 +55,7 @@ def candidates(game: antezero_sim.Game, button: str) -> list[str]:
     if button == "sort":
         # `legal_codes` leaves out the free reorders; the two sort buttons are there in every round.
         return ["sort 0", "sort 1"] if game.phase == "round" else []
-    return [code for code in game.legal_codes() if verb(code) == button]
+    return [code for code in game.legal_codes() if code == button or code.startswith(button + " ")]
 
 
 def consistent(game: antezero_sim.Game, codes: list[str], screen: dict[str, Any]) -> list[str]:

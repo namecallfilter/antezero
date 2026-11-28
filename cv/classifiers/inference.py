@@ -457,14 +457,19 @@ def recognize_shop(
     conf_threshold: float = 0.15,
     device: str | None = None,
     key_threshold: float = 0.30,
+    shelves: Sequence[str] | None = None,
 ) -> ShopRecognitionOutput:
-    """Evaluates all relevant shelves on a shop, pack, or HUD frame (boxes returned in full-frame pixels)."""
+    """Evaluates all relevant shelves on a shop, pack, or HUD frame (boxes returned in full-frame pixels).
+
+    `shelves` names the shelves to evaluate in place of the mode's.
+    """
     img_bgr, f_idx, ts = _extract_frame_image_and_meta(video_frame)
     pipeline = get_shop_pipeline(device=device)
 
     output = ShopRecognitionOutput(frame_index=f_idx, timestamp_seconds=ts, mode=mode)
 
-    shelves = _get_shelves_for_mode(mode)
+    if shelves is None:
+        shelves = _get_shelves_for_mode(mode)
     shelf_attr_map = {
         "joker_bar": "joker_bar",
         "consumeables": "consumeables",
