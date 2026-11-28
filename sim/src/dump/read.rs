@@ -88,6 +88,8 @@ fn voucher_seen(state: State, round: i32, boss: BlindStatus) -> bool {
 }
 
 fn read_setup(j: &Value) -> Result<Setup, DumpError> {
+	use crate::json::ValueExt;
+
 	let back = named(j, "back", |k| {
 		Back::from_key(k).filter(|b| b.is_simulated())
 	})?;
@@ -121,8 +123,17 @@ fn read_setup(j: &Value) -> Result<Setup, DumpError> {
 	}
 	let rules = entries(j, "modifiers")?;
 	let want = super::write::modifiers(&setup.modifiers);
-	let want: Vec<(&str, &Value)> = want.iter().map(|(k, v)| (k.as_str(), v)).collect();
-	if rules != want {
+	// A rule's number is the same rule whether written `3` or `3.0`, which
+	// JSON values compare as different.
+	let same = |rule: &Value, wanted: &Value| match (rule.number(), wanted.number()) {
+		(Some(a), Some(b)) => a == b,
+		_ => rule == wanted,
+	};
+	if rules.len() != want.len()
+		|| !rules
+			.iter()
+			.all(|&(k, rule)| want.get(k).is_some_and(|wanted| same(rule, wanted)))
+	{
 		return Err(DumpError(format!(
 			"rules the simulator does not have: {rules:?} (the deck and stake make {want:?})"
 		)));
@@ -672,6 +683,16 @@ mod tests {
 			read(&red).is_ok(),
 			"a Red Stake run has the rule of no reward for the Small Blind"
 		);
+	}
+
+	#[test]
+	fn a_rule_reads_whichever_way_its_number_is_written() {
+		let mut gold = Game::new_run("TESTSEED", Back::Red, Stake::Gold).to_dump();
+		assert_eq!(gold["modifiers"]["scaling"], Value::from(3));
+		gold["modifiers"]["scaling"] = Value::from(3.0);
+		assert!(read(&gold).is_ok());
+		gold["modifiers"]["scaling"] = Value::from(4);
+		assert!(read(&gold).is_err(), "no stake scales blinds like that");
 	}
 
 	#[test]
