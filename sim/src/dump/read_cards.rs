@@ -56,14 +56,23 @@ fn core(c: &Value) -> Result<CardCore, DumpError> {
 	})
 }
 
-/// Whether the playing card is highlighted, which the mod writes
-/// since version 0.3.0.
-fn highlighted(c: &Value) -> Result<bool, DumpError> {
-	if c.get("highlighted").is_none() {
-		let why = "no highlighted: the dump is of an AnteZero mod before 0.3.0, update the mod";
-		return Err(DumpError(why.into()));
+/// The playing card's place in its area's highlight list (from 0), `None`
+/// if it is not highlighted. The mod writes it since version 0.3.1.
+fn highlighted(c: &Value) -> Result<Option<u8>, DumpError> {
+	match c.get("highlighted") {
+		None | Some(Value::Bool(true)) => Err(DumpError(
+			"no highlighted place: the dump is of an AnteZero mod before 0.3.1, update the mod"
+				.into(),
+		)),
+		Some(Value::Bool(false)) => Ok(None),
+		Some(v) => {
+			let nth: u16 = int(c, "highlighted")?;
+			let place = nth
+				.checked_sub(1)
+				.and_then(|place| u8::try_from(place).ok());
+			place.map(Some).ok_or_else(|| bad("highlighted", v))
+		}
 	}
-	flag(c, "highlighted")
 }
 
 fn playing_card(c: &Value) -> Result<PlayingCard, DumpError> {
@@ -86,8 +95,8 @@ fn playing_card(c: &Value) -> Result<PlayingCard, DumpError> {
 		perma_bonus: number(ab, "perma_bonus")?,
 		forced: match (raw_flag(ab, "forced_selection")?, highlighted(c)?) {
 			(false, _) => Forced::No,
-			(true, false) => Forced::Flagged,
-			(true, true) => Forced::Locked,
+			(true, None) => Forced::Flagged,
+			(true, Some(place)) => Forced::Locked { place },
 		},
 		played_this_ante: raw_flag(ab, "played_this_ante")?,
 		wheel_flipped: raw_flag(ab, "wheel_flipped")?,

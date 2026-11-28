@@ -3,7 +3,7 @@
 use serde_json::{Map, Value};
 
 use crate::canon::JokerField;
-use crate::card::{AnyCard, Card, CardCore, Kind, PlayingCard, Sticker};
+use crate::card::{AnyCard, Card, CardCore, Forced, Kind, PlayingCard, Sticker};
 use crate::data::{
 	ALL_BLINDS, ALL_PLANETS, ALL_TAGS, ALL_VOUCHERS, BlindKind, Center, Edition, Enhancement,
 	HandType, Rank, Seal, TagKind, Voucher,
@@ -447,6 +447,16 @@ fn core(
 	object(fields)
 }
 
+/// A hand card's place in the highlight list (from 1), `false` if it is not
+/// highlighted. The simulator keeps the highlight of the cards the Bell
+/// holds only.
+fn highlighted(forced: Forced) -> Value {
+	match forced {
+		Forced::Locked { place } => json::number(f64::from(place) + 1.0),
+		Forced::No | Forced::Flagged => false.into(),
+	}
+}
+
 fn playing_card(c: &PlayingCard) -> Value {
 	let set = if c.enhancement == Enhancement::Base {
 		"Default"
@@ -458,7 +468,7 @@ fn playing_card(c: &PlayingCard) -> Value {
 		c.key(),
 		vec![
 			("card", c.card_key().into()),
-			("highlighted", c.forced.is_locked().into()),
+			("highlighted", highlighted(c.forced)),
 			("rank", json::number(f64::from(c.rank.id()))),
 			("suit", c.suit.name().into()),
 			("seal", c.seal.map(Seal::name).into()),

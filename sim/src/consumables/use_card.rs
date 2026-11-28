@@ -7,7 +7,7 @@ use super::event::{
 	SpectralCreate,
 };
 use crate::areas::{self, Hand, position_of};
-use crate::card::{Card, CardMask, Forced, Kind, PlayingCard};
+use crate::card::{Card, CardMask, Kind, PlayingCard};
 use crate::data::{Enhancement, HandType, Rank, Seal, Spectral, Suit, Tarot};
 use crate::event::{Event, EventQueue};
 use crate::game::{Area, Areas, Game, HandLevels, State};
@@ -39,8 +39,10 @@ enum WholeHand {
 enum Conversion {
 	Enhance(Enhancement),
 	Suit(Suit),
-	/// Each becomes a copy of the rightmost one.
-	Death,
+	/// Each becomes a copy of the rightmost one, the card `rightmost`.
+	Death {
+		rightmost: u32,
+	},
 	/// Each rank goes up by one.
 	Strength,
 }
@@ -194,28 +196,12 @@ pub(crate) fn use_consumable(g: &mut Game, card: &Card, highlighted: CardMask) {
 	if highlighted.is_empty() {
 		g.areas.hand.highlight_forced();
 	}
-	// A highlighted card that has the forced flag stays highlighted.
-	for i in highlighted.indices() {
-		let held = &mut g.areas.hand.cards[i].forced;
-		if held.is_flagged() {
-			*held = Forced::Locked;
-		}
-	}
+	let mut ids = [0; Hand::HIGHLIGHT_LIMIT];
+	let highlighted_ids = g.areas.hand.highlight(highlighted, &mut ids);
 	set_consumable_usage(&mut g.history, &mut g.events, card.kind);
 	if card.core.debuff {
 		return;
 	}
-	let mut ids = [0; Hand::HIGHLIGHT_LIMIT];
-	assert!(
-		highlighted.len() <= ids.len(),
-		"the action check accepts at most {} hand cards for a consumable, got {}",
-		ids.len(),
-		highlighted.len()
-	);
-	for (id, i) in ids.iter_mut().zip(highlighted.indices()) {
-		*id = g.areas.hand.cards[i].core.id;
-	}
-	let highlighted_ids = &ids[..highlighted.len()];
 	if highlight(card.kind).is_some() {
 		g.events.hand_text_immediate(0.0);
 	}
@@ -275,7 +261,15 @@ fn use_tarot(g: &mut Game, tarot: Tarot, highlighted_ids: &[u32]) {
 		T::Moon => Conversion::Suit(Suit::Clubs),
 		T::Sun => Conversion::Suit(Suit::Hearts),
 		T::World => Conversion::Suit(Suit::Spades),
-		T::Death => Conversion::Death,
+		T::Death => {
+			let hand = &g.areas.hand.cards;
+			let rightmost = highlighted_ids
+				.iter()
+				.copied()
+				.max_by_key(|&id| position_of(hand, id))
+				.expect("the action check accepts Death only with its two cards");
+			Conversion::Death { rightmost }
+		}
 		T::Strength => Conversion::Strength,
 	};
 	convert_highlighted(&mut g.events, conversion, highlighted_ids);
@@ -370,11 +364,12 @@ fn convert_highlighted(events: &mut EventQueue, conversion: Conversion, highligh
 		events.delay(0.15);
 	}
 	events.delay(0.2);
-	for &target in highlighted_ids {
+	for (place, &target) in highlighted_ids.iter().enumerate() {
 		let step = match conversion {
-			Conversion::Death => ConsumableEvent::Death {
+			Conversion::Death { rightmost } => ConsumableEvent::Death {
 				target,
-				source: highlighted_ids[highlighted_ids.len() - 1],
+				source: rightmost,
+				place: num::byte(place),
 			},
 			Conversion::Strength => ConsumableEvent::Strength { target },
 			Conversion::Suit(suit) => ConsumableEvent::SuitConversion { target, suit },

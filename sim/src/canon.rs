@@ -291,7 +291,7 @@ fn sim_playing_card(out: &mut Canon, p: &str, c: &PlayingCard, area: CanonArea) 
 		let forced = match c.forced {
 			Forced::No => "false",
 			Forced::Flagged => "flagged",
-			Forced::Locked => "true",
+			Forced::Locked { .. } => "true",
 		};
 		out.insert(format!("{p}.forced"), forced.into());
 	}

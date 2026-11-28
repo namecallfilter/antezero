@@ -66,7 +66,13 @@ fn lua_card(out: &mut Canon, p: &str, c: &Value, area: CanonArea) {
 			let forced = match (ab["forced_selection"].flag(), &c["highlighted"]) {
 				(false, _) => "false",
 				(true, Value::Bool(false)) => "flagged",
-				(true, Value::Bool(true)) => "true",
+				(true, Value::Number(place))
+					if place
+						.as_f64()
+						.is_some_and(|place| place >= 1.0 && place.fract() == 0.0) =>
+				{
+					"true"
+				}
 				(true, _) => "?",
 			};
 			out.insert(format!("{p}.forced"), forced.into());
