@@ -422,6 +422,11 @@ fn a_copy_takes_over_when_the_highlights_run_out() {
 		(aura, Next::UseOnAFreeCard, 0),
 		(Consumable::Tarot(Tarot::Hermit), Next::UseOnNoCard, 1),
 		(Consumable::Tarot(Tarot::Magician), Next::UseOnAFreeCard, 1),
+		(
+			Consumable::Spectral(Spectral::Talisman),
+			Next::UseOnAFreeCard,
+			1,
+		),
 		(Consumable::Tarot(Tarot::HangedMan), Next::UseOnAFreeCard, 1),
 	];
 	for (last, next, held_after) in cases {

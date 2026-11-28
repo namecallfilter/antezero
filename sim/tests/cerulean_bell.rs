@@ -132,9 +132,10 @@ fn no_copy_takes_over_while_the_game_keeps_a_card_highlighted() {
 
 #[test]
 fn the_first_copy_takes_over_when_the_highlights_run_out() {
-	let cases: [(Consumable, &[usize], usize); 3] = [
+	let cases: [(Consumable, &[usize], usize); 4] = [
 		(Consumable::Tarot(Tarot::Hermit), &[], 4),
 		(Consumable::Tarot(Tarot::Magician), &[0], 4),
+		(Consumable::Spectral(Spectral::Talisman), &[0], 4),
 		(Consumable::Tarot(Tarot::HangedMan), &[0], 3),
 	];
 	for (consumable, cards, first_copy) in cases {
