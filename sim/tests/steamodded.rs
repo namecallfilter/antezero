@@ -126,7 +126,8 @@ fn marble_jokers_stone_card_is_shuffled_into_the_deck() {
 /// Certificate's seal takes one roll of `certsl` and none of the Standard
 /// Pack's `stdseal<ante>`, under Steamodded as in vanilla: its
 /// `SMODS.poll_seal` call is `guaranteed`, which skips that roll. In the real
-/// game the card was a 10 of Diamonds with a Purple Seal.
+/// game the card was a 10 of Diamonds with a Purple Seal, and `certsl` stood
+/// at 0.4637259701426 after it.
 #[test]
 fn certificate_rolls_no_standard_pack_seal() {
 	for steamodded in [false, true] {
@@ -146,7 +147,14 @@ fn certificate_rolls_no_standard_pack_seal() {
 		);
 		let rng = g.to_dump();
 		let rng = rng.get("rng");
-		assert_ne!(rng.get("certsl"), &Json::Null, "steamodded: {steamodded}");
+		let certsl = rng
+			.get("certsl")
+			.as_f64()
+			.expect("Certificate rolled certsl");
+		assert!(
+			(certsl - 0.463_725_970_142_6).abs() < 1e-12,
+			"steamodded: {steamodded}, certsl: {certsl}"
+		);
 		assert_eq!(rng.get("stdseal1"), &Json::Null, "steamodded: {steamodded}");
 	}
 }
