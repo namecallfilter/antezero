@@ -1,7 +1,7 @@
 //! The card areas: `G.deck`, `G.hand`, `G.play`, `G.discard`, `G.jokers`,
 //! `G.consumeables`, the shop's areas and `G.pack_cards`.
 
-use crate::card::{AnyCard, Card, CardLike, Forced, HandSort, Kind, PlayingCard};
+use crate::card::{AnyCard, Card, CardLike, CardMask, Forced, HandSort, Kind, PlayingCard};
 use crate::data::Joker;
 use crate::hand_eval::EvalFlags;
 use crate::rng::PseudoRandom;
@@ -141,8 +141,48 @@ impl Hand {
 			return;
 		}
 		if let Some(c) = self.cards.iter_mut().find(|c| c.forced.is_flagged()) {
-			c.forced = Forced::Locked;
+			c.forced = Forced::Locked { place: 0 };
 		}
+	}
+
+	/// The cards at `picked` highlighted for an action, as the oracle
+	/// harness and the mod do it: the cards the Bell holds are highlighted
+	/// already, in the order they were, and the other cards are added by
+	/// hand position. Returns the ids in the order of the game's highlight
+	/// list (`G.hand.highlighted`), which a picked card with the forced
+	/// flag stays in from now on.
+	///
+	/// # Panics
+	///
+	/// Panics if `picked` has more cards than [`Hand::HIGHLIGHT_LIMIT`].
+	pub(crate) fn highlight<'a>(
+		&mut self, picked: CardMask, ids: &'a mut [u32; Hand::HIGHLIGHT_LIMIT],
+	) -> &'a [u32] {
+		let mut list = [0; Hand::HIGHLIGHT_LIMIT];
+		let n = picked.len();
+		assert!(
+			n <= list.len(),
+			"the action check accepts at most {} hand cards for a consumable, got {n}",
+			list.len()
+		);
+		let list = &mut list[..n];
+		for (at, i) in list.iter_mut().zip(picked.indices()) {
+			*at = i;
+		}
+		list.sort_by_key(|&i| match self.cards[i].forced {
+			Forced::Locked { place } => (false, place),
+			Forced::No | Forced::Flagged => (true, 0),
+		});
+		for (place, &i) in list.iter().enumerate() {
+			let c = &mut self.cards[i];
+			if c.forced.is_flagged() {
+				c.forced = Forced::Locked {
+					place: num::byte(place),
+				};
+			}
+			ids[place] = c.core.id;
+		}
+		&ids[..n]
 	}
 }
 

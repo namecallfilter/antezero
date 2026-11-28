@@ -208,7 +208,9 @@ fn choose_in_round(
 		let needed = g.blind.chips - g.round.chips;
 		if can_discard && best.is_none_or(|(_, score)| score < needed) && rng.chance(0.75) {
 			if let Some((m, _)) = best {
-				let d = unused_cards(m, hand.len()) | actions::forced_mask(hand);
+				let forced = actions::forced_mask(hand)
+					.expect("the simulator listed a play, so a mask holds every held card");
+				let d = unused_cards(m, hand.len()) | forced;
 				if acts.contains(&Action::Discard(d)) {
 					return Some(Action::Discard(d));
 				}

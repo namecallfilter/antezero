@@ -2,7 +2,7 @@
 //! `Card:use_consumeable` (card.lua) queues, and what each does when it runs.
 
 use crate::areas::{self, position_of};
-use crate::card::{Kind, PlayingCard, Pricing};
+use crate::card::{Forced, Kind, PlayingCard, Pricing};
 use crate::data::{Edition, Enhancement, Rank, Seal, Suit};
 use crate::event::{EditionTiming, Event, EventQueue};
 use crate::game::{Area, Areas, Blind, CardSet, Game};
@@ -29,6 +29,8 @@ pub(crate) enum ConsumableEvent {
 	Death {
 		target: u32,
 		source: u32,
+		/// The target's place in the game's highlight list.
+		place: u8,
 	},
 	Strength {
 		target: u32,
@@ -142,7 +144,11 @@ pub(crate) fn run_event(g: &mut Game, e: ConsumableEvent) {
 				.push(Event::Consumable(E::LastTarotPlanetInner { kind }));
 		}
 		E::LastTarotPlanetInner { kind } => g.history.last_tarot_planet = Some(kind),
-		E::Death { target, source } => death(&mut g.areas, g.shop.discount_percent, target, source),
+		E::Death {
+			target,
+			source,
+			place,
+		} => death(&mut g.areas, g.shop.discount_percent, target, source, place),
 		E::Strength { target } => rebase(&mut g.areas, &g.blind, target, |c| {
 			(c.suit, c.rank.raised())
 		}),
@@ -218,14 +224,15 @@ pub(crate) fn run_event(g: &mut Game, e: ConsumableEvent) {
 	}
 }
 
-/// Death: the hand card `target` becomes a copy of `source`.
-fn death(areas: &mut Areas, discount_percent: f64, target: u32, source: u32) {
+/// Death: the hand card `target`, at `place` of the game's highlight list,
+/// becomes a copy of `source`.
+fn death(areas: &mut Areas, discount_percent: f64, target: u32, source: u32, place: u8) {
 	if target != source
 		&& let (Some(ti), Some(si)) = (
 			position_of(&areas.hand.cards, target),
 			position_of(&areas.hand.cards, source),
 		) {
-		copy_into(areas, discount_percent, si, ti);
+		copy_into(areas, discount_percent, si, ti, place);
 		// Both highlighted cards are flipped around the copy, as in `rebase`.
 		areas.hand.cards[ti].wheel_flipped = false;
 		areas.hand.cards[si].wheel_flipped = false;
@@ -451,9 +458,9 @@ fn gift_edition(
 	}
 }
 
-/// `copy_card(other, new_card)` from the `si`-th hand card into the `ti`-th
-/// (Death).
-fn copy_into(areas: &mut Areas, discount_percent: f64, si: usize, ti: usize) {
+/// `copy_card(other, new_card)` from the `si`-th hand card into the `ti`-th,
+/// which is at `place` of the game's highlight list (Death).
+fn copy_into(areas: &mut Areas, discount_percent: f64, si: usize, ti: usize, place: u8) {
 	let mut c = areas.hand.cards[si].clone();
 	let t = &areas.hand.cards[ti];
 	c.core.id = t.core.id;
@@ -467,7 +474,11 @@ fn copy_into(areas: &mut Areas, discount_percent: f64, si: usize, ti: usize) {
 	// set_ability keeps the target's forced_selection; the copied
 	// ability table only overrides it when the source has one. Both cards
 	// are highlighted.
-	c.forced = c.forced.max(t.forced);
+	c.forced = if c.forced.is_flagged() || t.forced.is_flagged() {
+		Forced::Locked { place }
+	} else {
+		Forced::No
+	};
 	c.shattered = t.shattered;
 	c.destroyed = t.destroyed;
 	Pricing::new(discount_percent, &areas.jokers).set_cost(&mut c, Some(Area::Hand));

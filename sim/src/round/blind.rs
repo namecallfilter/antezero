@@ -521,7 +521,7 @@ pub(crate) fn drawn_to_hand(g: &mut Game) {
 					areas::pick_card(&mut g.rng, "cerulean_bell", &g.areas.hand.cards, |_, _| {
 						true
 					}) {
-				g.areas.hand.cards[pick].forced = Forced::Locked;
+				g.areas.hand.cards[pick].forced = Forced::Locked { place: 0 };
 			}
 		}
 		if g.blind.kind == Some(BlindKind::FinalHeart)

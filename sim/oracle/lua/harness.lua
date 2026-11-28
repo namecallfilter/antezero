@@ -448,6 +448,15 @@ local function edition_of(c)
   return c.edition and c.edition.type or nil
 end
 
+-- The card's place in its area's highlight list, false if it is not
+-- highlighted.
+local function highlight_place(c)
+  for i, h in ipairs(c.area and c.area.highlighted or {}) do
+    if h == c then return i end
+  end
+  return false
+end
+
 local function card_info(c)
   local t = {
     key = c.config.center_key,
@@ -460,7 +469,7 @@ local function card_info(c)
   }
   if c.ability.set == 'Default' or c.ability.set == 'Enhanced' then
     t.card = c.config.card_key
-    t.highlighted = c.highlighted or false
+    t.highlighted = highlight_place(c)
     t.seal = c.seal or json.null
     t.rank = c.base.id
     t.suit = c.base.suit

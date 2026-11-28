@@ -299,7 +299,7 @@ fn a_forced_card_past_the_observed_hand_is_part_of_every_selection() {
 	areas.hand.cards.extend(areas.deck.drain(..20));
 	let held = areas.hand.cards.len();
 	let forced = &mut areas.hand.cards[held - 1];
-	forced.forced = Forced::Locked;
+	forced.forced = Forced::Locked { place: 0 };
 	let forced = forced.core.id;
 
 	for action in [ACT_PLAY, ACT_DISCARD] {

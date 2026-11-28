@@ -65,7 +65,7 @@ fn lua_card(out: &mut Canon, p: &str, c: &Json, area: CanonArea) {
 			let forced = match (ab.get("forced_selection").as_flag(), c.get("highlighted")) {
 				(false, _) => "false",
 				(true, Json::Bool(false)) => "flagged",
-				(true, Json::Bool(true)) => "true",
+				(true, Json::Num(_)) => "true",
 				(true, _) => "?",
 			};
 			out.insert(format!("{p}.forced"), forced.into());

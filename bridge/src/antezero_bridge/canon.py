@@ -207,7 +207,7 @@ def _lua_card(out: Canon, p: str, c: Any, area: str) -> None:
         if area == "hand":
             out[f"{p}.facing"] = _str(_get(c, "facing")) or "?"
             highlighted = _get(c, "highlighted")
-            held = "true" if highlighted is True else "flagged" if highlighted is False else "?"
+            held = "flagged" if highlighted is False else "?" if _num(highlighted) is None else "true"
             out[f"{p}.forced"] = held if _bool(_get(ab, "forced_selection")) else "false"
         out[f"{p}.played_this_ante"] = _b(_bool(_get(ab, "played_this_ante")))
     if st == "Joker":

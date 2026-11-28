@@ -6,7 +6,7 @@
 use sim::actions::ActionError;
 use sim::data::{Back, Edition, Spectral, Tarot};
 use sim::inject::{Consumable, Inject};
-use sim::{Action, CardMask, Forced, Game, Stake};
+use sim::{Action, CardMask, Forced, Game, Stake, num};
 
 const CRYPTID: Consumable = Consumable::Spectral(Spectral::Cryptid);
 
@@ -25,7 +25,7 @@ fn bell_round(consumables: &[Consumable]) -> Game {
 	}
 	g.step(Action::SelectBlind)
 		.expect("the first blind can be played");
-	g.areas.hand.cards[BELL].forced = Forced::Locked;
+	g.areas.hand.cards[BELL].forced = Forced::Locked { place: 0 };
 	g
 }
 
@@ -34,9 +34,9 @@ fn mask(cards: &[usize]) -> CardMask {
 }
 
 /// The hand positions of the cards the Bell holds in a given way.
-fn held(g: &Game, how: Forced) -> Vec<usize> {
+fn held(g: &Game, how: impl Fn(Forced) -> bool) -> Vec<usize> {
 	let hand = g.areas.hand.cards.iter().enumerate();
-	hand.filter(|(_, c)| c.forced == how)
+	hand.filter(|(_, c)| how(c.forced))
 		.map(|(i, _)| i)
 		.collect()
 }
@@ -55,8 +55,8 @@ fn a_copy_of_the_forced_card_is_not_part_of_every_selection() {
 	let mut g = bell_round(&[CRYPTID, CRYPTID]);
 	use_on(&mut g, &[BELL]);
 	use_on(&mut g, &[BELL]);
-	assert_eq!(held(&g, Forced::Locked), [BELL]);
-	let copies = held(&g, Forced::Flagged);
+	assert_eq!(held(&g, Forced::is_locked), [BELL]);
+	let copies = held(&g, |f| f == Forced::Flagged);
 	assert_eq!(copies.len(), 4, "the copies have the flag");
 
 	assert_eq!(g.check(Action::Play(mask(&[BELL]))), Ok(()));
@@ -72,9 +72,9 @@ fn a_copy_of_the_forced_card_is_not_part_of_every_selection() {
 fn a_copy_is_part_of_every_selection_once_a_consumable_is_used_on_it() {
 	let mut g = bell_round(&[CRYPTID, Consumable::Tarot(Tarot::Magician)]);
 	use_on(&mut g, &[BELL]);
-	let copy = held(&g, Forced::Flagged)[0];
+	let copy = held(&g, |f| f == Forced::Flagged)[0];
 	use_on(&mut g, &[BELL, copy]);
-	assert_eq!(held(&g, Forced::Locked), [BELL, copy]);
+	assert_eq!(held(&g, Forced::is_locked), [BELL, copy]);
 	assert_eq!(
 		g.check(Action::Play(mask(&[BELL]))),
 		Err(ActionError::BadSelection)
@@ -86,10 +86,10 @@ fn a_copy_is_part_of_every_selection_once_a_consumable_is_used_on_it() {
 fn the_first_copy_takes_over_when_the_forced_card_is_destroyed() {
 	let mut g = bell_round(&[CRYPTID, Consumable::Tarot(Tarot::HangedMan)]);
 	use_on(&mut g, &[BELL]);
-	let copies = held(&g, Forced::Flagged);
+	let copies = held(&g, |f| f == Forced::Flagged);
 	use_on(&mut g, &[BELL]);
-	assert_eq!(held(&g, Forced::Locked), [copies[0] - 1]);
-	assert_eq!(held(&g, Forced::Flagged), [copies[1] - 1]);
+	assert_eq!(held(&g, Forced::is_locked), [copies[0] - 1]);
+	assert_eq!(held(&g, |f| f == Forced::Flagged), [copies[1] - 1]);
 }
 
 #[test]
@@ -97,9 +97,13 @@ fn death_keeps_the_hold_of_the_card_it_changes_and_passes_on_the_other_cards() {
 	let death = Consumable::Tarot(Tarot::Death);
 	let mut g = bell_round(&[death, death]);
 	use_on(&mut g, &[BELL, BELL + 1]);
-	assert_eq!(held(&g, Forced::Locked), [BELL], "the changed card is held");
+	assert_eq!(
+		held(&g, Forced::is_locked),
+		[BELL],
+		"the changed card is held"
+	);
 	use_on(&mut g, &[BELL - 1, BELL]);
-	assert_eq!(held(&g, Forced::Locked), [BELL - 1, BELL]);
+	assert_eq!(held(&g, Forced::is_locked), [BELL - 1, BELL]);
 }
 
 /// A round in which two hand cards have the flag and none is held, as in a
@@ -119,12 +123,12 @@ fn no_copy_takes_over_while_the_game_keeps_a_card_highlighted() {
 	let mut sold = round_with_free_copies(aura);
 	sold.step(Action::SellConsumable(0))
 		.expect("a consumable can be sold");
-	assert_eq!(held(&sold, Forced::Locked), [0; 0]);
+	assert_eq!(held(&sold, Forced::is_locked), [0; 0]);
 
 	let mut used = round_with_free_copies(aura);
 	use_on(&mut used, &[0]);
 	assert_eq!(
-		held(&used, Forced::Locked),
+		held(&used, Forced::is_locked),
 		[0; 0],
 		"Aura's card stays highlighted"
 	);
@@ -141,6 +145,54 @@ fn the_first_copy_takes_over_when_the_highlights_run_out() {
 	for (consumable, cards, first_copy) in cases {
 		let mut g = round_with_free_copies(consumable);
 		use_on(&mut g, cards);
-		assert_eq!(held(&g, Forced::Locked), [first_copy], "{consumable:?}");
+		assert_eq!(held(&g, Forced::is_locked), [first_copy], "{consumable:?}");
 	}
+}
+
+fn move_hand_card(g: &mut Game, from: usize, to: usize) {
+	let [from, to] = [from, to].map(num::byte);
+	g.step(Action::MoveHand { from, to })
+		.expect("a hand card can be moved");
+}
+
+/// A round in which the Bell holds a hand card past the 32 positions a
+/// selection can name, with a Cryptid left.
+fn round_with_the_held_card_out_of_reach() -> Game {
+	let mut g = bell_round(&[CRYPTID; 14]);
+	for _ in 0..13 {
+		use_on(&mut g, &[BELL]);
+	}
+	let last = g.areas.hand.cards.len() - 1;
+	assert!(
+		last >= CardMask::CAPACITY,
+		"the hand has {} cards",
+		last + 1
+	);
+	move_hand_card(&mut g, BELL, last);
+	assert_eq!(held(&g, Forced::is_locked), [last]);
+	g
+}
+
+#[test]
+fn no_selection_is_legal_while_the_held_card_is_out_of_its_reach() {
+	let mut g = round_with_the_held_card_out_of_reach();
+	let first = mask(&[0]);
+	let cryptid = |targets| Action::UseConsumable { index: 0, targets };
+	assert_eq!(g.check(Action::Play(first)), Err(ActionError::BadSelection));
+	assert_eq!(
+		g.check(Action::Discard(first)),
+		Err(ActionError::BadSelection)
+	);
+	assert_eq!(g.check(cryptid(first)), Err(ActionError::NotAllowed));
+	let mut legal = Vec::new();
+	g.legal_actions(&mut legal);
+	assert_eq!(legal, [Action::SellConsumable(0)]);
+
+	// In reach again, the card is part of every selection as before.
+	let last = g.areas.hand.cards.len() - 1;
+	move_hand_card(&mut g, last, CardMask::CAPACITY - 1);
+	let held_card = mask(&[CardMask::CAPACITY - 1]);
+	assert_eq!(g.check(Action::Play(first)), Err(ActionError::BadSelection));
+	assert_eq!(g.check(Action::Play(first | held_card)), Ok(()));
+	assert_eq!(g.check(cryptid(held_card)), Ok(()));
 }

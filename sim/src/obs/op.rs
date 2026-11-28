@@ -216,7 +216,9 @@ fn targeted(
 		return;
 	};
 	let hand = shown_hand(&g.areas.hand.cards);
-	let forced = actions::forced_mask(&g.areas.hand.cards);
+	let Some(forced) = actions::forced_mask(&g.areas.hand.cards) else {
+		return;
+	};
 	let allowed = if consumable.kind == Kind::Spectral(Spectral::Aura) {
 		hand.iter()
 			.enumerate()
@@ -331,8 +333,10 @@ fn base_ops(g: &Game, lay: &Layout, options: OpOptions, out: &mut Vec<Op>) {
 			}
 		}
 		Phase::Round => {
-			let forced = actions::forced_mask(&g.areas.hand.cards);
-			if nh > 0 && forced.len() <= Hand::HIGHLIGHT_LIMIT {
+			if let Some(forced) = actions::forced_mask(&g.areas.hand.cards)
+				&& nh > 0
+				&& forced.len() <= Hand::HIGHLIGHT_LIMIT
+			{
 				let base = Op {
 					cards: Some(CardArg {
 						min: 1,
