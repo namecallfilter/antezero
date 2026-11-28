@@ -302,6 +302,69 @@ plays or discards. So half the frames is free on this clip, and going further ne
 and discards inferred from the hand, which the simulator makes possible but which is not
 built.
 
+### Speed, second pass (2026-11-28)
+
+Same clip, same machine (i7-10700F, 8 cores; RTX 4060 Ti), nothing else running. Every row
+gives the same files: stage 1's actions byte for byte, the walk's recording line for line.
+
+| stage 1 (`main.py --skip-post-processing`) | wall time |
+|---|---|
+| `--max-workers 3`, as measured in section 1 but on an idle machine | 330 s |
+| default (8 threads) | about 205 s |
+| `--max-workers 16` | about 180 s |
+| `--match-device cuda` | about 110 s |
+
+| the walk (`antezero_bridge/video.py`) | wall time |
+|---|---|
+| before | 45 s |
+| now | 31 s |
+
+Runs differ by about 5%. For a 58 minute video that is 36 minutes before and 14 now with
+the GPU, 20 without it (16 threads).
+
+What changed:
+
+- **Stage 1 on all cores.** The 445 s and 330 s runs used 3 threads beside a training job.
+  More threads help less than their number: 8 processes scale no better than 8 threads, so
+  the limit is the CPU's memory, not Python.
+- **Templates matched on the GPU** (`matcher_gpu.py`, `--match-device cuda`, off by
+  default so that it never runs beside a training job). OpenCV scores a masked template
+  with float64 FFTs and rounds the result to float32; the GPU computes the same sums for a
+  batch of 64 frames at once, so its scores are OpenCV's to 2e-7 (measured on every position
+  of 21,000 score maps). A match that a difference of 1e-5 could change goes back to OpenCV:
+  a score that close to a threshold, two positions that close to each other, a black area.
+  That is 8% of the matches, mostly flat areas of the screen, where every
+  position scores the same and OpenCV's pick is a matter of rounding. The frame's result
+  then compares scores in two more places (`main._process_frame`), and a frame where those
+  are within 1e-5 is done again by OpenCV alone. The next chunk of frames is matched while
+  the current one is processed, with the templates of the screen state at that moment; a
+  state change adds the templates the guess missed.
+- **The walk** runs each detector once per frame and shelf (it ran the joker bar's up to
+  three times on one frame, and all five shop shelves to find one button's slot), does not
+  serialize the game to see that no sale is missing, and filters legal actions by prefix.
+
+What did not help, each measured:
+
+- Keeping a template's result for the next frame whose pixels are the same: 14% of coarse
+  passes and 31% of fine ones repeat, 8% of the time. Cards and the background move.
+- float32 on the GPU: five times the speed of float64 on this card or more, but its scores
+  are not OpenCV's closely enough to tell two positions of a smooth peak apart.
+- The same matcher on the CPU through torch: slower than OpenCV.
+- Several decoders for the walk's 90 frames: 7.5 s against 8.5 s. FFmpeg already uses every
+  core.
+- The classifiers on the GPU for the walk (`--device cuda`): 29 s against 32 s, one frame
+  at a time and with the models' loading.
+- OpenCV's own threads off during stage 1: faster at 8 threads in one run, slower at 3.
+
+Found on the way: `--use-hwaccel` does nothing with FFmpeg 8 or later. `frame.py` passes
+`-vsync 0`, which those versions reject, and falls back to OpenCV's decoder without a word.
+Every run here decoded with OpenCV. Fixing the flag would change the pixels stage 1 sees
+(another conversion from YUV), so it is left alone; decoding is not what limits stage 1 now.
+
+What limits it now: with the GPU, the float64 FFTs (4 ms a frame) and OpenCV's decoder (4 ms
+a frame, one thread converting to BGR). Half the frames (`--skip-frames 3`) would halve
+both, at the risk the experiment above shows.
+
 ## 4. What was built
 
 All under `cv/` in the worktree `C:\Users\Admin\Code\antezero-wt-cv`, branch `cv`.
@@ -316,6 +379,8 @@ All under `cv/` in the worktree `C:\Users\Admin\Code\antezero-wt-cv`, branch `cv
 | `cv/antezero_bridge/reconcile.py` | legal actions of a button, the ones that fit a screen, repair of a read |
 | `cv/antezero_bridge/measure.py` | the table and repair numbers above, from `.bal` recordings |
 | `cv/antezero_bridge/video.py` | the prototype stage 2: stage 1's clicks to a `.bal` file |
+| `cv/matcher_gpu.py` | stage 1's template matching for a batch of frames on the GPU |
+| `cv/testing/test_matcher_gpu.py` | the GPU's matches against OpenCV's |
 | `cv/testing/test_antezero_parity.py` | the parity test of section 2 |
 | `cv/testing/test_antezero_bridge.py` | `.bal` round trip, repair, and the clip's recording against the video's deck view |
 | `cv/testing/antezero_fixtures/wInI1W_EaEw_0-600.bal` | the 87 recorded actions of the clip |
@@ -324,17 +389,17 @@ All under `cv/` in the worktree `C:\Users\Admin\Code\antezero-wt-cv`, branch `cv
 On disk but ignored: the clip `cv/assets/local/wInI1W_EaEw_0-600.mp4` (233 MB, the only
 download) and `cv/output/` (stage 1 actions, their trajectory, the `.bal` files).
 
-Environment: `C:\Users\Admin\Code\antezero-cv\.venv` (Python 3.12, CPU torch 2.15,
-`antezero_sim` built from `C:\Users\Admin\Code\antezero\sim\py` with its build output kept
-in the clone). From `cv/`, with `CUDA_VISIBLE_DEVICES=-1`:
+Environment: `C:\Users\Admin\Code\antezero-cv\.venv` (Python 3.12, torch 2.15 for CUDA 13.2,
+`antezero_sim` built from this worktree's `sim/py`). From `cv/`; the GPU is used only where a
+command names it:
 
 ```
 PY=/c/Users/Admin/Code/antezero-cv/.venv/Scripts/python.exe
-$PY -m unittest testing.test_antezero_parity testing.test_antezero_bridge
+$PY -m unittest testing.test_antezero_parity testing.test_antezero_bridge testing.test_matcher_gpu
 $PY testing/test_engine_parity.py --all          # their engine's own test
 $PY -m antezero_bridge.measure <folder of .bal files> --games 8 --error 0.05
 $PY main.py --input-video assets/local/wInI1W_EaEw_0-600.mp4 --full-video \
-    --skip-post-processing --no-use-hwaccel --max-workers 3 \
+    --skip-post-processing --match-device cuda \
     --actions-out output/vod_actions/clip.json --deck magic --stake gold --seed LNDW2KK8
 PYTHONPATH=. $PY antezero_bridge/video.py assets/local/wInI1W_EaEw_0-600.mp4 \
     output/vod_actions/clip.json --seed LNDW2KK8 --deck b_magic --stake 8 --rules steamodded \
@@ -361,8 +426,9 @@ To measure, on the GPU or over a night of CPU:
 
 4. Full videos: how many runs the walk follows to the end, and where the others stop. One
    10-minute clip is not a rate.
-5. Stage 1 on every fourth frame on full videos, and with the decode on NVDEC.
-6. Batched detectors on the GPU for the new stage 2 (expected: seconds per video).
+5. Stage 1 on every fourth frame on full videos.
+6. The GPU matcher on full videos: its share of matches left to OpenCV, and its memory, on
+   more than one clip.
 
 Not verified, or not built:
 
