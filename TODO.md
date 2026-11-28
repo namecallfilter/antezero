@@ -146,7 +146,9 @@ Judge each arm by greedy win rate on 8,000+ fixed-seed games across all decks, a
   - **Result (each blind pays 0.5):** no clear change at 500 updates. Greedy 33.0% against 32.2% for the controls (+0.8), sampled 27.6% (+0.6). It is just above the best control (32.4%).
   - Not fully clean: the controller cut the learning rate late in the run (2.0e-5 to 1.6e-5, mean 1.9e-5), which favours the arm a little. The value part of the gradient halved, as expected with smaller returns.
 - [ ] **Pool: add Baron states, sweep the share.** Baron has 0 points in the pool. Only shares 0.1 and 0.2 were ever run.
-  - **Result, share 0.1 (fixed 2e-5):** possibly better. Greedy 33.4% against 32.2% for the controls (+1.2) and 32.0% for the fixed-rate control, sampled 27.0% (0.0). One run, just above the best control. Share 0.4 is queued.
+  - **Result, share 0.1 (fixed 2e-5):** possibly better. Greedy 33.4% against 32.2% for the controls (+1.2) and 32.0% for the fixed-rate control, sampled 27.0% (0.0). One run, just above the best control.
+  - **Result, share 0.4 (fixed 2e-5):** slightly worse. Greedy 31.3% (-0.9), sampled 26.3% (-0.6).
+  - The three shares line up: 0.1 gives 33.4%, 0.2 gives 32.0% to 32.4%, 0.4 gives 31.3%. Each step is inside the noise, but the direction is consistent: at this stage fewer pool starts is better. Share 0 is queued to see where it ends.
   - Baron states are not added: the pool has no recording with Baron, so that needs new human games.
 
 - [ ] **Deck fixing as a second objective: does paying for it win more?** Two forms, each against the same checkpoint on paired seeds. (a) Shaping: pay for the drop in card entropy or unreachable cards between round starts, as a potential difference (gamma x phi(next) - phi(now)) so the best policy stays the same and only learning speeds up. Measure from the deck's own start, since Abandoned and Checkered begin lower. (b) An extra prediction head for next round's entropy, with no reward change. Check that wins go up, not just entropy: a thin deck of weak cards scores 0 bits too. Needs the logging above first.
