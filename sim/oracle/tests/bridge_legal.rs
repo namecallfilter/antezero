@@ -208,19 +208,25 @@ impl BellRound {
 		assert_same_codes(&self.g, &mut self.o, &command.to_string());
 	}
 
-	/// What the mod's action handler (`mod/src/act.lua`) says to a play of
-	/// the hand cards `cards`, before the button is pressed: "prepared", or
-	/// why it refuses.
-	fn prepare_play(&mut self, cards: &[usize]) -> String {
+	/// What the mod's action handler (`mod/src/act.lua`) does with `action`
+	/// (a Lua table, its cards counted from 1) before the button is
+	/// pressed: why it refuses, or the hand positions (from 1) of the
+	/// game's highlight list.
+	fn prepare(&mut self, action: &str) -> String {
 		let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mod/src/act.lua");
-		let cards: Vec<String> = cards.iter().map(|i| (i + 1).to_string()).collect();
 		let prepare = format!(
 			"AZB.mark_action = function() end
 			dofile({})
-			local ok, why = pcall(AZB.act_prepare, {{type = 'play', cards = {{{}}}}})
-			return ok and 'prepared' or type(why) == 'table' and why.msg or tostring(why)",
+			local ok, why = pcall(AZB.act_prepare, {action})
+			if not ok then return 'refused: ' .. (type(why) == 'table' and why.msg or tostring(why)) end
+			local at = {{}}
+			for _, c in ipairs(G.hand.highlighted) do
+				for i, h in ipairs(G.hand.cards) do
+					if h == c then at[#at + 1] = i end
+				end
+			end
+			return 'highlighted: ' .. table.concat(at, ' ')",
 			lua_path(&path),
-			cards.join(", ")
 		);
 		self.o.eval(&prepare).expect("the mod's handler runs")
 	}
@@ -254,6 +260,16 @@ fn bridge_legal_actions_match_the_sim_with_copies_of_the_forced_card() {
 		Consumable::Tarot(Tarot::HangedMan),
 	]);
 	let bell = round.held(Forced::is_locked)[0];
+	// The handler highlights by hand position, whatever the cards' order.
+	let free: Vec<usize> = (1..=8).filter(|&i| i != bell + 1).take(2).collect();
+	let play = format!(
+		"{{type = 'play', cards = {{{}, {}, {}}}}}",
+		free[1],
+		bell + 1,
+		free[0]
+	);
+	let listed = format!("highlighted: {} {} {}", bell + 1, free[0], free[1]);
+	assert_eq!(round.prepare(&play), listed);
 	round.step(use_on(&[bell]));
 	let copy = round.held(|f| f == Forced::Flagged)[0];
 	round.step(use_on(&[bell, copy]));
@@ -298,18 +314,26 @@ fn bridge_legal_actions_match_the_sim_with_the_held_card_out_of_reach() {
 	};
 	let sells = [Action::SellConsumable(0), Action::SellConsumable(1)];
 	assert_eq!(legal, [hermit, sells[0], sells[1]], "what takes no cards");
-	assert_eq!(
-		round.prepare_play(&[0]),
-		"the cards leave out one the blind holds"
-	);
+	// The mod's handler refuses what would act on the held card unasked:
+	// a play without it, and Cryptid with no cards or none named.
+	let refused = "refused: the cards leave out one the blind holds";
+	for action in [
+		"{type = 'play', cards = {1}}",
+		"{type = 'use', index = 1, cards = {}}",
+		"{type = 'use', index = 1}",
+	] {
+		assert_eq!(round.prepare(action), refused, "{action}");
+	}
+	let held_card = format!("highlighted: {}", last + 1);
+	assert_eq!(round.prepare("{type = 'use', index = 2}"), held_card);
 
 	round.step(move_hand(last, CardMask::CAPACITY - 1));
 	round.g.legal_actions(&mut legal);
 	let held = CardMask::from_iter([CardMask::CAPACITY - 1]);
 	assert!(legal.contains(&Action::Play(held)), "the held card alone");
+	assert_eq!(round.prepare("{type = 'play', cards = {1}}"), refused);
 	assert_eq!(
-		round.prepare_play(&[0]),
-		"the cards leave out one the blind holds"
+		round.prepare("{type = 'play', cards = {32, 1}}"),
+		"highlighted: 32 1"
 	);
-	assert_eq!(round.prepare_play(&[0, CardMask::CAPACITY - 1]), "prepared");
 }

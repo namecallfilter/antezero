@@ -228,24 +228,49 @@ fn an_op_brings_a_held_card_out_of_reach_back_whatever_the_reorder_allowance() {
 	let [back] = moves[..] else {
 		panic!("one move is offered, of the held card: {offered:?}");
 	};
-	assert_eq!((back.cards, usize::from(back.index)), (None, last));
+	assert_eq!((back.cards, back.dest), (None, None), "nothing to choose");
 	let selects = |op: &obs::Op| matches!(op.kind, OpKind::Play | OpKind::Discard);
 	assert!(!offered.iter().any(selects), "no selection has the card");
 
-	let action = obs::decode(&g, back, CardMask::EMPTY, Some(5));
+	let action = obs::decode(&g, back, CardMask::EMPTY, None);
 	assert_eq!(
 		action,
 		Some(Action::MoveHand {
 			from: num::byte(last),
-			to: 5
+			to: 0
 		})
 	);
 	g.step(action.expect("the move is legal"))
 		.expect("the move is legal");
-	let offered = ops(&g);
-	let play = offered.iter().find(|op| op.kind == OpKind::Play);
-	let required = play.and_then(|op| op.cards).map(|cards| cards.required);
-	assert_eq!(required, Some(mask(&[5])), "plays hold the card again");
+	assert_eq!(required_by_plays(&g), Some(mask(&[0])));
+}
+
+/// The cards every play must hold, if plays are offered.
+fn required_by_plays(g: &Game) -> Option<CardMask> {
+	let offered = ops(g);
+	let play = offered.iter().find(|op| op.kind == OpKind::Play)?;
+	Some(play.cards?.required)
+}
+
+#[test]
+fn the_ops_bring_two_held_cards_at_the_edge_of_the_shown_hand_into_it() {
+	let mut g = round_with_the_held_card_out_of_reach();
+	let last = g.areas.hand.cards.len() - 1;
+	let edge = CardMask::CAPACITY - 1;
+	// A second held card, in the last shown position; the first is right
+	// of it, out of reach.
+	g.areas.hand.cards[edge].forced = Forced::Locked { place: 1 };
+	move_hand_card(&mut g, last, edge + 1);
+	for _ in 0..2 {
+		assert_eq!(required_by_plays(&g), None, "a held card is out of reach");
+		let action = obs::fallback(&g, &ops(&g)).expect("an op is offered");
+		assert!(
+			matches!(action, Action::MoveHand { to: 0, .. }),
+			"{action:?}"
+		);
+		g.step(action).expect("the move is legal");
+	}
+	assert_eq!(required_by_plays(&g), Some(mask(&[0, 1])));
 }
 
 /// The hand positions of the held cards with their places in the highlight

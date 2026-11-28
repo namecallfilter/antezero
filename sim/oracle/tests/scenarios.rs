@@ -317,7 +317,7 @@ fn move_held_card(b: &mut Both, to: usize) {
 	let bell = held(&b.g, Forced::is_locked)[0];
 	if bell != to {
 		let [from, to] = [bell, to].map(num::byte);
-		b.act(Action::MoveHand { from, to });
+		act_on_highlights(b, Action::MoveHand { from, to });
 	}
 }
 
@@ -345,24 +345,24 @@ fn cerulean_bell_holds_only_the_highlighted_card() {
 	let bell = held(&b.g, Forced::is_locked);
 
 	// Two Cryptids on the held card: the second needs the copies to be free.
-	b.act(use_on(&bell));
-	b.act(use_on(&bell));
+	act_on_highlights(&mut b, use_on(&bell));
+	act_on_highlights(&mut b, use_on(&bell));
 	assert_eq!(held(&b.g, Forced::is_locked), bell);
 	let copies = held(&b.g, |f| f == Forced::Flagged);
 	assert_eq!(copies.len(), 4, "the copies have the flag");
 
 	// The Magician on the held card and a copy: the copy is held from now on.
-	b.act(use_on(&[bell[0], copies[0]]));
+	act_on_highlights(&mut b, use_on(&[bell[0], copies[0]]));
 	assert_eq!(held(&b.g, Forced::is_locked), [bell[0], copies[0]]);
 
 	// The Hanged Man destroys the two held cards: the first copy left is held.
-	b.act(use_on(&[bell[0], copies[0]]));
+	act_on_highlights(&mut b, use_on(&[bell[0], copies[0]]));
 	let next = held(&b.g, Forced::is_locked);
 	assert_eq!(next.len(), 1, "one copy is held: {next:?}");
 	assert_eq!(held(&b.g, |f| f == Forced::Flagged).len(), 2);
 
 	// A discard of the held card alone, then the Bell holds a new card.
-	b.act(Action::Discard(next.iter().copied().collect()));
+	act_on_highlights(&mut b, Action::Discard(next.iter().copied().collect()));
 	assert_eq!(held(&b.g, Forced::is_locked).len(), 1);
 	assert_eq!(
 		held(&b.g, |f| f == Forced::Flagged),
@@ -382,12 +382,12 @@ fn death_keeps_and_passes_on_the_bells_hold() {
 	move_held_card(&mut b, 3);
 
 	// The held card becomes the free card to its right, and is still held.
-	b.act(use_on(&[3, 5]));
+	act_on_highlights(&mut b, use_on(&[3, 5]));
 	assert_eq!(held(&b.g, Forced::is_locked), [3]);
 	assert_eq!(held(&b.g, |f| f == Forced::Flagged), [0; 0]);
 
 	// The free card to its left becomes the held card, and is held too.
-	b.act(use_on(&[0, 3]));
+	act_on_highlights(&mut b, use_on(&[0, 3]));
 	assert_eq!(held(&b.g, Forced::is_locked), [0, 3]);
 }
 
@@ -444,7 +444,7 @@ fn free(g: &Game) -> usize {
 fn round_with_free_copies(seed: &str, consumables: &[Consumable]) -> Both {
 	let mut b = bell_round(seed, &[&[CRYPTID, FAMILIAR], consumables].concat());
 	let bell = held(&b.g, Forced::is_locked);
-	b.act(use_on(&bell));
+	act_on_highlights(&mut b, use_on(&bell));
 	// The player highlights a free card and uses Familiar.
 	let click = format!(
 		"G.hand:add_to_highlighted(G.hand.cards[{}])
@@ -488,7 +488,7 @@ fn a_copy_takes_over_when_the_highlights_run_out() {
 			Next::UseOnAFreeCard => use_on(&[free(&b.g)]),
 			Next::UseOnNoCard => use_on(&[]),
 		};
-		b.act(action);
+		act_on_highlights(&mut b, action);
 		let now = held(&b.g, Forced::is_locked).len();
 		assert_eq!(now, held_after, "after {last:?} and {action:?}");
 	}

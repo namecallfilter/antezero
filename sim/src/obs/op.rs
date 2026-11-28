@@ -318,13 +318,16 @@ fn can_reorder(g: &Game, options: OpOptions) -> bool {
 	g.flow.rearranges < options.max_rearranges
 }
 
-/// The ops that reorder the hand: the sorts and the move of a shown card
-/// (in rounds, and in packs opened with the hand drawn), and the move of a
-/// held card past the shown hand.
+/// The ops that reorder the hand (in rounds, and in packs opened with the
+/// hand drawn): the sorts and the move of a shown card, and the move of a
+/// held card past the shown hand to the front.
 fn hand_reorder_ops(g: &Game, options: OpOptions, out: &mut Vec<Op>) {
+	if !matches!(g.flow.phase, Phase::Round | Phase::Pack) {
+		return;
+	}
 	let hand = &g.areas.hand;
 	let nh = shown_hand(&hand.cards).len();
-	if can_reorder(g, options) && matches!(g.flow.phase, Phase::Round | Phase::Pack) && nh >= 2 {
+	if can_reorder(g, options) && nh >= 2 {
 		let null = !options.null_sorts && null_sort(hand);
 		for (order, kind) in [
 			(HandSort::Rank, OpKind::SortRank),
@@ -346,13 +349,16 @@ fn hand_reorder_ops(g: &Game, options: OpOptions, out: &mut Vec<Op>) {
 		});
 	}
 	// A held card past the shown hand is in no selection, so none is legal,
-	// and no op above names it: an op of its own moves it into the shown
-	// hand, whatever the reorder allowance.
+	// and no op above names it: an op of its own moves it to the front,
+	// whatever the reorder allowance. Each held card needs the op once, as
+	// one at the front stays in the shown hand. A move names its card in a
+	// byte, so a card past that has no op.
 	for (i, c) in hand.cards.iter().enumerate().skip(nh) {
-		if c.forced.is_locked() {
+		if c.forced.is_locked()
+			&& let Ok(index) = u8::try_from(i)
+		{
 			out.push(Op {
-				index: num::byte(i),
-				dest: Some(num::byte(nh)),
+				index,
 				..Op::simple(OpKind::MoveHand)
 			});
 		}
@@ -479,17 +485,17 @@ pub fn decode(g: &Game, o: &Op, cards: CardMask, dest: Option<u8>) -> Option<Act
 		},
 		OpKind::SortRank => Action::SortHand(HandSort::Rank),
 		OpKind::SortSuit => Action::SortHand(HandSort::Suit),
-		OpKind::MoveHand => {
-			let from = match o.cards {
-				Some(_) => num::byte(mask.lowest().filter(|_| mask.len() == 1)?),
-				// The op of a held card past the shown hand.
-				None => o.index,
-			};
-			Action::MoveHand {
-				from,
+		OpKind::MoveHand => match o.cards {
+			Some(_) => Action::MoveHand {
+				from: num::byte(mask.lowest().filter(|_| mask.len() == 1)?),
 				to: to_slot()?,
-			}
-		}
+			},
+			// The op of a held card past the shown hand.
+			None => Action::MoveHand {
+				from: o.index,
+				to: 0,
+			},
+		},
 	};
 	if let Some(c) = o.cards {
 		let count = mask.len();
