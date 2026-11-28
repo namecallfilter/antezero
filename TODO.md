@@ -137,6 +137,8 @@ Judge each arm by greedy win rate on 8,000+ fixed-seed games across all decks, a
 - [ ] **Constant win reward.** The bonus is log10 of the final hand's chips, so a bigger-scoring win pays more than a safe one.
   - **Result (a fixed 5.8 in place of log10 of the chips):** no change at 500 updates. Greedy 32.6% against 32.2% for the controls (+0.4), sampled 26.9% (0.0).
 - [ ] **Minibatch 8,192 or 16,384 late in training.** Never above 4,096 in any run. Kyle's 2,048-environment runs were all before Gold.
+  - **Result, 16,384 (4 optimizer steps per update, controller on):** no gain. Greedy 31.2% against 32.2% for the controls (-1.1), sampled 25.0% (-2.0).
+  - The controller raised the learning rate to about 8e-5 to keep the same KL per update (0.0030 after the last step, as now), so this compares minibatch sizes at equal policy movement. It is also no faster: learning takes 3.6 s per update either way. 8,192 is running.
 - [ ] **Less blind reward once wins pass 30%.** Blinds pay about four times what the win does over a full game. Needs `reward_blind` exposed in the config.
   - **Result (each blind pays 0.5):** no clear change at 500 updates. Greedy 33.0% against 32.2% for the controls (+0.8), sampled 27.6% (+0.6). It is just above the best control (32.4%).
   - Not fully clean: the controller cut the learning rate late in the run (2.0e-5 to 1.6e-5, mean 1.9e-5), which favours the arm a little. The value part of the gradient halved, as expected with smaller returns.
