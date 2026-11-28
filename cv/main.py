@@ -18,6 +18,7 @@ from config import Config, configure_logging
 from tools.debug_plotter import plot
 from eval_template import detect_view_deck_tab_mode, eval, format_timestamp
 from frame import iter_video_frames
+from matcher_gpu import TOLERANCE, GpuMatcher
 from post_processing import (
     build_run_trajectory,
     default_trajectory_output_path,
@@ -66,13 +67,25 @@ def get_expected_frame_count(config: Config) -> int | None:
     return math.ceil(frame_span / step)
 
 
+def _grayscale(image: Any, half: bool) -> tuple[Any, Any]:
+    """A frame's grayscale image, and that at half size if asked for."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if not half:
+        return gray, None
+    return gray, cv2.resize(
+        gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_NEAREST
+    )
+
+
 def _process_frame(
     video_frame: Any,
     active_templates: Sequence[Any],
     template_key: dict[str, int],
     config: Config,
     logger: logging.Logger,
+    prepared: tuple[Any, Any, dict[str, Any]] | None = None,
 ) -> tuple[int, list, dict[str, float], dict | None, str | None]:
+    """`prepared` is the frame's two grayscale images and what `GpuMatcher.match` made of it."""
     frame_idx = video_frame.index
     need_ts = config.debug_plot or config.setup_mode
     ts_str = (
@@ -83,15 +96,9 @@ def _process_frame(
         logger.info(f"Processing frame {frame_idx}...")
 
     t0 = time.perf_counter()
-    img_gray = cv2.cvtColor(video_frame.image, cv2.COLOR_BGR2GRAY)
-    img_gray_half = (
-        cv2.resize(
-            img_gray,
-            (img_gray.shape[1] // 2, img_gray.shape[0] // 2),
-            interpolation=cv2.INTER_NEAREST,
-        )
-        if config.coarse_to_fine and not need_ts
-        else None
+    img_gray, img_gray_half, gpu_matches = prepared or (
+        *_grayscale(video_frame.image, config.coarse_to_fine and not need_ts),
+        {},
     )
     t1 = time.perf_counter()
 
@@ -102,6 +109,8 @@ def _process_frame(
     cash_out_box: list[int] | None = None
     cash_out_present = False
     open_pack_present = False
+    clicked_scores: list[float] = []
+    close_call = False
     for template in active_templates:
         result = eval(
             template,
@@ -110,6 +119,7 @@ def _process_frame(
             config,
             video_timestamp_str=ts_str,
             img_gray_half=img_gray_half,
+            matched=gpu_matches.get(template.name),
         )
         # When "Sell Card" sits directly above "Use Consumable", its 10px shadow box
         # collides with the top border of "Use"; re-evaluate only within the gap.
@@ -147,6 +157,7 @@ def _process_frame(
                     config,
                     video_timestamp_str=ts_str,
                     img_gray_half=img_gray_half,
+                    matched=gpu_matches.get(use_tpl.name),
                 )
                 if use_res.found and use_res.box is not None:
                     sx1, sy1, sx2, sy2 = (int(v) for v in result.box)
@@ -193,12 +204,15 @@ def _process_frame(
                 cash_out_present = True
             if result.match.confidence >= 0.95:
                 cash_out_box = [int(v) for v in result.box]
+            if min(abs(result.match.confidence - level) for level in (0.85, 0.95)) < TOLERANCE:
+                close_call = True
         if hasattr(result, "plot_kwargs") and result.found and result.plot_kwargs:
             matches.append((template, result.plot_kwargs))
         if result.found and result.clicked:
             cand_conf = (
                 float(result.match.confidence) if result.match is not None else 1.0
             )
+            clicked_scores.append(cand_conf)
             if cand_conf > best_clicked_conf:
                 best_clicked_conf = cand_conf
                 clicked_name = result.template_name
@@ -215,6 +229,20 @@ def _process_frame(
                             video_frame.image, result.box
                         )
                     }
+    clicked_scores.sort()
+    if len(clicked_scores) > 1 and clicked_scores[-1] - clicked_scores[-2] < TOLERANCE:
+        close_call = True
+    if close_call and any(gpu_matches.values()):
+        # The GPU's scores are OpenCV's to within TOLERANCE. Where the frame's result turns on
+        # a smaller difference, OpenCV's scores decide it.
+        return _process_frame(
+            video_frame,
+            active_templates,
+            template_key,
+            config,
+            logger,
+            (img_gray, img_gray_half, {}),
+        )
     t2 = time.perf_counter()
 
     metrics: dict[str, Any] = {
@@ -272,6 +300,19 @@ def _chunked_iterable(iterable, size: int):
         yield chunk
 
 
+def _ahead(items, prepare):
+    """Yields each item with `prepare(item)`, which another thread works out while the caller is busy with the item before."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        upcoming = None
+        for item in items:
+            future = pool.submit(prepare, item)
+            if upcoming is not None:
+                yield upcoming[0], upcoming[1].result()
+            upcoming = (item, future)
+        if upcoming is not None:
+            yield upcoming[0], upcoming[1].result()
+
+
 def _prefetch_generator(iterable, prefetch: int = 64):
     q = queue.Queue(maxsize=prefetch)
     sentinel = object()
@@ -323,6 +364,9 @@ def detect_video_actions(
         )
     )
     template_key = {template.name: i for i, template in enumerate(loaded_templates)}
+    gpu_matcher = (
+        GpuMatcher(config.match_device, config) if config.match_device else None
+    )
     # Starting mid-run is out of scope: screen gating begins in PRE_GAME.
     screen_tracker = ScreenStateTracker()
 
@@ -566,8 +610,46 @@ def detect_video_actions(
             max_workers=config.max_workers
         ) as executor:
             num_workers = executor._max_workers
+
+            def _match(batch, templates, ready) -> None:
+                """Adds to `ready` the GPU's matches, in the batch's frames, of the templates it lacks there."""
+                unmatched = [
+                    t
+                    for t in templates
+                    if any(t.name not in ready[vf.index][2] for vf in batch)
+                ]
+                if unmatched:
+                    images = [(vf.image, *ready[vf.index][:2]) for vf in batch]
+                    for vf, found in zip(batch, gpu_matcher.match(images, unmatched)):
+                        ready[vf.index][2].update(found)
+
+            def _matched(chunk) -> dict[int, tuple[Any, Any, dict[str, Any]]]:
+                """Each frame's grayscale images and the GPU's matches in it, by template.
+
+                The templates are those the screen allows as this runs, which is while the
+                chunk before is processed: a guess, and `_match` adds what it missed.
+                """
+                ready = {
+                    vf.index: (*grays, {})
+                    for vf, grays in zip(
+                        chunk,
+                        executor.map(lambda vf: _grayscale(vf.image, True), chunk),
+                    )
+                }
+                guess = screen_tracker.filter_templates(
+                    loaded_templates, frame_idx=chunk[0].index
+                )
+                _match(chunk, guess, ready)
+                return ready
+
+            chunks = _chunked_iterable(frames, 64)
+            chunks = (
+                _ahead(chunks, _matched)
+                if gpu_matcher is not None
+                else ((chunk, {}) for chunk in chunks)
+            )
             with tqdm(total=total_frames, desc=progress_desc, unit="frame") as pbar:
-                for chunk in _chunked_iterable(frames, 64):
+                for chunk, ready in chunks:
                     pending = list(chunk)
                     while pending:
                         batch = pending
@@ -596,10 +678,17 @@ def detect_video_actions(
                         active_templates = screen_tracker.filter_templates(
                             loaded_templates, frame_idx=batch[0].index
                         )
+                        if gpu_matcher is not None:
+                            _match(batch, active_templates, ready)
                         chunk_outputs = list(
                             executor.map(
                                 lambda vf, tmpls=active_templates: _process_frame(
-                                    vf, tmpls, template_key, config, logger
+                                    vf,
+                                    tmpls,
+                                    template_key,
+                                    config,
+                                    logger,
+                                    ready.get(vf.index),
                                 ),
                                 batch,
                             )
@@ -734,6 +823,12 @@ def build_cli_parser() -> argparse.ArgumentParser:
     p.add_argument("--coarse-margin", type=float, default=default_cfg.coarse_margin)
     p.add_argument("--max-workers", type=int, default=default_cfg.max_workers)
     p.add_argument(
+        "--match-device",
+        type=str,
+        default=default_cfg.match_device,
+        help="Torch device (cuda) that matches the templates in place of OpenCV on the CPU",
+    )
+    p.add_argument(
         "--debug-plot",
         action=argparse.BooleanOptionalAction,
         default=default_cfg.debug_plot,
@@ -830,6 +925,7 @@ def config_from_cli_args(args: argparse.Namespace) -> Config:
         coarse_to_fine=args.coarse_to_fine,
         coarse_margin=args.coarse_margin,
         max_workers=max(1, int(args.max_workers)),
+        match_device=args.match_device,
         debug_plot=args.debug_plot,
         setup_mode=args.setup_mode,
         run_benchmark=args.run_benchmark,

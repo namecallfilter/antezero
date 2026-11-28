@@ -40,6 +40,9 @@ class Config:
     coarse_to_fine: bool = True
     coarse_margin: float = 0.04
     max_workers: int = field(default_factory=_default_max_workers)
+    # A torch device ("cuda") that matches the templates of a batch of frames at once, in
+    # place of OpenCV on the CPU (`matcher_gpu`).
+    match_device: str | None = None
 
     debug_plot: bool = False
     setup_mode: bool = False

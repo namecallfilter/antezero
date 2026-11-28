@@ -2,6 +2,7 @@
 Evaluates a given template for a given frame.
 """
 
+from collections.abc import Sequence
 import json
 import logging
 from dataclasses import dataclass
@@ -68,7 +69,9 @@ def eval(
     config: Config,
     video_timestamp_str: str = "",
     img_gray_half: cv2.mat_wrapper.Mat | None = None,
+    matched: Sequence[tuple[TemplateMatch, tuple[int, int]]] | None = None,
 ) -> EvaluationResult:
+    """`matched` gives each variant's match and its top left corner in the frame, if something else found them (`matcher_gpu`)."""
     if img is None or img_gray is None:
         raise ValueError("Got None for image")
 
@@ -90,7 +93,7 @@ def eval(
     )
     specs = template.get_compiled_specs(img_w, img_h, config.expand_roi_factor)
 
-    for spec in specs:
+    for variant, spec in enumerate(specs):
         w_inp = spec.template_size.width
         h_inp = spec.template_size.height
         x1, y1, x2, y2 = spec.x1, spec.y1, spec.x2, spec.y2
@@ -98,7 +101,9 @@ def eval(
         roi_img_gray = img_gray[y1:y2, x1:x2]
         roi_img = img[y1:y2, x1:x2]
 
-        if use_coarse and spec.can_coarse and img_gray_half is not None:
+        if matched is not None:
+            match, top_left = matched[variant]
+        elif use_coarse and spec.can_coarse and img_gray_half is not None:
             match, (dx, dy) = find_element_coarse_to_fine(
                 roi_img_gray,
                 roi_img,
