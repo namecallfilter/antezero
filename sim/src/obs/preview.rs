@@ -19,7 +19,7 @@ use super::candidates::{PREVIEW_PLAYS, kicker_plays, rough_score, shortlist};
 use super::digest::{card_hash, hand_digest};
 use super::layout::shown_hand;
 use crate::actions::Action;
-use crate::card::{Card, CardLike, CardMask, Kind, canon_key};
+use crate::card::{Card, CardLike, CardMask, Forced, Kind, canon_key};
 use crate::data::{BlindKind, Edition, HandSet, HandType, Joker};
 use crate::event::Event;
 use crate::flow::FlowEvent;
@@ -195,7 +195,7 @@ fn pool_into_deck(areas: &mut Areas, seed: u64) {
 	for c in &mut areas.deck {
 		c.core.face_down = true;
 		c.wheel_flipped = false;
-		c.forced_selection = false;
+		c.forced = Forced::No;
 	}
 	areas.deck.sort_by_key(canon_key);
 	renumber(&mut areas.deck, PREVIEW_CARD_IDS);

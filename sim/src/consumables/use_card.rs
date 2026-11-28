@@ -7,7 +7,7 @@ use super::event::{
 	SpectralCreate,
 };
 use crate::areas::{self, Hand, position_of};
-use crate::card::{Card, CardMask, Kind, PlayingCard};
+use crate::card::{Card, CardMask, Forced, Kind, PlayingCard};
 use crate::data::{Enhancement, HandType, Rank, Seal, Spectral, Suit, Tarot};
 use crate::event::{Event, EventQueue};
 use crate::game::{Area, Areas, Game, HandLevels, State};
@@ -191,6 +191,16 @@ fn set_consumable_usage(history: &mut History, events: &mut EventQueue, kind: Ki
 /// than the hand's highlight limit, none for a consumable that acts on one,
 /// an empty hand for Familiar, Grim or Incantation, or no jokers for Ankh.
 pub(crate) fn use_consumable(g: &mut Game, card: &Card, highlighted: CardMask) {
+	if highlighted.is_empty() {
+		g.areas.hand.highlight_forced();
+	}
+	// A highlighted card that has the forced flag stays highlighted.
+	for i in highlighted.indices() {
+		let held = &mut g.areas.hand.cards[i].forced;
+		if held.is_flagged() {
+			*held = Forced::Locked;
+		}
+	}
 	set_consumable_usage(&mut g.history, &mut g.events, card.kind);
 	if card.core.debuff {
 		return;

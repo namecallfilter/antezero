@@ -5,13 +5,15 @@
 
 use std::path::Path;
 
-use oracle::command::Start;
+use oracle::command::{Command, Start};
 use oracle::difftest::{Checks, Comparison, compare};
 use oracle::policy::Policy;
 use oracle::{Oracle, lua_path};
-use sim::data::Back;
+use sim::actions::Action;
+use sim::data::{Back, BlindKind, Edition, Spectral, TagKind, Tarot};
 use sim::game::{Game, Phase};
-use sim::{Stake, json, num};
+use sim::inject::{Consumable, Inject};
+use sim::{Forced, Stake, json, num};
 
 /// Loads legal.lua with stand-ins for the two helpers it takes from the
 /// mod's core.lua (vanilla has no SMODS booster state).
@@ -115,4 +117,89 @@ fn bridge_legal_actions_match_the_sim() {
 		}
 	}
 	assert!(checked > 1000, "only {checked} states checked");
+}
+
+/// Under Cerulean Bell, after the held card is copied, a copy is used and
+/// the held cards are destroyed: the mod asks for the cards the simulator
+/// asks for.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn bridge_legal_actions_match_the_sim_with_copies_of_the_forced_card() {
+	assert!(
+		oracle::available(),
+		"the oracle needs the game's lua51.dll and scripts"
+	);
+	let quiet = |tag| {
+		matches!(
+			tag,
+			Some(TagKind::Economy | TagKind::Handy | TagKind::Garbage | TagKind::Skip)
+		)
+	};
+	let seed = (0..1000)
+		.map(|i| format!("LEGALBELL{i:03}"))
+		.find(|seed| {
+			let tags = Game::new_run(seed, Back::Red, Stake::White)
+				.blind_select
+				.skip_tags;
+			quiet(tags.small) && quiet(tags.big)
+		})
+		.expect("some run has skip tags that open nothing");
+	let start = Start {
+		seed: &seed,
+		back: Back::Red,
+		stake: Stake::White,
+	};
+	let mut o = Oracle::new().unwrap();
+	load_legal(&mut o);
+	let mut g = start.new_game();
+	o.command(&start.to_lua()).unwrap();
+	g.blind_select.boss = BlindKind::FinalBell;
+	o.exec("G.GAME.round_resets.blind_choices.Boss = 'bl_final_bell'")
+		.unwrap();
+	let held = |g: &Game, how: Forced| -> Vec<usize> {
+		let hand = g.areas.hand.cards.iter().enumerate();
+		hand.filter(|(_, c)| c.forced == how)
+			.map(|(i, _)| i)
+			.collect()
+	};
+	let mut run = |g: &mut Game, command: Command| {
+		command.apply(g).unwrap();
+		let lua = o.command(&command.to_lua()).unwrap();
+		let state = json::parse(&lua).unwrap();
+		if let Comparison::Diverged(m) = compare(g, &state, Checks::StateOnly) {
+			panic!("engines diverged after {command}: {m}");
+		}
+		assert_eq!(sim_codes(g), lua_codes(&mut o), "after {command}");
+	};
+	for card in [
+		Consumable::Spectral(Spectral::Cryptid),
+		Consumable::Tarot(Tarot::Magician),
+		Consumable::Tarot(Tarot::HangedMan),
+	] {
+		let edition = Some(Edition::Negative);
+		run(
+			&mut g,
+			Command::Inject(Inject::Consumable { card, edition }),
+		);
+	}
+	for action in [Action::SkipBlind, Action::SkipBlind, Action::SelectBlind] {
+		run(&mut g, Command::Act(action));
+	}
+	let use_on = |cards: &[usize]| {
+		Command::Act(Action::UseConsumable {
+			index: 0,
+			targets: cards.iter().copied().collect(),
+		})
+	};
+	let bell = held(&g, Forced::Locked)[0];
+	run(&mut g, use_on(&[bell]));
+	let copy = held(&g, Forced::Flagged)[0];
+	run(&mut g, use_on(&[bell, copy]));
+	assert_eq!(held(&g, Forced::Locked), [bell, copy]);
+	run(&mut g, use_on(&[bell, copy]));
+	assert_eq!(
+		held(&g, Forced::Locked).len(),
+		1,
+		"the other copy took over"
+	);
 }

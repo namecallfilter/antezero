@@ -35,7 +35,7 @@ fn picks(env: &BalEnv, verb: usize, specs: &[i32], rng: &mut Xorshift) -> Vec<i3
 	let mut chosen = 0u32;
 	if sel_verb_index(ACT_REORDER_JOKERS) != Some(verb) {
 		for (i, card) in env.game().areas.hand.cards.iter().enumerate() {
-			chosen |= u32::from(card.forced_selection) << i;
+			chosen |= u32::from(card.forced.is_locked()) << i;
 		}
 	}
 	loop {
@@ -76,7 +76,7 @@ fn play(env: &mut BalEnv, rng: &mut Xorshift, turns: usize) -> Vec<(usize, Game)
 			let game = env.game();
 			let needed = (game.blind.chips - game.round.chips) / game.round.hands_left;
 			let hand = &game.areas.hand.cards;
-			let free = |i: &usize| !hand[*i].forced_selection;
+			let free = |i: &usize| !hand[*i].forced.is_locked();
 			let rest: Vec<i32> = (0..hand.len())
 				.filter(|&i| !best.mask.contains(i))
 				.filter(free)

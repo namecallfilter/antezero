@@ -201,7 +201,7 @@ fn playing_card_features(c: &PlayingCard, f: &mut [f32], x: &ObsCtx, zone: Playi
 		f[25 + q] = if su[q] { 1.0 } else { 0.0 };
 	}
 	f[29] = if ranked { 1.0 } else { 0.0 };
-	f[30] = if c.forced_selection { 1.0 } else { 0.0 };
+	f[30] = if c.forced.is_locked() { 1.0 } else { 0.0 };
 	f[31] = if matches!(id, 14 | 2 | 3 | 5 | 8) {
 		1.0
 	} else {

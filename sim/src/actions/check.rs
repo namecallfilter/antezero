@@ -23,12 +23,13 @@ fn card_at<C>(cards: &[C], i: u8) -> Result<&C, ActionError> {
 	cards.get(usize::from(i)).ok_or(ActionError::BadIndex)
 }
 
-/// Hand cards that must be part of any selection (Cerulean Bell).
+/// Hand cards that must be part of any selection: the ones Cerulean Bell
+/// holds highlighted.
 #[must_use]
 pub fn forced_mask(hand: &[PlayingCard]) -> CardMask {
 	let cards = hand.iter().take(CardMask::CAPACITY).enumerate();
 	cards
-		.filter(|(_, c)| c.forced_selection)
+		.filter(|(_, c)| c.forced.is_locked())
 		.map(|(i, _)| i)
 		.collect()
 }

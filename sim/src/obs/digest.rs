@@ -290,7 +290,7 @@ pub(super) fn hand_digest(areas: &Areas, blind: &Blind, hands: &HandLevels) -> u
 	areas.hand.cards.len().hash(&mut h);
 	for c in &areas.hand.cards {
 		canon_key(c).hash(&mut h);
-		(c.core.debuff, c.forced_selection).hash(&mut h);
+		(c.core.debuff, c.forced).hash(&mut h);
 	}
 	for l in hands {
 		(l.chips.to_bits(), l.mult.to_bits()).hash(&mut h);

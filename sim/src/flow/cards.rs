@@ -2,7 +2,7 @@
 //! easing helpers.
 
 use crate::areas::{self, Pile};
-use crate::card::{AnyCard, Card, CardLike, PlayingCard, Pricing};
+use crate::card::{AnyCard, Card, CardLike, Forced, PlayingCard, Pricing};
 use crate::data::{BlindKind, Joker};
 use crate::event::{Draw, Event, EventQueue};
 use crate::game::{Area, Areas, Blind, Flow, Game, HandLevels, State};
@@ -150,17 +150,17 @@ pub(crate) fn draw_from_deck_to_hand(
 
 /// Finds and removes a card anywhere (`Card:remove`).
 pub(crate) fn remove_card_by_id(g: &mut Game, id: u32) {
-	let (c, owned) = if let Some((area, c)) = g.areas.take(id) {
+	let (c, owned, from_hand) = if let Some((area, c)) = g.areas.take(id) {
 		let owned = match area {
 			Area::Jokers | Area::Consumables => c.core().added_to_deck,
 			Area::Hand | Area::Play | Area::Deck | Area::Discard => true,
 			Area::ShopJokers | Area::ShopVouchers | Area::ShopBoosters | Area::PackCards => false,
 		};
-		(c, owned)
+		(c, owned, area == Area::Hand)
 	} else if let Some(i) = areas::position_of(&g.areas.consumed, id) {
 		let c = g.areas.consumed.remove(i);
 		let owned = c.core.added_to_deck;
-		(AnyCard::from(c), owned)
+		(AnyCard::from(c), owned, false)
 	} else {
 		return;
 	};
@@ -168,6 +168,9 @@ pub(crate) fn remove_card_by_id(g: &mut Game, id: u32) {
 		card::remove_owned(g, c);
 	} else {
 		card::destroy_card(g, c);
+	}
+	if from_hand {
+		g.areas.hand.highlight_forced();
 	}
 }
 
@@ -207,6 +210,9 @@ pub(crate) fn copy_playing_card(
 	// from the current suit.
 	c.times_played = 0;
 	c.orig_suit = c.suit;
+	// The copy has the original's forced_selection, but a new card is not
+	// highlighted.
+	c.forced = c.forced.min(Forced::Flagged);
 	copy_core(areas, discount_percent, c, /* strip_edition= */ false)
 }
 

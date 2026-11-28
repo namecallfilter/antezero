@@ -697,7 +697,7 @@ impl BalEnv {
 		let (lo, hi) = (hl.min, hl.max);
 		let (mut ok, mut forced) = (0usize, 0usize);
 		for i in 0..nh {
-			let f = self.g.areas.hand.cards[i].forced_selection;
+			let f = self.g.areas.hand.cards[i].forced.is_locked();
 			if f && !self.target_ok(card, i) {
 				return false;
 			}
@@ -752,7 +752,7 @@ impl BalEnv {
 		let mut fbits = 0u32;
 		let mut eligible = 0u32;
 		for (i, pc) in hc.iter().take(nh).enumerate() {
-			if pc.forced_selection {
+			if pc.forced.is_locked() {
 				forced += 1;
 				fbits |= 1u32 << i;
 			} else if tgt_card.is_none_or(|c| self.target_ok(c, i)) {
@@ -999,7 +999,7 @@ impl BalEnv {
 		let hc_len = self.g.areas.hand.cards.len().min(MAX_HAND);
 		if a != ACT_REORDER_JOKERS {
 			for (i, pc) in self.g.areas.hand.cards.iter().enumerate().take(hc_len) {
-				if pc.forced_selection {
+				if pc.forced.is_locked() {
 					order.push(i);
 				}
 			}
@@ -1060,7 +1060,7 @@ impl BalEnv {
 		}
 		let unseen = |hand: &[PlayingCard]| {
 			let mut past = hand.iter().skip(MAX_HAND);
-			Some(MAX_HAND + past.position(|card| card.forced_selection)?)
+			Some(MAX_HAND + past.position(|card| card.forced.is_locked())?)
 		};
 		while let Some(from) = unseen(&self.g.areas.hand.cards) {
 			self.reorder(Action::MoveHand {

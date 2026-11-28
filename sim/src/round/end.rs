@@ -5,7 +5,7 @@ use super::blind::{BlindSelect, BlindSlot, BlindStatus, PerBlind};
 use super::scoring;
 use super::state::{JokerTargets, Round};
 use crate::areas::Pile;
-use crate::card::{Ability, Card, Kind, Sticker};
+use crate::card::{Ability, Card, Forced, Kind, Sticker};
 use crate::data::{Back, HandType, Joker, Planet, PlanetSet, Rank, Seal, TagKind};
 use crate::event::{Blocks, Draw, Event, EventQueue, Trigger};
 use crate::flow::FlowEvent;
@@ -190,7 +190,7 @@ pub(crate) fn end_round_final(g: &mut Game) {
 	g.round
 		.reset_joker_targets(&g.areas, &g.run, &mut g.rng, JokerTargets::RoundEnd);
 	for c in g.areas.playing_cards_mut() {
-		c.forced_selection = false;
+		c.forced = Forced::No;
 	}
 }
 

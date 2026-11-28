@@ -42,7 +42,7 @@ local function forced_mask()
   local m = 0
   for i, c in ipairs(G.hand and G.hand.cards or {}) do
     if i > MASK_BITS then break end
-    if c.ability and c.ability.forced_selection then m = m + 2 ^ (i - 1) end
+    if c.ability and c.ability.forced_selection and c.highlighted then m = m + 2 ^ (i - 1) end
   end
   return m
 end
