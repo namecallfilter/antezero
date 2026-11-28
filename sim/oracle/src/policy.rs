@@ -141,11 +141,11 @@ pub fn highest_scoring_play(
 }
 
 /// The cards of a hand of `hand_len` that `play` leaves out, as many as can
-/// be selected, from the right.
+/// be selected, from the rightmost one a selection can name.
 #[must_use]
 pub fn unused_cards(play: CardMask, hand_len: usize) -> CardMask {
 	let mut d = CardMask::EMPTY;
-	for i in (0..hand_len).rev() {
+	for i in (0..hand_len.min(CardMask::CAPACITY)).rev() {
 		if !play.contains(i) && d.len() < Hand::HIGHLIGHT_LIMIT {
 			d.insert(i);
 		}
@@ -323,5 +323,19 @@ fn random_inject(g: &Game, rng: &mut Xorshift) -> Option<Inject> {
 			return None;
 		}
 		Some(Inject::Voucher(v))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn the_cards_a_play_leaves_out_are_ones_a_selection_can_name() {
+		let play = CardMask::from_iter([0, 31]);
+		let rightmost: CardMask = (26..31).collect();
+		for hand_len in [32, 33, 40] {
+			assert_eq!(unused_cards(play, hand_len), rightmost, "of {hand_len}");
+		}
 	}
 }

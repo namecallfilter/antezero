@@ -128,19 +128,33 @@ impl Hand {
 			.sort_by(|a, b| b.nominal(order).total_cmp(&a.nominal(order)));
 	}
 
-	/// `CardArea:update` for the hand: while no card is highlighted, the
-	/// game highlights the first card that has the forced flag.
+	/// The game's highlight list after cards left it: the held cards close
+	/// up, in their order, and while no card is highlighted the game
+	/// highlights the first card that has the forced flag
+	/// (`CardArea:update`).
 	///
 	/// The simulator keeps the highlight of flagged cards only, so this is
-	/// for the moments the game's highlights can run out: a hand card is
-	/// removed, the hand is unhighlighted before a consumable that takes no
-	/// cards is used (as the oracle harness and the mod drive the game), and
-	/// a consumable unhighlights the hand when it is done.
+	/// for the moments a card leaves the list: a hand card is removed, the
+	/// hand is unhighlighted before a consumable that takes no cards is used
+	/// (as the oracle harness and the mod drive the game), and a consumable
+	/// unhighlights the hand when it is done.
 	pub(crate) fn highlight_forced(&mut self) {
-		if self.cards.iter().any(|c| c.forced.is_locked()) {
-			return;
+		let cards = self.cards.iter().enumerate();
+		let mut held: Vec<(u8, usize)> = cards
+			.filter_map(|(i, c)| match c.forced {
+				Forced::Locked { place } => Some((place, i)),
+				Forced::No | Forced::Flagged => None,
+			})
+			.collect();
+		held.sort_unstable();
+		for (place, &(_, i)) in held.iter().enumerate() {
+			self.cards[i].forced = Forced::Locked {
+				place: num::byte(place),
+			};
 		}
-		if let Some(c) = self.cards.iter_mut().find(|c| c.forced.is_flagged()) {
+		if held.is_empty()
+			&& let Some(c) = self.cards.iter_mut().find(|c| c.forced.is_flagged())
+		{
 			c.forced = Forced::Locked { place: 0 };
 		}
 	}

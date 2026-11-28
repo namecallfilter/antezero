@@ -36,9 +36,9 @@ pub enum Forced {
 	/// unhighlight it (`CardArea:remove_from_highlighted`), so every
 	/// selection holds it.
 	Locked {
-		/// Orders the held cards as the game's highlight list
-		/// (`G.hand.highlighted`) has them, the lowest first: a card stays
-		/// where it was highlighted, whatever the hand's order becomes.
+		/// The card's place in the game's highlight list
+		/// (`G.hand.highlighted`), from 0: a card stays in the order it was
+		/// highlighted in, whatever the hand's order becomes.
 		place: u8,
 	},
 }

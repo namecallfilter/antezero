@@ -90,7 +90,15 @@ function AZB.act_prepare(a)
   elseif k == 'move_hand' then area_card(G.hand, a.from); area_card(G.hand, a.to)
   end
   if a.cards and SELECTS[k] then
-    for _, i in ipairs(a.cards) do area_card(G.hand, i) end
+    local asked = {}
+    for _, i in ipairs(a.cards) do asked[area_card(G.hand, i)] = true end
+    -- The game keeps a card the blind holds highlighted, so it would act on
+    -- more cards than the action names.
+    for _, c in ipairs(#a.cards > 0 and G.hand.cards or {}) do
+      if c.ability.forced_selection and c.highlighted and not asked[c] then
+        fail('the cards leave out one the blind holds')
+      end
+    end
     highlight(a.cards)
     AZB.mark_action()
     return true

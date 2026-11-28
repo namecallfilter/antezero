@@ -208,6 +208,23 @@ impl BellRound {
 		assert_same_codes(&self.g, &mut self.o, &command.to_string());
 	}
 
+	/// What the mod's action handler (`mod/src/act.lua`) says to a play of
+	/// the hand cards `cards`, before the button is pressed: "prepared", or
+	/// why it refuses.
+	fn prepare_play(&mut self, cards: &[usize]) -> String {
+		let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mod/src/act.lua");
+		let cards: Vec<String> = cards.iter().map(|i| (i + 1).to_string()).collect();
+		let prepare = format!(
+			"AZB.mark_action = function() end
+			dofile({})
+			local ok, why = pcall(AZB.act_prepare, {{type = 'play', cards = {{{}}}}})
+			return ok and 'prepared' or type(why) == 'table' and why.msg or tostring(why)",
+			lua_path(&path),
+			cards.join(", ")
+		);
+		self.o.eval(&prepare).expect("the mod's handler runs")
+	}
+
 	/// The hand positions of the cards the Bell holds in a given way.
 	fn held(&self, how: fn(Forced) -> bool) -> Vec<usize> {
 		let hand = self.g.areas.hand.cards.iter().enumerate();
@@ -255,7 +272,9 @@ fn bridge_legal_actions_match_the_sim_with_copies_of_the_forced_card() {
 #[test]
 #[ignore = "needs the game's lua51.dll; run with --include-ignored"]
 fn bridge_legal_actions_match_the_sim_with_the_held_card_out_of_reach() {
-	let mut round = BellRound::start(&[Consumable::Spectral(Spectral::Cryptid); 14]);
+	let mut cards = [Consumable::Spectral(Spectral::Cryptid); 15];
+	cards[14] = Consumable::Tarot(Tarot::Hermit);
+	let mut round = BellRound::start(&cards);
 	let bell = round.held(Forced::is_locked)[0];
 	for _ in 0..13 {
 		round.run(use_on(&[bell]));
@@ -273,10 +292,24 @@ fn bridge_legal_actions_match_the_sim_with_the_held_card_out_of_reach() {
 	round.step(move_hand(bell, last));
 	let mut legal = Vec::new();
 	round.g.legal_actions(&mut legal);
-	assert_eq!(legal, [Action::SellConsumable(0)]);
+	let hermit = Action::UseConsumable {
+		index: 1,
+		targets: CardMask::EMPTY,
+	};
+	let sells = [Action::SellConsumable(0), Action::SellConsumable(1)];
+	assert_eq!(legal, [hermit, sells[0], sells[1]], "what takes no cards");
+	assert_eq!(
+		round.prepare_play(&[0]),
+		"the cards leave out one the blind holds"
+	);
 
 	round.step(move_hand(last, CardMask::CAPACITY - 1));
 	round.g.legal_actions(&mut legal);
 	let held = CardMask::from_iter([CardMask::CAPACITY - 1]);
 	assert!(legal.contains(&Action::Play(held)), "the held card alone");
+	assert_eq!(
+		round.prepare_play(&[0]),
+		"the cards leave out one the blind holds"
+	);
+	assert_eq!(round.prepare_play(&[0, CardMask::CAPACITY - 1]), "prepared");
 }
