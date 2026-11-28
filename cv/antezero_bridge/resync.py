@@ -61,6 +61,7 @@ def _owned(have: dict[str, Any] | None, card: dict[str, Any], sort_id: int) -> d
         else:
             have = _fresh(f"inject_cons {codes.consumable_code(card['key'])} {edition}", "consumables")
     have["sort_id"] = sort_id
+    have["facing"] = "back" if card["facing_back"] else "front"
     have["debuff"] = card["debuffed"]
     have["cost"], have["sell_cost"] = card["cost"], card["sell_cost"]
     for key in JOKER_STATE:

@@ -59,6 +59,22 @@ class TestAnteZeroParity(unittest.TestCase):
                     self.assertEqual(len(diffs), 1, diffs)
                     self.assertRegex(diffs[0], rf"^{area}\[{at}\] \S+ facing: sim (back game front|front game back)$")
 
+    def test_a_joker_turned_face_down_is_loaded_from_the_log(self) -> None:
+        """Amber Acorn turns the jokers over; a logged state with one face down resyncs as any other."""
+        import copy
+
+        from antezero_bridge import resync, telemetry
+
+        for name, entries in self.logs.items():
+            with self.subTest(log=name):
+                game = telemetry.start_game(entries)
+                settled = entries[1] if entries[0]["action"] == "Setup Test Suite" else entries[0]
+                lua = copy.deepcopy(settled["state"])
+                lua["jokers"][2]["facing_back"] = True
+                card = entries[0]["state"]["deck"][0]
+                resync.resync(game, lua, card["sort_id"] - card["playing_card"])
+                self.assertEqual(telemetry.dump(game)["jokers"][2]["facing"], "back")
+
     def test_transitions_match_but_for_steamodded(self) -> None:
         """Every logged action is legal, and each state the simulator gets wrong is a known difference of the
         log's Steamodded build from vanilla (and from the Steamodded of today, see `replay.steamodded_cause`)."""
