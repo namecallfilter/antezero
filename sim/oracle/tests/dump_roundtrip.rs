@@ -45,7 +45,7 @@ fn round_with_a_held_card_and_a_copy() -> Game {
 	g.step(Action::SelectBlind)
 		.expect("the first blind can be played");
 	let hand = &mut g.areas.hand.cards;
-	(hand[0].forced, hand[1].forced) = (Forced::Locked, Forced::Flagged);
+	(hand[0].forced, hand[1].forced) = (Forced::Locked { place: 0 }, Forced::Flagged);
 	g
 }
 
@@ -69,22 +69,41 @@ fn a_dump_keeps_which_cards_with_the_forced_flag_are_highlighted() {
 }
 
 #[test]
+fn a_dump_keeps_the_order_the_held_cards_were_highlighted_in() {
+	let mut g = round_with_a_held_card_and_a_copy();
+	let hand = &mut g.areas.hand.cards;
+	(hand[0].forced, hand[1].forced) = (Forced::Locked { place: 1 }, Forced::Locked { place: 0 });
+	check(&mut g, 0, 0);
+}
+
+#[test]
 fn a_highlighted_card_without_the_forced_flag_is_not_held() {
 	let mut g = round_with_a_held_card_and_a_copy();
 	let mut dump = g.to_dump();
-	hand_card(&mut dump, 2).insert("highlighted".into(), Json::Bool(true));
+	hand_card(&mut dump, 2).insert("highlighted".into(), Json::Num(2.0));
 	let back = Game::from_dump(&dump).expect("the dump reads");
 	assert_eq!(back.areas.hand.cards, g.areas.hand.cards);
 }
 
 #[test]
 fn a_dump_of_a_mod_that_does_not_write_the_highlights_is_refused() {
-	let mut dump = round_with_a_held_card_and_a_copy().to_dump();
-	hand_card(&mut dump, 0).remove("highlighted");
-	let refused = Game::from_dump(&dump).expect_err("no highlight for a card");
-	assert!(refused.to_string().contains("update the mod"), "{refused}");
-	let forced = &canon::from_lua(&dump)["hand.0.forced"];
-	assert_eq!(forced, "?", "the canonical state does not guess");
+	// Before version 0.3.0 the mod wrote no highlight, and 0.3.0 wrote it
+	// without the card's place in the list.
+	for old in [None, Some(Json::Bool(true))] {
+		let mut dump = round_with_a_held_card_and_a_copy().to_dump();
+		let card = hand_card(&mut dump, 0);
+		match &old {
+			None => card.remove("highlighted"),
+			Some(highlighted) => card.insert("highlighted".into(), highlighted.clone()),
+		};
+		let refused = Game::from_dump(&dump).expect_err("no highlight place for a card");
+		assert!(refused.to_string().contains("update the mod"), "{refused}");
+		let forced = &canon::from_lua(&dump)["hand.0.forced"];
+		assert_eq!(
+			forced, "?",
+			"the canonical state does not guess, with {old:?}"
+		);
+	}
 }
 
 #[test]

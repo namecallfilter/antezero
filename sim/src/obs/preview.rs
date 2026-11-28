@@ -379,7 +379,9 @@ fn place_copies(v: &mut Game) {
 pub(super) fn rank_plays(v: &Game) -> Vec<CardMask> {
 	let flags = v.areas.eval_flags();
 	let nh = shown_hand(&v.areas.hand.cards).len();
-	let forced = actions::forced_mask(&v.areas.hand.cards);
+	let Some(forced) = actions::forced_mask(&v.areas.hand.cards) else {
+		return Vec::new();
+	};
 	// The Psychic scores any play of fewer than five cards 0 (skipped, unless
 	// the hand has fewer than five).
 	let min = if v.blind.active(BlindKind::Psychic) && nh >= 5 {

@@ -5,10 +5,10 @@
 //! every command, the canonical state, the timeline order and the frame of
 //! every timeline entry.
 
-use oracle::Oracle;
 use oracle::command::{Command, Start};
 use oracle::difftest::{Checks, Comparison, compare};
 use oracle::policy::{highest_scoring_play, unused_cards};
+use oracle::{Oracle, dumpcheck};
 use sim::actions::Action;
 use sim::data::{
 	Back, BlindKind, Edition, Enhancement, Joker, Rank, Spectral, Suit, TagKind, Tarot,
@@ -90,6 +90,14 @@ impl Both {
 
 	fn act(&mut self, a: Action) {
 		self.run(Command::Act(a));
+	}
+
+	/// The game's state, read by the simulator from its dump.
+	fn dumped(&mut self) -> Game {
+		let state = self.o.command("H.state()");
+		let state = state.expect("the game dumps its state");
+		let state = json::parse(&state).expect("the oracle returns JSON");
+		Game::from_dump(&state).expect("the simulator reads the dump")
 	}
 
 	fn inject(&mut self, i: Inject) {
@@ -259,9 +267,9 @@ fn vampire_midas_vampire() {
 }
 
 /// The hand positions of the cards Cerulean Bell holds in a given way.
-fn held(g: &Game, how: Forced) -> Vec<usize> {
+fn held(g: &Game, how: impl Fn(Forced) -> bool) -> Vec<usize> {
 	let hand = g.areas.hand.cards.iter().enumerate();
-	hand.filter(|(_, c)| c.forced == how)
+	hand.filter(|(_, c)| how(c.forced))
 		.map(|(i, _)| i)
 		.collect()
 }
@@ -292,12 +300,25 @@ fn bell_round(seed: &str, consumables: &[Consumable]) -> Both {
 			edition: Some(Edition::Negative),
 		});
 	}
-	b.act(Action::SkipBlind);
-	b.act(Action::SkipBlind);
-	b.act(Action::SelectBlind);
+	for action in [Action::SkipBlind, Action::SkipBlind, Action::SelectBlind] {
+		act_on_highlights(&mut b, action);
+	}
 	assert_eq!(b.g.blind.kind, Some(BlindKind::FinalBell));
-	assert_eq!(held(&b.g, Forced::Locked).len(), 1, "the Bell holds a card");
+	assert_eq!(
+		held(&b.g, Forced::is_locked).len(),
+		1,
+		"the Bell holds a card"
+	);
 	b
+}
+
+/// Moves the one card the Bell holds to the hand position `to`.
+fn move_held_card(b: &mut Both, to: usize) {
+	let bell = held(&b.g, Forced::is_locked)[0];
+	if bell != to {
+		let [from, to] = [bell, to].map(num::byte);
+		act_on_highlights(b, Action::MoveHand { from, to });
+	}
 }
 
 /// Using the first consumable on the hand cards `cards`.
@@ -321,29 +342,33 @@ fn cerulean_bell_holds_only_the_highlighted_card() {
 		Consumable::Tarot(Tarot::Magician),
 		Consumable::Tarot(Tarot::HangedMan),
 	]);
-	let bell = held(&b.g, Forced::Locked);
+	let bell = held(&b.g, Forced::is_locked);
 
 	// Two Cryptids on the held card: the second needs the copies to be free.
-	b.act(use_on(&bell));
-	b.act(use_on(&bell));
-	assert_eq!(held(&b.g, Forced::Locked), bell);
-	let copies = held(&b.g, Forced::Flagged);
+	act_on_highlights(&mut b, use_on(&bell));
+	act_on_highlights(&mut b, use_on(&bell));
+	assert_eq!(held(&b.g, Forced::is_locked), bell);
+	let copies = held(&b.g, |f| f == Forced::Flagged);
 	assert_eq!(copies.len(), 4, "the copies have the flag");
 
 	// The Magician on the held card and a copy: the copy is held from now on.
-	b.act(use_on(&[bell[0], copies[0]]));
-	assert_eq!(held(&b.g, Forced::Locked), [bell[0], copies[0]]);
+	act_on_highlights(&mut b, use_on(&[bell[0], copies[0]]));
+	assert_eq!(held(&b.g, Forced::is_locked), [bell[0], copies[0]]);
 
 	// The Hanged Man destroys the two held cards: the first copy left is held.
-	b.act(use_on(&[bell[0], copies[0]]));
-	let next = held(&b.g, Forced::Locked);
+	act_on_highlights(&mut b, use_on(&[bell[0], copies[0]]));
+	let next = held(&b.g, Forced::is_locked);
 	assert_eq!(next.len(), 1, "one copy is held: {next:?}");
-	assert_eq!(held(&b.g, Forced::Flagged).len(), 2);
+	assert_eq!(held(&b.g, |f| f == Forced::Flagged).len(), 2);
 
 	// A discard of the held card alone, then the Bell holds a new card.
-	b.act(Action::Discard(next.iter().copied().collect()));
-	assert_eq!(held(&b.g, Forced::Locked).len(), 1);
-	assert_eq!(held(&b.g, Forced::Flagged), [0; 0], "no card has the flag");
+	act_on_highlights(&mut b, Action::Discard(next.iter().copied().collect()));
+	assert_eq!(held(&b.g, Forced::is_locked).len(), 1);
+	assert_eq!(
+		held(&b.g, |f| f == Forced::Flagged),
+		[0; 0],
+		"no card has the flag"
+	);
 	b.win_round();
 }
 
@@ -354,22 +379,16 @@ fn cerulean_bell_holds_only_the_highlighted_card() {
 fn death_keeps_and_passes_on_the_bells_hold() {
 	let death = Consumable::Tarot(Tarot::Death);
 	let mut b = bell_round(&find_seed(quiet_skips), &[death, death]);
-	let bell = held(&b.g, Forced::Locked)[0];
-	if bell != 3 {
-		b.act(Action::MoveHand {
-			from: num::byte(bell),
-			to: 3,
-		});
-	}
+	move_held_card(&mut b, 3);
 
 	// The held card becomes the free card to its right, and is still held.
-	b.act(use_on(&[3, 5]));
-	assert_eq!(held(&b.g, Forced::Locked), [3]);
-	assert_eq!(held(&b.g, Forced::Flagged), [0; 0]);
+	act_on_highlights(&mut b, use_on(&[3, 5]));
+	assert_eq!(held(&b.g, Forced::is_locked), [3]);
+	assert_eq!(held(&b.g, |f| f == Forced::Flagged), [0; 0]);
 
 	// The free card to its left becomes the held card, and is held too.
-	b.act(use_on(&[0, 3]));
-	assert_eq!(held(&b.g, Forced::Locked), [0, 3]);
+	act_on_highlights(&mut b, use_on(&[0, 3]));
+	assert_eq!(held(&b.g, Forced::is_locked), [0, 3]);
 }
 
 /// What is done with the last consumable in
@@ -382,23 +401,20 @@ enum Next {
 	UseOnNoCard,
 }
 
-/// A hand a player left with a free card highlighted while the held card
-/// was destroyed: the copies have the flag and none is held. The game then
-/// holds the first copy when its highlights run out, and not before.
-#[test]
-#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
-fn a_copy_takes_over_when_the_highlights_run_out() {
-	let cryptid = Consumable::Spectral(Spectral::Cryptid);
-	let familiar = Consumable::Spectral(Spectral::Familiar);
-	// A run in which Familiar destroys the card the Bell holds.
-	let seed = find_seed(|g| {
+const CRYPTID: Consumable = Consumable::Spectral(Spectral::Cryptid);
+const FAMILIAR: Consumable = Consumable::Spectral(Spectral::Familiar);
+
+/// A run for [`bell_round`] in which Familiar, used after Cryptid on the
+/// card the Bell holds, destroys that card.
+fn seed_in_which_familiar_destroys_the_held_card() -> String {
+	find_seed(|g| {
 		if !quiet_skips(g) {
 			return false;
 		}
 		let mut g = g.clone();
 		g.blind_select.boss = BlindKind::FinalBell;
 		g.inject(Inject::joker(Joker::Joker));
-		for card in [cryptid, familiar] {
+		for card in [CRYPTID, FAMILIAR] {
 			g.inject(Inject::Consumable {
 				card,
 				edition: Some(Edition::Negative),
@@ -407,14 +423,49 @@ fn a_copy_takes_over_when_the_highlights_run_out() {
 		for action in [Action::SkipBlind, Action::SkipBlind, Action::SelectBlind] {
 			g.step(action).expect("the run reaches the boss");
 		}
-		let bell = held(&g, Forced::Locked);
+		let bell = held(&g, Forced::is_locked);
 		let id = g.areas.hand.cards[bell[0]].core.id;
 		for cards in [&bell[..], &[]] {
 			g.step(use_on(cards)).expect("Cryptid, then Familiar");
 		}
 		g.areas.hand.cards.iter().all(|c| c.core.id != id)
-	});
-	let free = |g: &Game| held(g, Forced::No)[0];
+	})
+}
+
+/// The first hand card without the forced flag.
+fn free(g: &Game) -> usize {
+	held(g, |f| f == Forced::No)[0]
+}
+
+/// Both engines with a hand a player left with a free card highlighted
+/// while the held card was destroyed: two copies have the flag and none is
+/// held. `seed` is of [`seed_in_which_familiar_destroys_the_held_card`];
+/// `consumables` are left.
+fn round_with_free_copies(seed: &str, consumables: &[Consumable]) -> Both {
+	let mut b = bell_round(seed, &[&[CRYPTID, FAMILIAR], consumables].concat());
+	let bell = held(&b.g, Forced::is_locked);
+	act_on_highlights(&mut b, use_on(&bell));
+	// The player highlights a free card and uses Familiar.
+	let click = format!(
+		"G.hand:add_to_highlighted(G.hand.cards[{}])
+		G.FUNCS.use_card({{config = {{ref_table = G.consumeables.cards[1]}}}})
+		H.settle()",
+		free(&b.g) + 1
+	);
+	b.o.exec(&click).expect("the game takes the clicks");
+	b.g = b.dumped();
+	assert_eq!(held(&b.g, Forced::is_locked), [0; 0], "no card is held");
+	assert_eq!(held(&b.g, |f| f == Forced::Flagged).len(), 2);
+	b
+}
+
+/// A hand a player left with a free card highlighted while the held card
+/// was destroyed: the copies have the flag and none is held. The game then
+/// holds the first copy when its highlights run out, and not before.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn a_copy_takes_over_when_the_highlights_run_out() {
+	let seed = seed_in_which_familiar_destroys_the_held_card();
 	let aura = Consumable::Spectral(Spectral::Aura);
 	let cases = [
 		(aura, Next::SellJoker, 0),
@@ -430,31 +481,175 @@ fn a_copy_takes_over_when_the_highlights_run_out() {
 		(Consumable::Tarot(Tarot::HangedMan), Next::UseOnAFreeCard, 1),
 	];
 	for (last, next, held_after) in cases {
-		let mut b = bell_round(&seed, &[cryptid, familiar, last]);
-		let bell = held(&b.g, Forced::Locked);
-		b.act(use_on(&bell));
-		// The player highlights a free card and uses Familiar.
-		let click = format!(
-			"G.hand:add_to_highlighted(G.hand.cards[{}])
-			G.FUNCS.use_card({{config = {{ref_table = G.consumeables.cards[1]}}}})
-			H.settle()",
-			free(&b.g) + 1
-		);
-		b.o.exec(&click).expect("the game takes the clicks");
-		let state = b.o.command("H.state()").expect("the game dumps its state");
-		let state = json::parse(&state).expect("the oracle returns JSON");
-		b.g = Game::from_dump(&state).expect("the simulator reads the dump");
-		assert_eq!(held(&b.g, Forced::Locked), [0; 0], "no card is held");
-		assert_eq!(held(&b.g, Forced::Flagged).len(), 2);
-
+		let mut b = round_with_free_copies(&seed, &[last]);
 		let action = match next {
 			Next::SellJoker => Action::SellJoker(0),
 			Next::SellConsumable => Action::SellConsumable(0),
 			Next::UseOnAFreeCard => use_on(&[free(&b.g)]),
 			Next::UseOnNoCard => use_on(&[]),
 		};
-		b.act(action);
-		let now = held(&b.g, Forced::Locked).len();
+		act_on_highlights(&mut b, action);
+		let now = held(&b.g, Forced::is_locked).len();
 		assert_eq!(now, held_after, "after {last:?} and {action:?}");
 	}
+}
+
+/// The hand positions of the cards the Bell holds, in the order of the
+/// simulator's highlight list.
+fn highlights(g: &Game) -> Vec<usize> {
+	let hand = g.areas.hand.cards.iter().enumerate();
+	let mut held: Vec<(u8, usize)> = hand
+		.filter_map(|(i, c)| match c.forced {
+			Forced::Locked { place } => Some((place, i)),
+			Forced::No | Forced::Flagged => None,
+		})
+		.collect();
+	held.sort_unstable();
+	held.into_iter().map(|(_, i)| i).collect()
+}
+
+/// Runs `action` in both engines. The simulator must then be what it reads
+/// from the game's dump, which has every held card's place in the game's
+/// highlight list.
+fn act_on_highlights(b: &mut Both, action: Action) {
+	b.act(action);
+	let differences = dumpcheck::part_diffs(&mut b.dumped(), &mut b.g);
+	assert_eq!(differences, [""; 0], "after {action:?}");
+}
+
+/// The Hanged Man destroys its cards from the end of the game's highlight
+/// list. A held card is in the list before the cards an action adds, and
+/// held cards stay in the order they were highlighted in, whatever the
+/// order of the hand.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn the_hanged_man_destroys_its_cards_from_the_end_of_the_highlight_list() {
+	let hanged_man = Consumable::Tarot(Tarot::HangedMan);
+	let seed = find_seed(quiet_skips);
+
+	// The held card and a free card to its left.
+	let mut b = bell_round(&seed, &[hanged_man]);
+	move_held_card(&mut b, 3);
+	act_on_highlights(&mut b, use_on(&[0, 3]));
+
+	// Two held cards, the later one moved to the left of the earlier one,
+	// in a simulator that has the hand from the game's dump.
+	let mut b = bell_round(&seed, &[
+		CRYPTID,
+		Consumable::Tarot(Tarot::Magician),
+		hanged_man,
+	]);
+	let bell = held(&b.g, Forced::is_locked)[0];
+	act_on_highlights(&mut b, use_on(&[bell]));
+	let copy = held(&b.g, |f| f == Forced::Flagged)[0];
+	act_on_highlights(&mut b, use_on(&[bell, copy]));
+	assert!(bell < copy, "the copies are added at the end of the hand");
+	let [from, to] = [copy, bell].map(num::byte);
+	act_on_highlights(&mut b, Action::MoveHand { from, to });
+	assert_eq!(highlights(&b.g), [bell + 1, bell]);
+	b.g = b.dumped();
+	assert_eq!(highlights(&b.g), [bell + 1, bell]);
+	act_on_highlights(&mut b, use_on(&[bell, bell + 1]));
+
+	// The held card and the card to its left that Death gave its hold to.
+	let mut b = bell_round(&seed, &[Consumable::Tarot(Tarot::Death), hanged_man]);
+	move_held_card(&mut b, 3);
+	act_on_highlights(&mut b, use_on(&[0, 3]));
+	assert_eq!(highlights(&b.g), [3, 0]);
+	act_on_highlights(&mut b, use_on(&[0, 3]));
+}
+
+/// Death on a free card and a copy to its right while no card is held: the
+/// action highlights both, by hand position, and the free card gets the
+/// copy's flag in its place of the list.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn death_on_a_free_card_and_a_copy_holds_them_by_hand_position() {
+	let seed = seed_in_which_familiar_destroys_the_held_card();
+	let mut b = round_with_free_copies(&seed, &[
+		Consumable::Tarot(Tarot::Death),
+		Consumable::Tarot(Tarot::HangedMan),
+	]);
+	let (plain, copy) = (free(&b.g), held(&b.g, |f| f == Forced::Flagged)[0]);
+	assert!(plain < copy, "the copies are added at the end of the hand");
+	act_on_highlights(&mut b, use_on(&[plain, copy]));
+	assert_eq!(highlights(&b.g), [plain, copy]);
+
+	let [from, to] = [plain, copy].map(num::byte);
+	act_on_highlights(&mut b, Action::MoveHand { from, to });
+	assert_eq!(highlights(&b.g), [copy, copy - 1]);
+	act_on_highlights(&mut b, use_on(&[copy - 1, copy]));
+	assert_eq!(highlights(&b.g).len(), 1, "the other copy took over");
+}
+
+/// The game closes its highlight list up when a card leaves it: a free card
+/// a tarot unhighlights, a held card that is destroyed, and the free cards
+/// of a hand a player left highlighted.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn the_held_cards_close_up_when_a_card_leaves_the_highlight_list() {
+	let magician = Consumable::Tarot(Tarot::Magician);
+
+	// The Sun on a free card, the held card and a copy right of them.
+	let mut b = bell_round(&find_seed(quiet_skips), &[
+		CRYPTID,
+		Consumable::Tarot(Tarot::Sun),
+	]);
+	move_held_card(&mut b, 3);
+	act_on_highlights(&mut b, use_on(&[3]));
+	let copy = held(&b.g, |f| f == Forced::Flagged)[0];
+	act_on_highlights(&mut b, use_on(&[0, 3, copy]));
+	assert_eq!(highlights(&b.g), [3, copy]);
+
+	// Familiar destroys the first of two held cards.
+	let seed = find_seed(|g| {
+		if !quiet_skips(g) {
+			return false;
+		}
+		let mut g = g.clone();
+		g.blind_select.boss = BlindKind::FinalBell;
+		g.inject(Inject::joker(Joker::Joker));
+		for card in [CRYPTID, magician, FAMILIAR] {
+			g.inject(Inject::Consumable {
+				card,
+				edition: Some(Edition::Negative),
+			});
+		}
+		for action in [Action::SkipBlind, Action::SkipBlind, Action::SelectBlind] {
+			g.step(action).expect("the run reaches the boss");
+		}
+		let bell = held(&g, Forced::is_locked)[0];
+		g.step(use_on(&[bell])).expect("Cryptid");
+		let copy = held(&g, |f| f == Forced::Flagged)[0];
+		let ids = [bell, copy].map(|i| g.areas.hand.cards[i].core.id);
+		for cards in [&[bell, copy][..], &[]] {
+			g.step(use_on(cards)).expect("The Magician, then Familiar");
+		}
+		let left = |id| g.areas.hand.cards.iter().any(|c| c.core.id == id);
+		!left(ids[0]) && left(ids[1])
+	});
+	let mut b = bell_round(&seed, &[CRYPTID, magician, FAMILIAR]);
+	let bell = held(&b.g, Forced::is_locked)[0];
+	act_on_highlights(&mut b, use_on(&[bell]));
+	let copy = held(&b.g, |f| f == Forced::Flagged)[0];
+	act_on_highlights(&mut b, use_on(&[bell, copy]));
+	act_on_highlights(&mut b, use_on(&[]));
+	assert_eq!(highlights(&b.g).len(), 1, "the copy is still held");
+
+	// A player highlights a free card, a copy, a free card and the other
+	// copy; then The Hermit is used, which takes no cards.
+	let seed = seed_in_which_familiar_destroys_the_held_card();
+	let mut b = round_with_free_copies(&seed, &[Consumable::Tarot(Tarot::Hermit)]);
+	let copies = held(&b.g, |f| f == Forced::Flagged);
+	let other_free = held(&b.g, |f| f == Forced::No)[1];
+	let clicks: Vec<String> = [copies[0], other_free, copies[1]]
+		.iter()
+		.map(|i| format!("G.hand:add_to_highlighted(G.hand.cards[{}])", i + 1))
+		.collect();
+	b.o.exec(&clicks.join("\n"))
+		.expect("the game takes the clicks");
+	b.g = b.dumped();
+	assert_eq!(highlights(&b.g), copies);
+	act_on_highlights(&mut b, use_on(&[]));
+	assert_eq!(highlights(&b.g), copies);
 }

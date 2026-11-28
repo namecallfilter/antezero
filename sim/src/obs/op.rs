@@ -216,7 +216,9 @@ fn targeted(
 		return;
 	};
 	let hand = shown_hand(&g.areas.hand.cards);
-	let forced = actions::forced_mask(&g.areas.hand.cards);
+	let Some(forced) = actions::forced_mask(&g.areas.hand.cards) else {
+		return;
+	};
 	let allowed = if consumable.kind == Kind::Spectral(Spectral::Aura) {
 		hand.iter()
 			.enumerate()
@@ -311,6 +313,58 @@ fn pack_ops(g: &Game, lay: &Layout, out: &mut Vec<Op>) {
 	}
 }
 
+/// Whether another free reorder is offered.
+fn can_reorder(g: &Game, options: OpOptions) -> bool {
+	g.flow.rearranges < options.max_rearranges
+}
+
+/// The ops that reorder the hand (in rounds, and in packs opened with the
+/// hand drawn): the sorts and the move of a shown card, and the move of a
+/// held card past the shown hand to the front.
+fn hand_reorder_ops(g: &Game, options: OpOptions, out: &mut Vec<Op>) {
+	if !matches!(g.flow.phase, Phase::Round | Phase::Pack) {
+		return;
+	}
+	let hand = &g.areas.hand;
+	let nh = shown_hand(&hand.cards).len();
+	if can_reorder(g, options) && nh >= 2 {
+		let null = !options.null_sorts && null_sort(hand);
+		for (order, kind) in [
+			(HandSort::Rank, OpKind::SortRank),
+			(HandSort::Suit, OpKind::SortSuit),
+		] {
+			if !(null && hand.order == order) {
+				out.push(Op::simple(kind));
+			}
+		}
+		out.push(Op {
+			cards: Some(CardArg {
+				min: 1,
+				max: 1,
+				allowed: CardMask::first(nh),
+				required: CardMask::EMPTY,
+			}),
+			dest: Some(num::byte(nh)),
+			..Op::simple(OpKind::MoveHand)
+		});
+	}
+	// A held card past the shown hand is in no selection, so none is legal,
+	// and no op above names it: an op of its own moves it to the front,
+	// whatever the reorder allowance. No held card needs the op twice, as
+	// one at the front stays in the shown hand. A move names its card in a
+	// byte, so a card past that has no op.
+	for (i, c) in hand.cards.iter().enumerate().skip(nh) {
+		if c.forced.is_locked()
+			&& let Ok(index) = u8::try_from(i)
+		{
+			out.push(Op {
+				index,
+				..Op::simple(OpKind::MoveHand)
+			});
+		}
+	}
+}
+
 /// The ops of the current phase, then the ones open in every phase: hand
 /// reordering, using and selling what is owned, joker reordering. The order
 /// is part of the action space.
@@ -331,8 +385,10 @@ fn base_ops(g: &Game, lay: &Layout, options: OpOptions, out: &mut Vec<Op>) {
 			}
 		}
 		Phase::Round => {
-			let forced = actions::forced_mask(&g.areas.hand.cards);
-			if nh > 0 && forced.len() <= Hand::HIGHLIGHT_LIMIT {
+			if let Some(forced) = actions::forced_mask(&g.areas.hand.cards)
+				&& nh > 0
+				&& forced.len() <= Hand::HIGHLIGHT_LIMIT
+			{
 				let base = Op {
 					cards: Some(CardArg {
 						min: 1,
@@ -355,30 +411,7 @@ fn base_ops(g: &Game, lay: &Layout, options: OpOptions, out: &mut Vec<Op>) {
 		Phase::Pack => pack_ops(g, lay, out),
 		Phase::RoundEval => out.push(Op::simple(OpKind::CashOut)),
 	}
-	// Reordering the hand (in rounds, and in packs opened with it drawn).
-	let can_reorder = g.flow.rearranges < options.max_rearranges;
-	if can_reorder && matches!(g.flow.phase, Phase::Round | Phase::Pack) && nh >= 2 {
-		let hand = &g.areas.hand;
-		let null = !options.null_sorts && null_sort(hand);
-		for (order, kind) in [
-			(HandSort::Rank, OpKind::SortRank),
-			(HandSort::Suit, OpKind::SortSuit),
-		] {
-			if !(null && hand.order == order) {
-				out.push(Op::simple(kind));
-			}
-		}
-		out.push(Op {
-			cards: Some(CardArg {
-				min: 1,
-				max: 1,
-				allowed: all,
-				required: CardMask::EMPTY,
-			}),
-			dest: Some(num::byte(nh)),
-			..Op::simple(OpKind::MoveHand)
-		});
-	}
+	hand_reorder_ops(g, options, out);
 	for (i, c) in g.areas.consumables.iter().enumerate() {
 		targeted(
 			g,
@@ -401,7 +434,7 @@ fn base_ops(g: &Game, lay: &Layout, options: OpOptions, out: &mut Vec<Op>) {
 			out.push(Op::on(OpKind::SellConsumable, lay.consumables + i, i));
 		}
 	}
-	if can_reorder && g.areas.jokers.len() >= 2 {
+	if can_reorder(g, options) && g.areas.jokers.len() >= 2 {
 		for i in 0..g.areas.jokers.len() {
 			out.push(Op {
 				dest: Some(num::byte(g.areas.jokers.len())),
@@ -452,13 +485,17 @@ pub fn decode(g: &Game, o: &Op, cards: CardMask, dest: Option<u8>) -> Option<Act
 		},
 		OpKind::SortRank => Action::SortHand(HandSort::Rank),
 		OpKind::SortSuit => Action::SortHand(HandSort::Suit),
-		OpKind::MoveHand => {
-			let from = mask.lowest().filter(|_| mask.len() == 1)?;
-			Action::MoveHand {
-				from: num::byte(from),
+		OpKind::MoveHand => match o.cards {
+			Some(_) => Action::MoveHand {
+				from: num::byte(mask.lowest().filter(|_| mask.len() == 1)?),
 				to: to_slot()?,
-			}
-		}
+			},
+			// The op of a held card past the shown hand.
+			None => Action::MoveHand {
+				from: o.index,
+				to: 0,
+			},
+		},
 	};
 	if let Some(c) = o.cards {
 		let count = mask.len();

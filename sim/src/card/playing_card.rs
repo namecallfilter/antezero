@@ -23,7 +23,7 @@ pub enum SuitTest {
 
 /// Cerulean Bell's hold on a hand card: `ability.forced_selection`, and for
 /// a card that has it, whether the card is highlighted. In the order of how
-/// firmly the card is held, which `min` and `max` on it rely on.
+/// firmly the card is held, which `min` on it relies on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Forced {
 	#[default]
@@ -35,7 +35,12 @@ pub enum Forced {
 	/// The card has the flag and is highlighted. The game refuses to
 	/// unhighlight it (`CardArea:remove_from_highlighted`), so every
 	/// selection holds it.
-	Locked,
+	Locked {
+		/// The card's place in the game's highlight list
+		/// (`G.hand.highlighted`), from 0: a card stays in the order it was
+		/// highlighted in, whatever the hand's order becomes.
+		place: u8,
+	},
 }
 
 impl Forced {
@@ -48,7 +53,7 @@ impl Forced {
 	/// Whether every selection must hold the card.
 	#[must_use]
 	pub fn is_locked(self) -> bool {
-		self == Forced::Locked
+		matches!(self, Forced::Locked { .. })
 	}
 }
 
