@@ -2,7 +2,7 @@
 //! `reroll_boss`, `new_round`, `play`, `discard`).
 
 use crate::areas::Pile;
-use crate::card::{CardMask, Kind, PlayingCard};
+use crate::card::{CardMask, Forced, Kind, PlayingCard};
 use crate::data::{BlindKind, HandType, Joker, Seal, TagKind};
 use crate::event::{Draw, Event, EventQueue, Trigger};
 use crate::game::{
@@ -178,7 +178,7 @@ pub(crate) fn do_play(
 	}
 	blind.triggered = false;
 	for c in areas.playing_cards_mut() {
-		c.forced_selection = false;
+		c.forced = Forced::No;
 	}
 	areas.play.reserve(sel.len());
 	flow.hand_text_cleared = false;
@@ -228,7 +228,7 @@ const DISCARD_LIMIT: usize = 500;
 /// Panics if `sel` holds a position past the end of the hand.
 pub(crate) fn do_discard(g: &mut Game, sel: &mut [usize], hook: bool) {
 	for c in g.areas.playing_cards_mut() {
-		c.forced_selection = false;
+		c.forced = Forced::No;
 	}
 	sel.sort_unstable();
 	let count = sel

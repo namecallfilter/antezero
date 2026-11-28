@@ -6,7 +6,7 @@ use super::parse::{
 	raw_named, text, whole,
 };
 use crate::canon::JokerField;
-use crate::card::{AnyCard, Card, CardCore, Kind, PlayingCard, Sticker};
+use crate::card::{AnyCard, Card, CardCore, Forced, Kind, PlayingCard, Sticker};
 use crate::data::{Edition, Enhancement, HandType, Rank, Seal, Suit};
 use crate::json::Json;
 
@@ -55,6 +55,25 @@ fn core(c: &Json) -> Result<CardCore, DumpError> {
 	})
 }
 
+/// The playing card's place in its area's highlight list (from 0), `None`
+/// if it is not highlighted. The mod writes it since version 0.3.1.
+fn highlighted(c: &Json) -> Result<Option<u8>, DumpError> {
+	match c.field("highlighted") {
+		None | Some(Json::Bool(true)) => Err(DumpError(
+			"no highlighted place: the dump is of an AnteZero mod before 0.3.1, update the mod"
+				.into(),
+		)),
+		Some(Json::Bool(false)) => Ok(None),
+		Some(v) => {
+			let nth: u16 = int(c, "highlighted")?;
+			let place = nth
+				.checked_sub(1)
+				.and_then(|place| u8::try_from(place).ok());
+			place.map(Some).ok_or_else(|| bad("highlighted", v))
+		}
+	}
+}
+
 fn playing_card(c: &Json) -> Result<PlayingCard, DumpError> {
 	let ab = c.get("ability");
 	// what the canonical state reads (the simulator has them from `rank`,
@@ -73,7 +92,11 @@ fn playing_card(c: &Json) -> Result<PlayingCard, DumpError> {
 		enhancement: named(c, "key", Enhancement::from_key)?,
 		seal: opt_named(c, "seal", |s| by_name(&Seal::ALL, Seal::name, s))?,
 		perma_bonus: number(ab, "perma_bonus")?,
-		forced_selection: raw_flag(ab, "forced_selection")?,
+		forced: match (raw_flag(ab, "forced_selection")?, highlighted(c)?) {
+			(false, _) => Forced::No,
+			(true, None) => Forced::Flagged,
+			(true, Some(place)) => Forced::Locked { place },
+		},
 		played_this_ante: raw_flag(ab, "played_this_ante")?,
 		wheel_flipped: raw_flag(ab, "wheel_flipped")?,
 		times_played: int(c, "times_played")?,

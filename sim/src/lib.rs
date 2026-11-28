@@ -35,7 +35,7 @@ mod shop;
 
 pub use actions::{Action, ActionError, ParseError};
 pub use card::mask::CardMask;
-pub use card::{AnyCard, Card, CardLike, Kind, PlayingCard};
+pub use card::{AnyCard, Card, CardLike, Forced, Kind, PlayingCard};
 pub use data::sets::{CenterSet, HandSet, PlanetSet, VoucherSet};
 pub use data::*;
 pub use game::{Game, Phase, State};

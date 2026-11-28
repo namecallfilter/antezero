@@ -4,14 +4,17 @@
 //! deck and stake. No game needed: `dumpcheck` checks the reader against the
 //! real game's dumps.
 
+use std::collections::BTreeMap;
+
 use oracle::canon;
 use oracle::dumpcheck::part_diffs;
 use oracle::fingerprint::obs_fingerprint;
 use oracle::policy::Policy;
+use sim::actions::Action;
 use sim::data::Back;
 use sim::game::Game;
 use sim::json::Json;
-use sim::{Stake, json, num};
+use sim::{Forced, Stake, json, num};
 
 const GAMES: u64 = 60;
 const STEPS: usize = 250;
@@ -33,6 +36,74 @@ fn check(g: &mut Game, n: u64, step: usize) {
 		obs_fingerprint(g),
 		"game {n} step {step}: the observation differs"
 	);
+}
+
+/// A game in its first round whose first hand card Cerulean Bell holds and
+/// whose second is a copy with the flag.
+fn round_with_a_held_card_and_a_copy() -> Game {
+	let mut g = Game::new_run("BELLDUMP", Back::Red, Stake::White);
+	g.step(Action::SelectBlind)
+		.expect("the first blind can be played");
+	let hand = &mut g.areas.hand.cards;
+	(hand[0].forced, hand[1].forced) = (Forced::Locked { place: 0 }, Forced::Flagged);
+	g
+}
+
+/// The `i`-th hand card of `dump`.
+fn hand_card(dump: &mut Json, i: usize) -> &mut BTreeMap<String, Json> {
+	let Json::Obj(game) = dump else {
+		panic!("the dump is an object");
+	};
+	let Some(Json::Arr(hand)) = game.get_mut("hand") else {
+		panic!("the dump has a hand");
+	};
+	let Json::Obj(card) = &mut hand[i] else {
+		panic!("a card is an object");
+	};
+	card
+}
+
+#[test]
+fn a_dump_keeps_which_cards_with_the_forced_flag_are_highlighted() {
+	check(&mut round_with_a_held_card_and_a_copy(), 0, 0);
+}
+
+#[test]
+fn a_dump_keeps_the_order_the_held_cards_were_highlighted_in() {
+	let mut g = round_with_a_held_card_and_a_copy();
+	let hand = &mut g.areas.hand.cards;
+	(hand[0].forced, hand[1].forced) = (Forced::Locked { place: 1 }, Forced::Locked { place: 0 });
+	check(&mut g, 0, 0);
+}
+
+#[test]
+fn a_highlighted_card_without_the_forced_flag_is_not_held() {
+	let mut g = round_with_a_held_card_and_a_copy();
+	let mut dump = g.to_dump();
+	hand_card(&mut dump, 2).insert("highlighted".into(), Json::Num(2.0));
+	let back = Game::from_dump(&dump).expect("the dump reads");
+	assert_eq!(back.areas.hand.cards, g.areas.hand.cards);
+}
+
+#[test]
+fn a_dump_of_a_mod_that_does_not_write_the_highlights_is_refused() {
+	// Before version 0.3.0 the mod wrote no highlight, and 0.3.0 wrote it
+	// without the card's place in the list.
+	for old in [None, Some(Json::Bool(true))] {
+		let mut dump = round_with_a_held_card_and_a_copy().to_dump();
+		let card = hand_card(&mut dump, 0);
+		match &old {
+			None => card.remove("highlighted"),
+			Some(highlighted) => card.insert("highlighted".into(), highlighted.clone()),
+		};
+		let refused = Game::from_dump(&dump).expect_err("no highlight place for a card");
+		assert!(refused.to_string().contains("update the mod"), "{refused}");
+		let forced = &canon::from_lua(&dump)["hand.0.forced"];
+		assert_eq!(
+			forced, "?",
+			"the canonical state does not guess, with {old:?}"
+		);
+	}
 }
 
 #[test]

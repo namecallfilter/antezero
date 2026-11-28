@@ -17,7 +17,9 @@ local function phase()
   return nil
 end
 
--- Card masks cover the first 32 hand cards (the sim's CardMask).
+-- Card masks cover the first 32 hand cards (the sim's CardMask). A mask is
+-- written with %.0f: LuaJIT's %d wraps one that has the 32nd card to a
+-- negative number.
 local MASK_BITS = 32
 
 local function popcount(m)
@@ -38,11 +40,15 @@ local function lowbit(m)
   return b
 end
 
+-- The cards every selection must hold, nil if a mask cannot hold one of
+-- them: no selection is legal then.
 local function forced_mask()
   local m = 0
   for i, c in ipairs(G.hand and G.hand.cards or {}) do
-    if i > MASK_BITS then break end
-    if c.ability and c.ability.forced_selection then m = m + 2 ^ (i - 1) end
+    if c.ability and c.ability.forced_selection and c.highlighted then
+      if i > MASK_BITS then return nil end
+      m = m + 2 ^ (i - 1)
+    end
   end
   return m
 end
@@ -110,6 +116,7 @@ local function usable_masks(c)
     if can_use_with(c, 0) then out[1] = 0 end
     return out
   end
+  if not fm then return out end
   local max = (max_h == 0) and 1 or math.min(max_h, 5)
   for _, m in ipairs(subsets(max)) do
     if includes(m, fm) and can_use_with(c, m) then out[#out+1] = m end
@@ -144,10 +151,10 @@ function AZB.legal_codes()
     end
   elseif ph == 'round' then
     local can_discard = G.GAME.current_round.discards_left > 0
-    for _, m in ipairs(subsets(5)) do
+    for _, m in ipairs(fm and subsets(5) or {}) do
       if includes(m, fm) then
-        add('play ' .. string.format('%d', m))
-        if can_discard then add('discard ' .. string.format('%d', m)) end
+        add('play ' .. string.format('%.0f', m))
+        if can_discard then add('discard ' .. string.format('%.0f', m)) end
       end
     end
   elseif ph == 'shop' then
@@ -155,7 +162,7 @@ function AZB.legal_codes()
       local afford = not (c.cost > spendable() and c.cost > 0)
       if afford and has_buy_space(c) then add('buy ' .. (i - 1)) end
       if is_consumable(c) and afford then
-        for _, m in ipairs(usable_masks(c)) do add(string.format('buy_use %d %d', i - 1, m)) end
+        for _, m in ipairs(usable_masks(c)) do add(string.format('buy_use %d %.0f', i - 1, m)) end
       end
     end
     for i, c in ipairs(G.shop_vouchers.cards) do
@@ -170,7 +177,7 @@ function AZB.legal_codes()
   elseif ph == 'pack' then
     for i, c in ipairs(G.pack_cards.cards) do
       if is_consumable(c) then
-        for _, m in ipairs(usable_masks(c)) do add(string.format('pick %d %d', i - 1, m)) end
+        for _, m in ipairs(usable_masks(c)) do add(string.format('pick %d %.0f', i - 1, m)) end
       elseif c.ability.set == 'Joker' then
         if (c.edition and c.edition.negative) or #G.jokers.cards < G.jokers.config.card_limit then
           add(string.format('pick %d 0', i - 1))
@@ -188,7 +195,7 @@ function AZB.legal_codes()
     add('cash_out')
   end
   for i, c in ipairs(G.consumeables.cards) do
-    for _, m in ipairs(usable_masks(c)) do add(string.format('use %d %d', i - 1, m)) end
+    for _, m in ipairs(usable_masks(c)) do add(string.format('use %d %.0f', i - 1, m)) end
   end
   for i, c in ipairs(G.jokers.cards) do
     if not c.ability.eternal then add('sell_joker ' .. (i - 1)) end

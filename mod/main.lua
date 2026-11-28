@@ -15,7 +15,7 @@
 -- (arbitrary Lua) is refused unless AZB_ALLOW_EVAL=1.
 
 AZB = AZB or {}
-AZB.VERSION = "0.2.0"
+AZB.VERSION = "0.3.1"
 
 local function load(path)
   return assert(SMODS.load_file(path))()

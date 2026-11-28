@@ -23,20 +23,28 @@ fn card_at<C>(cards: &[C], i: u8) -> Result<&C, ActionError> {
 	cards.get(usize::from(i)).ok_or(ActionError::BadIndex)
 }
 
-/// Hand cards that must be part of any selection (Cerulean Bell).
+/// Hand cards that must be part of any selection: the ones Cerulean Bell
+/// holds highlighted. `None` if one of them is past the positions a mask
+/// holds: no selection can have it, so none is legal.
 #[must_use]
-pub fn forced_mask(hand: &[PlayingCard]) -> CardMask {
-	let cards = hand.iter().take(CardMask::CAPACITY).enumerate();
-	cards
-		.filter(|(_, c)| c.forced_selection)
-		.map(|(i, _)| i)
-		.collect()
+pub fn forced_mask(hand: &[PlayingCard]) -> Option<CardMask> {
+	let mut forced = CardMask::EMPTY;
+	for (i, c) in hand.iter().enumerate() {
+		if c.forced.is_locked() {
+			if i >= CardMask::CAPACITY {
+				return None;
+			}
+			forced.insert(i);
+		}
+	}
+	Some(forced)
 }
 
-/// Whether `m` is a selection to play or discard from a hand of `n_hand`
-/// cards whose forced cards are `forced`.
-fn valid_selection(m: CardMask, forced: CardMask, n_hand: usize) -> bool {
-	(1..=Hand::HIGHLIGHT_LIMIT).contains(&m.len()) && m.fits(n_hand) && m.contains_all(forced)
+/// Whether `m` is a selection to play or discard from `hand`.
+fn valid_selection(m: CardMask, hand: &[PlayingCard]) -> bool {
+	(1..=Hand::HIGHLIGHT_LIMIT).contains(&m.len())
+		&& m.fits(hand.len())
+		&& forced_mask(hand).is_some_and(|forced| m.contains_all(forced))
 }
 
 fn can_discard(discards_left: f64) -> bool {
@@ -51,7 +59,9 @@ fn consumable_usable(
 	}
 	// Only consumables that use targets must include the forced card.
 	let uses_targets = consumables::targets(kind).is_some();
-	if uses_targets && !targets.contains_all(forced_mask(&areas.hand.cards)) {
+	if uses_targets
+		&& !forced_mask(&areas.hand.cards).is_some_and(|forced| targets.contains_all(forced))
+	{
 		return false;
 	}
 	if !consumables::can_use_consumable(state, areas, history, kind, area, targets) {
@@ -110,7 +120,7 @@ fn check_reroll_boss(
 
 fn check_play(phase: Phase, hand: &[PlayingCard], m: CardMask) -> Result<(), ActionError> {
 	in_phase(phase, Phase::Round)?;
-	if !valid_selection(m, forced_mask(hand), hand.len()) {
+	if !valid_selection(m, hand) {
 		return Err(ActionError::BadSelection);
 	}
 	Ok(())
@@ -123,7 +133,7 @@ fn check_discard(
 	if !can_discard(discards_left) {
 		return Err(ActionError::NotAllowed);
 	}
-	if !valid_selection(m, forced_mask(hand), hand.len()) {
+	if !valid_selection(m, hand) {
 		return Err(ActionError::BadSelection);
 	}
 	Ok(())
@@ -344,19 +354,19 @@ pub(crate) fn legal_actions(g: &Game, out: &mut Vec<Action>) {
 			push_if_legal(g, out, Action::RerollBoss);
 		}
 		Phase::Round => {
-			let hand = &g.areas.hand.cards;
-			let forced = forced_mask(hand);
 			let can_discard = can_discard(g.round.discards_left);
-			// Every subset has 1..=HIGHLIGHT_LIMIT cards of the hand, so only the
-			// forced cards are left to test.
-			CardMask::for_each_subset(nh, Hand::HIGHLIGHT_LIMIT, |m| {
-				if m.contains_all(forced) {
-					out.push(Action::Play(m));
-					if can_discard {
-						out.push(Action::Discard(m));
+			if let Some(forced) = forced_mask(&g.areas.hand.cards) {
+				// Every subset has 1..=HIGHLIGHT_LIMIT cards of the hand, so only
+				// the forced cards are left to test.
+				CardMask::for_each_subset(nh, Hand::HIGHLIGHT_LIMIT, |m| {
+					if m.contains_all(forced) {
+						out.push(Action::Play(m));
+						if can_discard {
+							out.push(Action::Discard(m));
+						}
 					}
-				}
-			});
+				});
+			}
 		}
 		Phase::Shop => {
 			for (i, c) in g.areas.shop_jokers.iter().enumerate() {

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::canon::JokerField;
-use crate::card::{AnyCard, Card, CardCore, Kind, PlayingCard, Sticker};
+use crate::card::{AnyCard, Card, CardCore, Forced, Kind, PlayingCard, Sticker};
 use crate::data::{
 	ALL_BLINDS, ALL_PLANETS, ALL_TAGS, ALL_VOUCHERS, BlindKind, Center, Edition, Enhancement,
 	HandType, Rank, Seal, TagKind, Voucher,
@@ -441,6 +441,16 @@ fn core(
 	object(fields)
 }
 
+/// A hand card's place in the highlight list (from 1), `false` if it is not
+/// highlighted. The simulator keeps the highlight of the cards the Bell
+/// holds only.
+fn highlighted(forced: Forced) -> Json {
+	match forced {
+		Forced::Locked { place } => (f64::from(place) + 1.0).into(),
+		Forced::No | Forced::Flagged => false.into(),
+	}
+}
+
 fn playing_card(c: &PlayingCard) -> Json {
 	let set = if c.enhancement == Enhancement::Base {
 		"Default"
@@ -452,6 +462,7 @@ fn playing_card(c: &PlayingCard) -> Json {
 		c.key(),
 		vec![
 			("card", c.card_key().into()),
+			("highlighted", highlighted(c.forced)),
 			("rank", f64::from(c.rank.id()).into()),
 			("suit", c.suit.name().into()),
 			("seal", c.seal.map(Seal::name).into()),
@@ -465,7 +476,7 @@ fn playing_card(c: &PlayingCard) -> Json {
 		vec![
 			("set", set.into()),
 			("perma_bonus", c.perma_bonus.into()),
-			("forced_selection", c.forced_selection.into()),
+			("forced_selection", c.forced.is_flagged().into()),
 			("played_this_ante", c.played_this_ante.into()),
 			("wheel_flipped", c.wheel_flipped.into()),
 		],

@@ -206,7 +206,11 @@ def _lua_card(out: Canon, p: str, c: Any, area: str) -> None:
             out[f"{p}.debuff"] = _b(_bool(_get(c, "debuff")))
         if area == "hand":
             out[f"{p}.facing"] = _str(_get(c, "facing")) or "?"
-            out[f"{p}.forced"] = _b(_bool(_get(ab, "forced_selection")))
+            highlighted = _get(c, "highlighted")
+            whole = type(highlighted) is int or (type(highlighted) is float and highlighted.is_integer())
+            place = whole and highlighted >= 1
+            held = "flagged" if highlighted is False else "true" if place else "?"
+            out[f"{p}.forced"] = held if _bool(_get(ab, "forced_selection")) else "false"
         out[f"{p}.played_this_ante"] = _b(_bool(_get(ab, "played_this_ante")))
     if st == "Joker":
         out[f"{p}.debuff"] = _b(_bool(_get(c, "debuff")))

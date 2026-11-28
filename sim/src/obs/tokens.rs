@@ -214,7 +214,7 @@ fn playing_token(z: Zone, slot: usize, c: &PlayingCard) -> Token {
 		enhancement: enhancement_id(c.enhancement),
 		seal: seal_id(c.seal),
 		perma_bonus: c.perma_bonus,
-		forced_selection: c.forced_selection,
+		forced_selection: c.forced.is_locked(),
 		played_this_ante: c.played_this_ante,
 		times_played: c.times_played,
 		enhancement_x_mult: num::feat(c.enhancement.x_mult()) - 1.0,

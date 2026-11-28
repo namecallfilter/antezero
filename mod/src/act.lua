@@ -18,9 +18,15 @@ local function area_card(area, i)
   return c
 end
 
+-- By hand position, whatever order the cards are named in: the game keeps
+-- its highlights in the order they were made, and The Hanged Man destroys
+-- its cards from the last one made.
 local function highlight(indices)
+  local by_position = {}
+  for k, i in ipairs(indices or {}) do by_position[k] = i end
+  table.sort(by_position)
   G.hand:unhighlight_all()
-  for _, i in ipairs(indices or {}) do
+  for _, i in ipairs(by_position) do
     local c = area_card(G.hand, i)
     if not c.highlighted then G.hand:add_to_highlighted(c) end
   end
@@ -66,6 +72,18 @@ local KNOWN = {
 }
 local SELECTS = {play = true, discard = true, use = true, buy_and_use = true, pick = true}
 
+-- Whether the action acts on the highlighted hand cards: a play, a discard,
+-- or the use of a consumable that takes cards.
+local function acts_on_cards(a)
+  local k = a.type
+  if k == 'play' or k == 'discard' then return true end
+  local area = (k == 'use' and G.consumeables) or (k == 'buy_and_use' and G.shop_jokers) or (k == 'pick' and G.pack_cards)
+  if not area then return false end
+  local c = area_card(area, a.index)
+  local cons = c.ability and c.ability.consumeable
+  return c.config.center_key == 'c_aura' or (type(cons) == 'table' and (cons.max_highlighted or 0) > 0)
+end
+
 -- Phase 1: validate and (if needed) select cards. Returns true when the
 -- game must settle before phase 2.
 function AZB.act_prepare(a)
@@ -76,7 +94,6 @@ function AZB.act_prepare(a)
   if REQUIRES[k] and not in_states(REQUIRES[k]) then
     fail(k .. ' not allowed in state ' .. AZB.vanilla_state_name())
   end
-  if (k == 'play' or k == 'discard') and #(a.cards or {}) == 0 then fail('no cards') end
   if k == 'skip_blind' and G.GAME.blind_on_deck ~= 'Small' and G.GAME.blind_on_deck ~= 'Big' then
     fail('cannot skip ' .. tostring(G.GAME.blind_on_deck))
   end
@@ -88,6 +105,20 @@ function AZB.act_prepare(a)
   elseif k == 'pick' then area_card(G.pack_cards, a.index)
   elseif k == 'move_joker' then area_card(G.jokers, a.from); area_card(G.jokers, a.to)
   elseif k == 'move_hand' then area_card(G.hand, a.from); area_card(G.hand, a.to)
+  end
+  -- An action on the highlighted cards names them all. The game keeps a
+  -- card the blind holds highlighted, and with none highlighted it
+  -- highlights a copy of one: it would act on a card the action did not
+  -- name.
+  if acts_on_cards(a) then
+    if #(a.cards or {}) == 0 then fail('no cards') end
+    local named = {}
+    for _, i in ipairs(a.cards) do named[area_card(G.hand, i)] = true end
+    for _, c in ipairs(G.hand.cards) do
+      if c.ability.forced_selection and c.highlighted and not named[c] then
+        fail('the cards leave out one the blind holds')
+      end
+    end
   end
   if a.cards and SELECTS[k] then
     for _, i in ipairs(a.cards) do area_card(G.hand, i) end

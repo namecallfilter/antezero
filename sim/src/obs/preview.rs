@@ -19,7 +19,7 @@ use super::candidates::{PREVIEW_PLAYS, kicker_plays, rough_score, shortlist};
 use super::digest::{card_hash, hand_digest};
 use super::layout::shown_hand;
 use crate::actions::Action;
-use crate::card::{Card, CardLike, CardMask, Kind, canon_key};
+use crate::card::{Card, CardLike, CardMask, Forced, Kind, canon_key};
 use crate::data::{BlindKind, Edition, HandSet, HandType, Joker};
 use crate::event::Event;
 use crate::flow::FlowEvent;
@@ -195,7 +195,7 @@ fn pool_into_deck(areas: &mut Areas, seed: u64) {
 	for c in &mut areas.deck {
 		c.core.face_down = true;
 		c.wheel_flipped = false;
-		c.forced_selection = false;
+		c.forced = Forced::No;
 	}
 	areas.deck.sort_by_key(canon_key);
 	renumber(&mut areas.deck, PREVIEW_CARD_IDS);
@@ -379,7 +379,9 @@ fn place_copies(v: &mut Game) {
 pub(super) fn rank_plays(v: &Game) -> Vec<CardMask> {
 	let flags = v.areas.eval_flags();
 	let nh = shown_hand(&v.areas.hand.cards).len();
-	let forced = actions::forced_mask(&v.areas.hand.cards);
+	let Some(forced) = actions::forced_mask(&v.areas.hand.cards) else {
+		return Vec::new();
+	};
 	// The Psychic scores any play of fewer than five cards 0 (skipped, unless
 	// the hand has fewer than five).
 	let min = if v.blind.active(BlindKind::Psychic) && nh >= 5 {
