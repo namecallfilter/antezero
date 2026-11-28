@@ -8,6 +8,16 @@ Sizes are unknown until tested. Most of these are worth a point or two at best, 
 
 Results are written under each item as it is tested. Test code is on a local branch, `todo-tests`, cut from `run95-gcp`. It is not on GitHub yet. Tests start from the update 11,900 checkpoint of `az_run95`.
 
+## Results so far
+
+All from 500-update arms that continue the update 11,900 checkpoint (32.0% greedy, 26.8% sampled). Three control arms read 31.9% to 32.4% greedy. Details are under each item.
+
+- **Works, about +1.5 points greedy each, but they do not add up:** a learning rate of 1e-5 in place of 2e-5 (two seeds, and it holds at 1,000 updates: 35.3% against 33.5%), 1,024 envs x 64 steps in place of 512 x 128 (two seeds), and averaging the last few checkpoints before evaluating (two runs).
+- **Probably works, one run each:** deck weights (Black and Plasma three times as often, +1.2), and a pool share of 0.1 or 0 in place of 0.2 (about +1).
+- **Hurts:** anything that moves the policy further per update (KL target 0.0025, controller off at 5e-5, an extra value epoch, more envs with a scaled-up rate: -1.8 to -7), lambda 0.99, shrink-and-perturb, and pool share 0.4.
+- **No clear effect:** controller off at 2e-5, entropy anneal (greedy; sampled rose), 256 x 256 rollouts, minibatch 8,192 and 16,384, constant win reward, less blind reward, PopArt, stronger Muon weight decay, the feature-change loss, deck-first pool sampling, and stopping at the ante-8 win (slightly worse).
+- **Not run:** the deck-fixing metrics and objective (waiting on the `deckfix-metrics` code), L2 toward the initial weights (no checkpoint has them), Baron pool states (no recording has Baron), and sections 7 and 8.
+
 ## 1. Measure what we have (no training)
 
 - [x] **Greedy eval on fixed seeds, all 15 decks, 8,000+ games.** The W&B chart is sampled play. On `0095` greedy was 29.0% against 22.9% sampled (871 and 686 of 3,000). 4,096 games only resolves about 1 to 2 points.
@@ -60,11 +70,11 @@ Run on a rented 4090 (compile on, 4,096-row chunks, the L4 settings) and on a 40
 
 ## 4. One-flag tests (from the latest checkpoint, one at a time)
 
-Sections 4 to 6 are running now, one arm at a time on a 4060 Ti (about 4 hours per arm). Each arm continues update 11,900 for 500 updates (32.8M steps), then plays the same 8,010 games greedy and sampled. Arms that are not clearly worse then go on to 1,000 updates. A control arm and a second control with another seed give the noise.
+Sections 4 to 6 were run as separate arms on a 4060 Ti and a rented 4090. Each arm continues update 11,900 for 500 updates (32.8M steps), then plays the same 8,010 games greedy and sampled. Only a control and the 1e-5 arm were taken on to 1,000 updates.
 
 Three control arms after 500 updates (two seeds on the 4060 Ti, one on a rented 4090): greedy 32.4%, 31.9% and 32.3%, sampled 27.9%, 25.9% and 27.1%. The start was 32.0% and 26.8%. So 500 updates move the control by about +0.2 greedy, and a difference under about 1 point greedy or 2 points sampled is noise at this length. Results below are against the mean of the three (32.2% greedy, 26.9% sampled).
 
-Two cautions on reading them. The ± figures are over games on the same seeds, so they leave out the run-to-run variation that the three controls show. And in arms run with the KL controller on, the controller sometimes moved the learning rate, which by itself is worth 1 to 4 points (see the KL target item): it stayed at 2.0e-5 in all three controls, but fell to 1.4e-5 with lambda 0.99, fell to 1.6e-5 with PopArt and doubled to 4.1e-5 with the feature-change loss. Those three are marked below and are being rerun at a fixed 2e-5. Deck-first sampling, deck weights, constant win reward and the entropy anneal drifted only a little (to between 1.7e-5 and 1.9e-5 late in the run). Arms from here on use a fixed rate.
+Two cautions on reading them. The ± figures are over games on the same seeds, so they leave out the run-to-run variation that the three controls show. And in arms run with the KL controller on, the controller sometimes moved the learning rate, which by itself is worth 1 to 4 points (see the KL target item): it stayed at 2.0e-5 in all three controls, but fell to 1.4e-5 with lambda 0.99, fell to 1.6e-5 with PopArt and doubled to 4.1e-5 with the feature-change loss. Those three are marked below and were rerun at a fixed 2e-5. Deck-first sampling, deck weights, constant win reward and the entropy anneal drifted only a little (to between 1.7e-5 and 1.9e-5 late in the run). Arms from here on use a fixed rate.
 
 - [ ] **Stop at the ante-8 win: `endless_ante` 8 against 16.** After the win every blind still pays +1, and the win itself pays about 5.8. Changes the objective and saves steps.
   - **Result:** slightly worse at 500 updates. Greedy 30.9% against 32.2% for the controls (-1.3), sampled 24.5% (-2.4). Both are at the edge of the noise.
@@ -133,7 +143,8 @@ Judge each arm by greedy win rate on 8,000+ fixed-seed games across all decks, a
 - [ ] **Rescale value targets as returns grow (PopArt).** With gamma 1 the returns' scale drifts as the agent improves, and the value loss is plain squared error on unscaled targets. PopArt rescales the targets and adjusts the last layer so outputs stay the same, so it fits the live run (van Hasselt et al. 2016, https://arxiv.org/abs/1602.07714). A categorical value head (HL-Gauss) scaled better and coped with moving targets (Farebrother et al. 2024, https://arxiv.org/abs/2403.03950); that one needs a fresh head.
   - **Result (PopArt on the existing head):** no greedy change at 500 updates, but not a clean test. Greedy 31.9% against 32.2% for the controls (-0.3), sampled 28.3% (+1.4, inside the noise).
   - It does what it is meant to: the value part of the gradient fell from about 4 times the policy part to about a tenth of it (0.17 to 0.25 against 1.6 to 2.0), the norm before clipping fell from 8.4 to 1.9, and the explained variance was 0.95, the same as the other arms that log it (no control logs it, so there is no like-for-like value comparison).
-  - The controller cut the learning rate to 1.6e-5 within 15 updates, which alone should gain about a point, so PopArt itself may cost a little. The head's Adam state is also not rescaled with the head. A rerun at a fixed 2e-5 is queued.
+  - The controller cut the learning rate to 1.6e-5 within 15 updates, which alone should gain about a point, so PopArt itself may cost a little. The head's Adam state is also not rescaled with the head.
+  - **Result, clean rerun (fixed 2e-5):** no greedy change. Greedy 31.9% against 32.2% for the controls (-0.3) and 32.0% for the fixed-rate control, sampled 28.0% (+1.0). The gradient balance changed the same way (value part 0.23 against policy part 2.0). So PopArt is harmless and fixes the balance, but does not raise the win rate in 500 updates.
 - [x] **Bootstrap games cut by the 3,000-step limit.** `train.py` treats `term | trunc` as game over, so a timed-out state learns a value of 0 instead of its own estimate. Rare, but wrong.
   - **Result:** fixed in the test code, but it changes nothing today: one game timed out in 32.8M steps of the control arm.
   - That one game was stuck, not long: the control arm logged 1,607 illegal actions, all in updates 12,336 to 12,356, about 77 per update, until the 3,000-step limit ended it. So in some state the mask allows an action the env refuses. No other arm logged an illegal action. Rare (1 game in about 119,000), but it is a mask bug worth finding.
