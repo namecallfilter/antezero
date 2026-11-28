@@ -4,24 +4,29 @@
 //! deck and stake. No game needed: `dumpcheck` checks the reader against the
 //! real game's dumps.
 
-use std::collections::BTreeMap;
-
 use oracle::canon;
 use oracle::dumpcheck::part_diffs;
 use oracle::fingerprint::obs_fingerprint;
 use oracle::policy::Policy;
+use serde_json::{Map, Value};
 use sim::actions::Action;
 use sim::data::Back;
 use sim::game::Game;
-use sim::json::Json;
 use sim::{Forced, Stake, json, num};
 
 const GAMES: u64 = 60;
 const STEPS: usize = 250;
 
 fn check(g: &mut Game, n: u64, step: usize) {
-	let text = g.to_dump().to_string();
-	let dump = json::parse(&text).expect("a written dump parses");
+	let written = g.to_dump();
+	let mut odd = Vec::new();
+	numbers_unlike_the_games(&written, "", &mut odd);
+	assert!(
+		odd.is_empty(),
+		"game {n} step {step}: the game writes these numbers as the other kind: {odd:?}"
+	);
+	let text = written.to_string();
+	let dump: Value = serde_json::from_str(&text).expect("a written dump parses");
 	let d = canon::diff(&canon::from_sim(g), &canon::from_lua(&dump));
 	assert!(
 		d.is_empty(),
@@ -50,14 +55,14 @@ fn round_with_a_held_card_and_a_copy() -> Game {
 }
 
 /// The `i`-th hand card of `dump`.
-fn hand_card(dump: &mut Json, i: usize) -> &mut BTreeMap<String, Json> {
-	let Json::Obj(game) = dump else {
+fn hand_card(dump: &mut Value, i: usize) -> &mut Map<String, Value> {
+	let Value::Object(game) = dump else {
 		panic!("the dump is an object");
 	};
-	let Some(Json::Arr(hand)) = game.get_mut("hand") else {
+	let Some(Value::Array(hand)) = game.get_mut("hand") else {
 		panic!("the dump has a hand");
 	};
-	let Json::Obj(card) = &mut hand[i] else {
+	let Value::Object(card) = &mut hand[i] else {
 		panic!("a card is an object");
 	};
 	card
@@ -80,7 +85,7 @@ fn a_dump_keeps_the_order_the_held_cards_were_highlighted_in() {
 fn a_highlighted_card_without_the_forced_flag_is_not_held() {
 	let mut g = round_with_a_held_card_and_a_copy();
 	let mut dump = g.to_dump();
-	hand_card(&mut dump, 2).insert("highlighted".into(), Json::Num(2.0));
+	hand_card(&mut dump, 2).insert("highlighted".into(), Value::from(2));
 	let back = Game::from_dump(&dump).expect("the dump reads");
 	assert_eq!(back.areas.hand.cards, g.areas.hand.cards);
 }
@@ -89,7 +94,7 @@ fn a_highlighted_card_without_the_forced_flag_is_not_held() {
 fn a_dump_of_a_mod_that_does_not_write_the_highlights_is_refused() {
 	// Before version 0.3.0 the mod wrote no highlight, and 0.3.0 wrote it
 	// without the card's place in the list.
-	for old in [None, Some(Json::Bool(true))] {
+	for old in [None, Some(Value::Bool(true))] {
 		let mut dump = round_with_a_held_card_and_a_copy().to_dump();
 		let card = hand_card(&mut dump, 0);
 		match &old {
@@ -138,17 +143,41 @@ const GAME_TABLES: [&str; 5] = [
 	".ability.",
 ];
 
+/// The paths of the numbers in `j` whose JSON kind (integer or float) is not
+/// the one the game's `%.17g` gives them (see `json::number`): JSON values
+/// compare numbers by kind, so such a dump never equals the game's.
+fn numbers_unlike_the_games(j: &Value, path: &str, out: &mut Vec<String>) {
+	match j {
+		Value::Number(x) => {
+			if json::number(x.as_f64()) != *j {
+				out.push(path.to_string());
+			}
+		}
+		Value::Array(items) => {
+			for (i, v) in items.iter().enumerate() {
+				numbers_unlike_the_games(v, &format!("{path}.{i}"), out);
+			}
+		}
+		Value::Object(fields) => {
+			for (k, v) in fields {
+				numbers_unlike_the_games(v, &format!("{path}.{k}"), out);
+			}
+		}
+		_ => {}
+	}
+}
+
 /// Every key path of `j` (a list's first element, as index 0).
-fn key_paths(j: &Json, prefix: &[String], out: &mut Vec<Vec<String>>) {
+fn key_paths(j: &Value, prefix: &[String], out: &mut Vec<Vec<String>>) {
 	let at = |k: &str| [prefix, &[k.to_string()]].concat();
 	match j {
-		Json::Obj(fields) => {
+		Value::Object(fields) => {
 			for (k, v) in fields {
 				out.push(at(k));
 				key_paths(v, &at(k), out);
 			}
 		}
-		Json::Arr(items) => {
+		Value::Array(items) => {
 			if let Some(v) = items.first() {
 				key_paths(v, &at("0"), out);
 			}
@@ -158,18 +187,18 @@ fn key_paths(j: &Json, prefix: &[String], out: &mut Vec<Vec<String>>) {
 }
 
 /// `dump` without the key at `path`.
-fn without(dump: &Json, path: &[String]) -> Json {
+fn without(dump: &Value, path: &[String]) -> Value {
 	let mut out = dump.clone();
 	let (key, parent) = path.split_last().expect("a key");
 	let mut at = &mut out;
 	for seg in parent {
 		at = match at {
-			Json::Obj(fields) => fields.get_mut(seg).expect("a key of the dump"),
-			Json::Arr(items) => &mut items[seg.parse::<usize>().expect("an index")],
+			Value::Object(fields) => fields.get_mut(seg).expect("a key of the dump"),
+			Value::Array(items) => &mut items[seg.parse::<usize>().expect("an index")],
 			_ => panic!("{path:?}: no {seg}"),
 		};
 	}
-	let Json::Obj(fields) = at else {
+	let Value::Object(fields) = at else {
 		panic!("{path:?}: not in an object");
 	};
 	fields.remove(key);

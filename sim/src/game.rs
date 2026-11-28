@@ -4,6 +4,8 @@
 use std::ops::{Index, IndexMut};
 use std::slice;
 
+use serde_json::Value;
+
 use crate::actions::{self, Action, ActionError};
 pub use crate::areas::{Area, Areas, Hand, Limit, Limits};
 use crate::card::CardMask;
@@ -12,7 +14,6 @@ use crate::data::{Back, HandType};
 use crate::dump::{self, DumpError};
 use crate::event::EventQueue;
 use crate::inject::{self, Inject};
-use crate::json::Json;
 use crate::rng::PseudoRandom;
 pub use crate::round::{
 	Blind, BlindScaling, BlindSelect, BlindSlot, BlindStatus, BossesUsed, IdolCard, MailRank,
@@ -311,7 +312,7 @@ impl Game {
 	/// # Errors
 	///
 	/// Returns the first part of the dump the simulator cannot take.
-	pub fn from_dump(dump: &Json) -> Result<Game, DumpError> {
+	pub fn from_dump(dump: &Value) -> Result<Game, DumpError> {
 		dump::read(dump)
 	}
 
@@ -319,7 +320,7 @@ impl Game {
 	/// (see [`crate::dump`]); refreshes the per-frame derived joker values
 	/// first, like the game does every frame.
 	#[must_use]
-	pub fn to_dump(&mut self) -> Json {
+	pub fn to_dump(&mut self) -> Value {
 		self.update_derived();
 		dump::write(self)
 	}

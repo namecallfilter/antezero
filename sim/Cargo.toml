@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Headless, deterministic, bit-exact Balatro (v1.0.1o) game simulator"
 
+[dependencies]
+serde_json.workspace = true
+siphasher = "1.0.4"
+
 [dev-dependencies]
 mimalloc = { version = "0.1", default-features = false }
 

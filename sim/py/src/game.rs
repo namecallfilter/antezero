@@ -2,12 +2,13 @@ use numpy::{PyArray1, PyArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use serde_json::Value;
 use sim::data::{Back, Center};
 use sim::game::Game as SimGame;
 use sim::inject::Inject;
 use sim::obs::{self, BuildPreview, Layout, Op, OpOptions};
 use sim::rng::Xorshift;
-use sim::{Action, CardMask, Stake, canon, json};
+use sim::{Action, CardMask, Stake, canon};
 
 use crate::rows::{
 	OPS_F_SHAPE, OPS_SHAPE, ObsOptions, ObsRow, TOK_F_SHAPE, TOK_I_SHAPE, op_options,
@@ -207,7 +208,8 @@ impl Game {
 	fn load_state(&mut self, py: Python<'_>, state: &str) -> PyResult<()> {
 		let mut g = py
 			.detach(|| {
-				let dump = json::parse(state).map_err(|e| format!("state dump: {e}"))?;
+				let dump: Value =
+					serde_json::from_str(state).map_err(|e| format!("state dump: {e}"))?;
 				SimGame::from_dump(&dump).map_err(|e| e.to_string())
 			})
 			.map_err(PyValueError::new_err)?;

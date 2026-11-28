@@ -14,7 +14,7 @@ Output: one JSON object per line, in step order (step 0 = the start)::
 
 ``state`` is embedded verbatim as produced in-game by the companion mod: the
 same JSON as the oracle harness's ``H.state`` (sorted keys, %.17g numbers),
-so ``json::parse`` + ``canon::from_lua`` in ``sim/oracle`` read it unchanged
+so ``canon::from_lua`` in ``sim/oracle`` reads it unchanged
 (``antezero_bridge.canon.from_lua`` is the Python equivalent).
 
 With ``--oracle-cli path/to/ocli.exe`` the same commands are also sent to the

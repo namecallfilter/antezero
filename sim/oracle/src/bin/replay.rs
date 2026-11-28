@@ -16,8 +16,8 @@ use std::process::ExitCode;
 use oracle::command::{Command, Start};
 use oracle::difftest::{self, Checks, Comparison};
 use oracle::{Oracle, canon};
+use serde_json::Value;
 use sim::game::Game;
-use sim::json::{self, Json};
 
 /// A recorded run: its start's code, then one command code per line.
 struct History<'text> {
@@ -65,7 +65,7 @@ impl Hook {
 
 /// Prints the canonical fields that either engine has whose path starts
 /// with one of `filters`, marking the ones that differ.
-fn print_fields(g: &mut Game, dump: &Json, filters: &[&str]) {
+fn print_fields(g: &mut Game, dump: &Value, filters: &[&str]) {
 	let (sim, game) = (canon::from_sim(g), canon::from_lua(dump));
 	let shown =
 		canon::fields(&sim, &game).filter(|f| filters.iter().any(|p| f.path.starts_with(p)));
@@ -121,7 +121,7 @@ fn run() -> Result<bool, String> {
 				println!("SIM {entry}");
 			}
 		}
-		let dump = json::parse(&lua).map_err(|e| format!("json: {e}"))?;
+		let dump: Value = serde_json::from_str(&lua).map_err(|e| format!("json: {e}"))?;
 		if !filters.is_empty() {
 			println!("--- step {step}: {text}");
 			print_fields(&mut g, &dump, &filters);

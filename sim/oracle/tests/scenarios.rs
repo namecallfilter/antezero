@@ -9,13 +9,14 @@ use oracle::command::{Command, Start};
 use oracle::difftest::{Checks, Comparison, compare};
 use oracle::policy::{highest_scoring_play, unused_cards};
 use oracle::{Oracle, dumpcheck};
+use serde_json::Value;
 use sim::actions::Action;
 use sim::data::{
 	Back, BlindKind, Edition, Enhancement, Joker, Rank, Spectral, Suit, TagKind, Tarot,
 };
 use sim::game::{Game, Phase, Scratch};
 use sim::inject::{Consumable, Inject};
-use sim::{CardMask, Forced, Stake, json, num};
+use sim::{CardMask, Forced, Stake, num};
 
 struct Both {
 	o: Oracle,
@@ -53,7 +54,7 @@ impl Both {
 	}
 
 	fn check(&mut self, lua: &str) {
-		let j = json::parse(lua).expect("the oracle returns JSON");
+		let j: Value = serde_json::from_str(lua).expect("the oracle returns JSON");
 		let checks = if self.known_frame_offset.is_some() {
 			Checks::Timeline
 		} else {
@@ -96,7 +97,7 @@ impl Both {
 	fn dumped(&mut self) -> Game {
 		let state = self.o.command("H.state()");
 		let state = state.expect("the game dumps its state");
-		let state = json::parse(&state).expect("the oracle returns JSON");
+		let state: Value = serde_json::from_str(&state).expect("the oracle returns JSON");
 		Game::from_dump(&state).expect("the simulator reads the dump")
 	}
 

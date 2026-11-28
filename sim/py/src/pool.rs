@@ -7,9 +7,10 @@ use std::path::Path;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use serde_json::Value;
 use sim::balatro::load_starts;
 use sim::game::Game as SimGame;
-use sim::{json, num};
+use sim::num;
 
 /// The start states of the pool directory `path`: for each line
 /// `{"rec": name, "k": step}` of its `index.jsonl`, the game after `step`
@@ -23,6 +24,8 @@ use sim::{json, num};
 /// object, or a recording does not replay to a start state for each of its
 /// steps.
 pub(crate) fn load_start_pool(path: &str) -> PyResult<Vec<SimGame>> {
+	use sim::json::ValueExt;
+
 	let dir = Path::new(path);
 	let index_path = dir.join("index.jsonl");
 	let cannot_read =
@@ -30,11 +33,11 @@ pub(crate) fn load_start_pool(path: &str) -> PyResult<Vec<SimGame>> {
 	let index = fs::read_to_string(&index_path).map_err(|e| cannot_read(&index_path, e))?;
 
 	let mut by_rec: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-	let entries: Vec<json::Json> = index
+	let entries: Vec<Value> = index
 		.lines()
 		.enumerate()
 		.map(|(i, line)| {
-			json::parse(line).map_err(|e| {
+			serde_json::from_str(line).map_err(|e| {
 				PyValueError::new_err(format!("{} line {}: {e}", index_path.display(), i + 1))
 			})
 		})
@@ -47,13 +50,11 @@ pub(crate) fn load_start_pool(path: &str) -> PyResult<Vec<SimGame>> {
 				i + 1
 			))
 		};
-		let rec = entry
-			.get("rec")
+		let rec = entry["rec"]
 			.as_str()
 			.ok_or_else(|| lacks("recording name \"rec\""))?;
-		let step = entry
-			.get("k")
-			.as_f64()
+		let step = entry["k"]
+			.number()
 			.and_then(num::whole)
 			.and_then(|k| usize::try_from(k).ok())
 			.ok_or_else(|| lacks("step \"k\", a whole number from 0"))?;

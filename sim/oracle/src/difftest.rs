@@ -5,9 +5,9 @@
 use std::env::{self, VarError};
 use std::fmt;
 
+use serde_json::Value;
 use sim::actions::ActionError;
 use sim::game::{Game, Phase};
-use sim::json::{self, Json};
 
 use crate::Oracle;
 use crate::canon::{self, Diff, FrameOffset, TimelineDiff};
@@ -119,7 +119,7 @@ pub enum Comparison {
 
 /// Compares the simulator with the oracle's state dump after a step.
 #[must_use]
-pub fn compare(g: &mut Game, lua: &Json, checks: Checks) -> Comparison {
+pub fn compare(g: &mut Game, lua: &Value, checks: Checks) -> Comparison {
 	let d = canon::diff(&canon::from_sim(g), &canon::from_lua(lua));
 	if !d.is_empty() {
 		return Comparison::Diverged(Mismatch::State(d));
@@ -274,7 +274,7 @@ impl Run<'_> {
 	/// simulator has already performed it) and compares the engines.
 	fn sync(&mut self, lua: &str, code: &str) -> Result<(), Cause> {
 		let answer = self.o.command(lua).map_err(Cause::Oracle)?;
-		let j = json::parse(&answer).map_err(Cause::Json)?;
+		let j: Value = serde_json::from_str(&answer).map_err(|e| Cause::Json(e.to_string()))?;
 		match compare(&mut self.g, &j, self.checks) {
 			Comparison::Diverged(m) => return Err(Cause::Diverged(m)),
 			Comparison::FrameOffset(offset) => {

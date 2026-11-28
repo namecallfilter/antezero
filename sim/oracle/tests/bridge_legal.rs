@@ -10,11 +10,12 @@ use oracle::command::{Command, Start};
 use oracle::difftest::{Checks, Comparison, compare};
 use oracle::policy::Policy;
 use oracle::{Oracle, lua_path};
+use serde_json::Value;
 use sim::actions::Action;
 use sim::data::{Back, BlindKind, Edition, Spectral, TagKind, Tarot};
 use sim::game::{Game, Phase};
 use sim::inject::{Consumable, Inject};
-use sim::{CardMask, Forced, Stake, json, num};
+use sim::{CardMask, Forced, Stake, num};
 
 /// Loads legal.lua with stand-ins for the two helpers it takes from the
 /// mod's core.lua (vanilla has no SMODS booster state).
@@ -47,9 +48,11 @@ fn sim_codes(g: &Game) -> Vec<String> {
 }
 
 fn lua_codes(o: &mut Oracle) -> Vec<String> {
+	use sim::json::ValueExt;
+
 	let codes = o.eval("return AZ_LEGAL()").expect("AZ_LEGAL runs");
-	let j = json::parse(&codes).expect("AZ_LEGAL returns JSON");
-	j.as_list()
+	let j: Value = serde_json::from_str(&codes).expect("AZ_LEGAL returns JSON");
+	j.list()
 		.iter()
 		.map(|c| c.as_str().expect("a legal code is a string").to_string())
 		.collect()
@@ -111,7 +114,7 @@ fn bridge_legal_actions_match_the_sim() {
 		let mut policy = Policy::for_game(n, 0.15);
 		let mut history = vec![start.to_string()];
 		for _ in 0..250 {
-			let j = json::parse(&lua).unwrap();
+			let j: Value = serde_json::from_str(&lua).unwrap();
 			if let Comparison::Diverged(m) = compare(&mut g, &j, Checks::StateOnly) {
 				panic!("engines diverged after {}: {m}", history.join(" / "));
 			}
@@ -195,7 +198,7 @@ impl BellRound {
 			.o
 			.command(&command.to_lua())
 			.expect("the oracle runs the command");
-		let state = json::parse(&lua).expect("the oracle returns JSON");
+		let state: Value = serde_json::from_str(&lua).expect("the oracle returns JSON");
 		if let Comparison::Diverged(m) = compare(&mut self.g, &state, Checks::StateOnly) {
 			panic!("engines diverged after {command}: {m}");
 		}

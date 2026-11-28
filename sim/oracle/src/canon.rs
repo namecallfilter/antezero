@@ -4,93 +4,100 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use serde_json::Value;
 pub use sim::canon::{Canon, from_sim};
 use sim::canon::{CanonArea, JokerField, canon_number, normalize_key, placeholder_center};
 use sim::data::{HandType, Joker};
 use sim::game::Game;
-use sim::json::Json;
+use sim::json::ValueExt;
 
 /// The game's value at `path` of a joker's `ability` table, `absent` if it
 /// has none.
-fn lua_ability(ab: &Json, path: &str, absent: &str) -> String {
+fn lua_ability(ab: &Value, path: &str, absent: &str) -> String {
 	let v = if let Some(rest) = path.strip_prefix("extra.") {
-		ab.get("extra").get(rest)
+		&ab["extra"][rest]
 	} else {
-		ab.get(path)
+		&ab[path]
 	};
 	match v {
-		Json::Null => absent.into(),
-		Json::Bool(x) => x.to_string(),
-		Json::Num(n) => canon_number(*n),
-		Json::Str(s) => s.clone(),
+		Value::Null => absent.into(),
+		Value::Bool(x) => x.to_string(),
+		Value::Number(n) => n.as_f64().map_or_else(|| "?".into(), canon_number),
+		Value::String(s) => s.clone(),
 		_ => "?".into(),
 	}
 }
 
-fn lua_card(out: &mut Canon, p: &str, c: &Json, area: CanonArea) {
-	let ab = c.get("ability");
-	let number = |field: &Json| field.as_f64().map_or("nil".into(), canon_number);
-	out.insert(format!("{p}.id"), number(c.get("sort_id")));
+fn lua_card(out: &mut Canon, p: &str, c: &Value, area: CanonArea) {
+	let ab = &c["ability"];
+	let number = |field: &Value| field.number().map_or("nil".into(), canon_number);
+	out.insert(format!("{p}.id"), number(&c["sort_id"]));
 	out.insert(
 		format!("{p}.key"),
-		normalize_key(c.get("key").as_str().unwrap_or("?")).to_string(),
+		normalize_key(c["key"].as_str().unwrap_or("?")).to_string(),
 	);
 	out.insert(
 		format!("{p}.edition"),
-		c.get("edition").as_str().unwrap_or("nil").to_string(),
+		c["edition"].as_str().unwrap_or("nil").to_string(),
 	);
 	if area.shows_cost() {
-		out.insert(format!("{p}.cost"), number(c.get("cost")));
-		out.insert(format!("{p}.sell_cost"), number(c.get("sell_cost")));
+		out.insert(format!("{p}.cost"), number(&c["cost"]));
+		out.insert(format!("{p}.sell_cost"), number(&c["sell_cost"]));
 	}
-	let set = ab.get("set").as_str().unwrap_or("");
+	let set = ab["set"].as_str().unwrap_or("");
 	if set == "Default" || set == "Enhanced" {
 		out.insert(
 			format!("{p}.card"),
-			c.get("card").as_str().unwrap_or("?").to_string(),
+			c["card"].as_str().unwrap_or("?").to_string(),
 		);
 		out.insert(
 			format!("{p}.seal"),
-			c.get("seal").as_str().unwrap_or("nil").to_string(),
+			c["seal"].as_str().unwrap_or("nil").to_string(),
 		);
-		out.insert(format!("{p}.perma_bonus"), number(ab.get("perma_bonus")));
+		out.insert(format!("{p}.perma_bonus"), number(&ab["perma_bonus"]));
 		if area.shows_playing_debuff() {
-			out.insert(format!("{p}.debuff"), c.get("debuff").as_flag().to_string());
+			out.insert(format!("{p}.debuff"), c["debuff"].flag().to_string());
 		}
 		if area.shows_facing() {
 			out.insert(
 				format!("{p}.facing"),
-				c.get("facing").as_str().unwrap_or("?").to_string(),
+				c["facing"].as_str().unwrap_or("?").to_string(),
 			);
-			let forced = match (ab.get("forced_selection").as_flag(), c.get("highlighted")) {
+			let forced = match (ab["forced_selection"].flag(), &c["highlighted"]) {
 				(false, _) => "false",
-				(true, Json::Bool(false)) => "flagged",
-				(true, Json::Num(place)) if *place >= 1.0 && place.fract() == 0.0 => "true",
+				(true, Value::Bool(false)) => "flagged",
+				(true, Value::Number(place))
+					if place
+						.as_f64()
+						.is_some_and(|place| place >= 1.0 && place.fract() == 0.0) =>
+				{
+					"true"
+				}
 				(true, _) => "?",
 			};
 			out.insert(format!("{p}.forced"), forced.into());
 		}
 		out.insert(
 			format!("{p}.played_this_ante"),
-			ab.get("played_this_ante").as_flag().to_string(),
+			ab["played_this_ante"].flag().to_string(),
 		);
 	}
 	if set == "Joker" {
-		out.insert(format!("{p}.debuff"), c.get("debuff").as_flag().to_string());
+		out.insert(format!("{p}.debuff"), c["debuff"].flag().to_string());
 		if area.shows_facing() {
 			out.insert(
 				format!("{p}.facing"),
-				c.get("facing").as_str().unwrap_or("?").to_string(),
+				c["facing"].as_str().unwrap_or("?").to_string(),
 			);
 		}
-		let key = c.get("key").as_str().unwrap_or("");
+		let key = c["key"].as_str().unwrap_or("");
 		let fields: &[JokerField] = Joker::from_key(key).map_or(&[], JokerField::of);
 		for field in JokerField::COMMON.iter().chain(fields) {
 			let path = field.path();
 			let absent = if field.is_flag() { "false" } else { "nil" };
 			out.insert(format!("{p}.ab.{path}"), lua_ability(ab, path, absent));
 		}
-		if ab.get("perishable").as_flag() {
+		if ab["perishable"].flag() {
 			out.insert(
 				format!("{p}.ab.perish_tally"),
 				lua_ability(ab, "perish_tally", "nil"),
@@ -98,13 +105,13 @@ fn lua_card(out: &mut Canon, p: &str, c: &Json, area: CanonArea) {
 		}
 	}
 	if set == "Tarot" || set == "Planet" || set == "Spectral" {
-		out.insert(format!("{p}.ab.extra_value"), number(ab.get("extra_value")));
+		out.insert(format!("{p}.ab.extra_value"), number(&ab["extra_value"]));
 	}
 }
 
 /// The dump's value at a dotted `path` (`Null` if any part is missing).
-fn at<'a>(j: &'a Json, path: &str) -> &'a Json {
-	path.split('.').fold(j, |j, key| j.get(key))
+fn at<'a>(j: &'a Value, path: &str) -> &'a Value {
+	path.split('.').fold(j, |j, key| &j[key])
 }
 
 /// Number fields, compared at their own path (`nil` when absent).
@@ -177,70 +184,65 @@ const FLAGS: [&str; 4] = [
 ];
 
 /// Canonical view of the oracle's JSON dump.
-pub fn from_lua(j: &Json) -> Canon {
+pub fn from_lua(j: &Value) -> Canon {
 	let mut o = Canon::new();
 	for path in NUMBERS {
 		o.insert(
 			path.into(),
-			at(j, path).as_f64().map_or("nil".into(), canon_number),
+			at(j, path).number().map_or("nil".into(), canon_number),
 		);
 	}
 	for path in STRINGS {
 		o.insert(path.into(), at(j, path).as_str().unwrap_or("nil").into());
 	}
 	for path in FLAGS {
-		o.insert(path.into(), at(j, path).as_flag().to_string());
+		o.insert(path.into(), at(j, path).flag().to_string());
 	}
-	o.insert(
-		"state".into(),
-		j.get("state").as_str().unwrap_or("?").into(),
-	);
+	o.insert("state".into(), j["state"].as_str().unwrap_or("?").into());
 	o.insert(
 		"blind.name".into(),
 		at(j, "blind.name").as_str().unwrap_or("").into(),
 	);
 	o.insert(
 		"sort_mode".into(),
-		j.get("sort_mode").as_str().unwrap_or("nil").into(),
+		j["sort_mode"].as_str().unwrap_or("nil").into(),
 	);
 	for h in HandType::ALL {
 		let n = h.name();
-		let l = j.get("hands").get(n);
+		let l = &j["hands"][n];
 		for k in ["level", "chips", "mult", "played", "played_this_round"] {
 			o.insert(
 				format!("hands.{n}.{k}"),
-				l.get(k).as_f64().map_or("nil".into(), canon_number),
+				l[k].number().map_or("nil".into(), canon_number),
 			);
 		}
 		o.insert(
 			format!("hands.{n}.visible"),
-			l.get("visible").as_flag().to_string(),
+			l["visible"].flag().to_string(),
 		);
 	}
-	for (i, t) in j.get("tag_info").as_list().iter().enumerate() {
-		let key = t.get("key").as_str().unwrap_or("?");
+	for (i, t) in j["tag_info"].list().iter().enumerate() {
+		let key = t["key"].as_str().unwrap_or("?");
 		o.insert(format!("tags.{i}.key"), key.into());
 		o.insert(
 			format!("tags.{i}.triggered"),
-			t.get("triggered").as_flag().to_string(),
+			t["triggered"].flag().to_string(),
 		);
 		if key == "tag_orbital" {
 			o.insert(
 				format!("tags.{i}.orbital"),
-				t.get("orbital").as_str().unwrap_or("nil").into(),
+				t["orbital"].as_str().unwrap_or("nil").into(),
 			);
 		}
 	}
-	let uv: Vec<&str> = j
-		.get("used_vouchers")
-		.as_list()
+	let uv: Vec<&str> = j["used_vouchers"]
+		.list()
 		.iter()
 		.filter_map(|v| v.as_str())
 		.collect();
 	o.insert("used_vouchers".into(), uv.join(","));
-	let mut uj: Vec<&str> = j
-		.get("used_jokers")
-		.as_list()
+	let mut uj: Vec<&str> = j["used_jokers"]
+		.list()
 		.iter()
 		.filter_map(|v| v.as_str())
 		.filter(|k| {
@@ -260,19 +262,19 @@ pub fn from_lua(j: &Json) -> Canon {
 			CanonArea::Pack => "pack_cards",
 			_ => area.name(),
 		};
-		let v = j.get(key).as_list();
+		let v = j[key].list();
 		let name = area.name();
 		o.insert(format!("{name}.len"), v.len().to_string());
 		for (i, c) in v.iter().enumerate() {
 			lua_card(&mut o, &format!("{name}.{i}"), c, area);
 		}
 	}
-	if let Some(m) = j.get("rng").as_object() {
+	if let Some(m) = j["rng"].as_object() {
 		for (k, v) in m {
 			if k == "seed" || k == "hashed_seed" {
 				continue;
 			}
-			if let Some(n) = v.as_f64() {
+			if let Some(n) = v.number() {
 				o.insert(format!("rng.{k}"), canon_number(n));
 			}
 		}
@@ -407,9 +409,9 @@ impl fmt::Display for FrameOffset {
 	}
 }
 
-fn lua_trace(lua: &Json) -> Vec<&str> {
-	lua.get("trace")
-		.as_list()
+fn lua_trace(lua: &Value) -> Vec<&str> {
+	lua["trace"]
+		.list()
 		.iter()
 		.filter_map(|j| j.as_str())
 		.collect()
@@ -419,8 +421,8 @@ fn lua_trace(lua: &Json) -> Vec<&str> {
 /// engines: first the order of the entries, then their frames. Nothing is
 /// compared once the game is over (the game pauses there).
 #[must_use]
-pub fn timeline_diff(g: &Game, lua: &Json) -> Option<TimelineDiff> {
-	if lua.get("state").as_str() == Some("GAME_OVER") {
+pub fn timeline_diff(g: &Game, lua: &Value) -> Option<TimelineDiff> {
+	if lua["state"].as_str() == Some("GAME_OVER") {
 		return None;
 	}
 	let sim = g.timeline();
@@ -470,7 +472,7 @@ fn entry_frame(entry: &str) -> Option<&str> {
 /// Both timelines side by side, `!` marking entries on different frames
 /// (diagnostics).
 #[must_use]
-pub fn timeline_frames(g: &Game, lua: &Json) -> Vec<String> {
+pub fn timeline_frames(g: &Game, lua: &Value) -> Vec<String> {
 	let sim = g.timeline();
 	let game = lua_trace(lua);
 	(0..sim.len().max(game.len()))

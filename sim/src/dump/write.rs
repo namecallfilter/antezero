@@ -1,6 +1,6 @@
 //! A [`Game`] written as a state dump, in the shape of the game's.
 
-use std::collections::BTreeMap;
+use serde_json::{Map, Value};
 
 use crate::canon::JokerField;
 use crate::card::{AnyCard, Card, CardCore, Forced, Kind, PlayingCard, Sticker};
@@ -11,12 +11,12 @@ use crate::data::{
 use crate::game::{
 	Blind, BlindSelect, BlindSlot, Game, HandLevels, HandSort, PackSlot, Round, Shop, Tags,
 };
-use crate::json::Json;
+use crate::json;
 use crate::round::BlindScaling;
 use crate::run::{History, Modifiers, Run, StartingParams};
 
-fn object<'key>(fields: impl IntoIterator<Item = (&'key str, Json)>) -> Json {
-	Json::Obj(
+fn object<'key>(fields: impl IntoIterator<Item = (&'key str, Value)>) -> Value {
+	Value::Object(
 		fields
 			.into_iter()
 			.map(|(k, v)| (k.to_string(), v))
@@ -24,21 +24,21 @@ fn object<'key>(fields: impl IntoIterator<Item = (&'key str, Json)>) -> Json {
 	)
 }
 
-fn array(items: impl IntoIterator<Item = Json>) -> Json {
-	Json::Arr(items.into_iter().collect())
+fn array(items: impl IntoIterator<Item = Value>) -> Value {
+	Value::Array(items.into_iter().collect())
 }
 
 /// The state dump of `g`: what the game's would hold in the same state.
-pub(crate) fn write(g: &Game) -> Json {
+pub(crate) fn write(g: &Game) -> Value {
 	let mut fields = vec![
 		("state", g.flow.state.name().into()),
 		("back", g.setup.back.key().into()),
-		("stake", f64::from(u8::from(g.setup.stake)).into()),
-		("win_ante", f64::from(g.setup.win_ante).into()),
-		("modifiers", Json::Obj(modifiers(&g.setup.modifiers))),
-		("challenge", Json::Null),
-		("vouchers_in_shop", Json::Null),
-		("boosters_in_shop", Json::Null),
+		("stake", json::number(f64::from(u8::from(g.setup.stake)))),
+		("win_ante", json::number(f64::from(g.setup.win_ante))),
+		("modifiers", Value::Object(modifiers(&g.setup.modifiers))),
+		("challenge", Value::Null),
+		("vouchers_in_shop", Value::Null),
+		("boosters_in_shop", Value::Null),
 		("starting_params", starting_params(&g.setup.starting_params)),
 		("rng", rng(g)),
 		("blind", blind(&g.blind)),
@@ -47,8 +47,8 @@ pub(crate) fn write(g: &Game) -> Json {
 			"pack_interrupt",
 			g.pack.open.map(|p| p.interrupted.name()).into(),
 		),
-		("pack_size", f64::from(g.pack.size).into()),
-		("pack_choices", g.pack.choices.map(f64::from).into()),
+		("pack_size", json::number(f64::from(g.pack.size))),
+		("pack_choices", json::number(g.pack.choices.map(f64::from))),
 	];
 	areas(g, &mut fields);
 	run(&g.run, &mut fields);
@@ -62,20 +62,20 @@ pub(crate) fn write(g: &Game) -> Json {
 
 /// What of `G.GAME.starting_params` holds after the run's start, as the
 /// dump writes it (without Steamodded's play and discard limits).
-fn starting_params(p: &StartingParams) -> Json {
+fn starting_params(p: &StartingParams) -> Value {
 	object(vec![
-		("ante_scaling", p.ante_scaling.into()),
+		("ante_scaling", json::number(p.ante_scaling)),
 		("no_faces", p.no_faces.into()),
 		("erratic_suits_and_ranks", p.erratic_suits_and_ranks.into()),
-		("play_limit", Json::Null),
-		("discard_limit", Json::Null),
+		("play_limit", Value::Null),
+		("discard_limit", Value::Null),
 	])
 }
 
 /// `G.GAME.modifiers` as the dump writes it (a nested table's entries as
 /// `table.key`): what the game sets, and only that.
-pub(super) fn modifiers(m: &Modifiers) -> BTreeMap<String, Json> {
-	let mut out = BTreeMap::new();
+pub(super) fn modifiers(m: &Modifiers) -> Map<String, Value> {
+	let mut out = Map::new();
 	for slot in BlindSlot::ALL {
 		if m.no_blind_reward[slot] {
 			out.insert(format!("no_blind_reward.{}", slot.name()), true.into());
@@ -83,8 +83,8 @@ pub(super) fn modifiers(m: &Modifiers) -> BTreeMap<String, Json> {
 	}
 	match m.scaling {
 		BlindScaling::Base => {}
-		BlindScaling::Faster => _ = out.insert("scaling".into(), 2.0.into()),
-		BlindScaling::Fastest => _ = out.insert("scaling".into(), 3.0.into()),
+		BlindScaling::Faster => _ = out.insert("scaling".into(), json::number(2.0)),
+		BlindScaling::Fastest => _ = out.insert("scaling".into(), json::number(3.0)),
 	}
 	for (key, on) in [
 		("enable_eternals_in_shop", m.enable_eternals_in_shop),
@@ -101,24 +101,24 @@ pub(super) fn modifiers(m: &Modifiers) -> BTreeMap<String, Json> {
 		("money_per_discard", m.money_per_discard),
 	] {
 		if let Some(d) = dollars {
-			out.insert(key.into(), d.into());
+			out.insert(key.into(), json::number(d));
 		}
 	}
 	out
 }
 
-fn rng(g: &Game) -> Json {
-	let mut streams: BTreeMap<String, Json> = g
+fn rng(g: &Game) -> Value {
+	let mut streams: Map<String, Value> = g
 		.rng
 		.named_streams()
-		.map(|(k, v)| (k, Json::Num(v)))
+		.map(|(k, v)| (k, json::number(v)))
 		.collect();
-	streams.insert("hashed_seed".into(), g.rng.hashed_seed().into());
+	streams.insert("hashed_seed".into(), json::number(g.rng.hashed_seed()));
 	streams.insert("seed".into(), g.rng.seed().into());
-	Json::Obj(streams)
+	Value::Object(streams)
 }
 
-fn blind(b: &Blind) -> Json {
+fn blind(b: &Blind) -> Value {
 	let eye = array(
 		HandType::ALL
 			.into_iter()
@@ -127,40 +127,40 @@ fn blind(b: &Blind) -> Json {
 	);
 	object([
 		("name", b.kind.map_or("", BlindKind::name).into()),
-		("chips", b.chips.into()),
-		("dollars", b.dollars.into()),
-		("mult", b.mult.into()),
+		("chips", json::number(b.chips)),
+		("dollars", json::number(b.dollars)),
+		("mult", json::number(b.mult)),
 		("disabled", b.disabled.into()),
 		("triggered", b.triggered.into()),
 		("prepped", b.prepped.into()),
 		("hands", eye),
 		("only_hand", b.only_hand.map(HandType::name).into()),
-		("discards_sub", b.discards_sub.into()),
-		("hands_sub", b.hands_sub.into()),
+		("discards_sub", json::number(b.discards_sub)),
+		("hands_sub", json::number(b.hands_sub)),
 	])
 }
 
-fn hands(levels: &HandLevels) -> Json {
+fn hands(levels: &HandLevels) -> Value {
 	object(HandType::ALL.into_iter().map(|h| {
 		let l = levels[h];
 		let level = object([
-			("level", l.level.into()),
-			("chips", l.chips.into()),
-			("mult", l.mult.into()),
-			("played", l.played.into()),
-			("played_this_round", l.played_this_round.into()),
+			("level", json::number(l.level)),
+			("chips", json::number(l.chips)),
+			("mult", json::number(l.mult)),
+			("played", json::number(l.played)),
+			("played_this_round", json::number(l.played_this_round)),
 			("visible", l.visible.into()),
 		]);
 		(h.name(), level)
 	}))
 }
 
-fn areas(g: &Game, out: &mut Vec<(&str, Json)>) {
+fn areas(g: &Game, out: &mut Vec<(&str, Value)>) {
 	let a = &g.areas;
 	let pack_cards = if g.flow.state.is_pack() {
 		array(a.pack_cards.iter().map(any_card))
 	} else {
-		Json::Null
+		Value::Null
 	};
 	out.extend([
 		("deck", array(a.deck.iter().map(playing_card))),
@@ -172,12 +172,15 @@ fn areas(g: &Game, out: &mut Vec<(&str, Json)>) {
 		("shop_vouchers", array(a.shop_vouchers.iter().map(card))),
 		("shop_booster", array(a.shop_boosters.iter().map(card))),
 		("pack_cards", pack_cards),
-		("hand_limit", a.hand.limit.limit.into()),
-		("hand_real_limit", a.hand.limit.real.into()),
-		("joker_limit", a.limits.jokers.limit.into()),
-		("joker_real_limit", a.limits.jokers.real.into()),
-		("consumable_limit", a.limits.consumables.limit.into()),
-		("consumable_real_limit", a.limits.consumables.real.into()),
+		("hand_limit", json::number(a.hand.limit.limit)),
+		("hand_real_limit", json::number(a.hand.limit.real)),
+		("joker_limit", json::number(a.limits.jokers.limit)),
+		("joker_real_limit", json::number(a.limits.jokers.real)),
+		("consumable_limit", json::number(a.limits.consumables.limit)),
+		(
+			"consumable_real_limit",
+			json::number(a.limits.consumables.real),
+		),
 		(
 			"sort_mode",
 			match a.hand.order {
@@ -186,35 +189,35 @@ fn areas(g: &Game, out: &mut Vec<(&str, Json)>) {
 			}
 			.into(),
 		),
-		("joker_buffer", a.joker_buffer.into()),
-		("consumeable_buffer", a.consumable_buffer.into()),
-		("sort_id", f64::from(a.next_sort_id).into()),
+		("joker_buffer", json::number(a.joker_buffer)),
+		("consumeable_buffer", json::number(a.consumable_buffer)),
+		("sort_id", json::number(f64::from(a.next_sort_id))),
 	]);
 }
 
-fn run(r: &Run, out: &mut Vec<(&str, Json)>) {
+fn run(r: &Run, out: &mut Vec<(&str, Value)>) {
 	out.extend([
-		("ante", f64::from(r.ante).into()),
-		("round", f64::from(r.round).into()),
-		("dollars", r.dollars.into()),
-		("dollar_buffer", r.dollar_buffer.into()),
-		("interest_cap", r.interest_cap.into()),
-		("interest_amount", r.interest_amount.into()),
-		("bankrupt_at", r.bankrupt_at.into()),
-		("rental_rate", r.rental_rate.into()),
-		("perishable_rounds", r.perishable_rounds.into()),
-		("ecto_minus", r.ecto_minus.into()),
-		("probabilities", r.probabilities.into()),
-		("hands_played", r.hands_played.into()),
-		("unused_discards", r.unused_discards.into()),
-		("skips", r.skips.into()),
-		("starting_deck_size", r.starting_deck_size.into()),
+		("ante", json::number(f64::from(r.ante))),
+		("round", json::number(f64::from(r.round))),
+		("dollars", json::number(r.dollars)),
+		("dollar_buffer", json::number(r.dollar_buffer)),
+		("interest_cap", json::number(r.interest_cap)),
+		("interest_amount", json::number(r.interest_amount)),
+		("bankrupt_at", json::number(r.bankrupt_at)),
+		("rental_rate", json::number(r.rental_rate)),
+		("perishable_rounds", json::number(r.perishable_rounds)),
+		("ecto_minus", json::number(r.ecto_minus)),
+		("probabilities", json::number(r.probabilities)),
+		("hands_played", json::number(r.hands_played)),
+		("unused_discards", json::number(r.unused_discards)),
+		("skips", json::number(r.skips)),
+		("starting_deck_size", json::number(r.starting_deck_size)),
 		("won", r.won.into()),
 		("win_notified", r.win_notified.into()),
 	]);
 }
 
-fn history(h: &History, out: &mut Vec<(&str, Json)>) {
+fn history(h: &History, out: &mut Vec<(&str, Value)>) {
 	let mut used_jokers: Vec<&str> = Center::all_cards()
 		.filter(|&c| h.used_jokers.contains(c))
 		.map(Center::key)
@@ -245,24 +248,24 @@ fn history(h: &History, out: &mut Vec<(&str, Json)>) {
 		.collect();
 	tags_locked.sort_unstable();
 	let usage = object([
-		("tarot", h.consumable_usage_tarot.into()),
-		("planet", h.consumable_usage_planet.into()),
-		("spectral", h.consumable_usage_spectral.into()),
+		("tarot", json::number(h.consumable_usage_tarot)),
+		("planet", json::number(h.consumable_usage_planet)),
+		("spectral", json::number(h.consumable_usage_spectral)),
 	]);
 	out.extend([
 		(
 			"used_jokers",
-			array(used_jokers.into_iter().map(Json::from)),
+			array(used_jokers.into_iter().map(Value::from)),
 		),
 		(
 			"used_vouchers",
-			array(used_vouchers.into_iter().map(Json::from)),
+			array(used_vouchers.into_iter().map(Value::from)),
 		),
-		("planets_used", array(planets.into_iter().map(Json::from))),
-		("locked", array(locked.into_iter().map(Json::from))),
+		("planets_used", array(planets.into_iter().map(Value::from))),
+		("locked", array(locked.into_iter().map(Value::from))),
 		(
 			"tags_locked",
-			array(tags_locked.into_iter().map(Json::from)),
+			array(tags_locked.into_iter().map(Value::from)),
 		),
 		("consumeable_usage_total", usage),
 		("gros_michel_extinct", h.gros_michel_extinct.into()),
@@ -277,29 +280,29 @@ fn history(h: &History, out: &mut Vec<(&str, Json)>) {
 	]);
 }
 
-fn round(r: &Round, out: &mut Vec<(&str, Json)>) {
+fn round(r: &Round, out: &mut Vec<(&str, Value)>) {
 	let id = |rank: Option<Rank>| rank.map(|r| f64::from(r.id()));
 	out.extend([
-		("chips", r.chips.into()),
-		("hands_left", r.hands_left.into()),
-		("discards_left", r.discards_left.into()),
-		("hands_played_round", r.hands_played.into()),
-		("discards_used", r.discards_used.into()),
-		("round_dollars", r.cash_out.into()),
-		("rr_hands", r.base_hands.into()),
-		("rr_discards", r.base_discards.into()),
-		("temp_handsize", r.temp_handsize.into()),
+		("chips", json::number(r.chips)),
+		("hands_left", json::number(r.hands_left)),
+		("discards_left", json::number(r.discards_left)),
+		("hands_played_round", json::number(r.hands_played)),
+		("discards_used", json::number(r.discards_used)),
+		("round_dollars", json::number(r.cash_out)),
+		("rr_hands", json::number(r.base_hands)),
+		("rr_discards", json::number(r.base_discards)),
+		("temp_handsize", json::number(r.temp_handsize)),
 		(
 			"round_bonus",
 			object([
-				("next_hands", r.bonus_next_hands.into()),
-				("discards", r.bonus_discards.into()),
+				("next_hands", json::number(r.bonus_next_hands)),
+				("discards", json::number(r.bonus_discards)),
 			]),
 		),
 		(
 			"idol",
 			object([
-				("rank", id(r.idol_card.id).into()),
+				("rank", json::number(id(r.idol_card.id))),
 				("suit", r.idol_card.suit.name().into()),
 			]),
 		),
@@ -308,15 +311,15 @@ fn round(r: &Round, out: &mut Vec<(&str, Json)>) {
 			object([
 				("rank", r.idol_card.rank.value().into()),
 				("suit", r.idol_card.suit.name().into()),
-				("id", id(r.idol_card.id).into()),
+				("id", json::number(id(r.idol_card.id))),
 			]),
 		),
-		("mail", id(r.mail_rank.id).into()),
+		("mail", json::number(id(r.mail_rank.id))),
 		(
 			"mail_card",
 			object([
 				("rank", r.mail_rank.rank.value().into()),
-				("id", id(r.mail_rank.id).into()),
+				("id", json::number(id(r.mail_rank.id))),
 			]),
 		),
 		("ancient", r.ancient_suit.name().into()),
@@ -327,8 +330,8 @@ fn round(r: &Round, out: &mut Vec<(&str, Json)>) {
 	]);
 }
 
-fn blind_select(b: &BlindSelect, out: &mut Vec<(&str, Json)>) {
-	fn per_slot(value: impl Fn(BlindSlot) -> Json) -> Json {
+fn blind_select(b: &BlindSelect, out: &mut Vec<(&str, Value)>) {
+	fn per_slot(value: impl Fn(BlindSlot) -> Value) -> Value {
 		object(
 			BlindSlot::ALL
 				.into_iter()
@@ -339,7 +342,7 @@ fn blind_select(b: &BlindSelect, out: &mut Vec<(&str, Json)>) {
 		ALL_BLINDS
 			.iter()
 			.filter(|k| k.is_boss())
-			.map(|&k| (k.key(), f64::from(b.bosses_used[k]).into())),
+			.map(|&k| (k.key(), json::number(f64::from(b.bosses_used[k])))),
 	);
 	out.extend([
 		(
@@ -362,43 +365,43 @@ fn blind_select(b: &BlindSelect, out: &mut Vec<(&str, Json)>) {
 	]);
 }
 
-fn shop(s: &Shop, out: &mut Vec<(&str, Json)>) {
-	let mut used_packs: Vec<Json> = s
+fn shop(s: &Shop, out: &mut Vec<(&str, Value)>) {
+	let mut used_packs: Vec<Value> = s
 		.booster_slots
 		.iter()
 		.map(|slot| match slot {
-			PackSlot::Unrolled => Json::Null,
+			PackSlot::Unrolled => Value::Null,
 			PackSlot::Offered(b) => b.key().into(),
 			PackSlot::Opened => "USED".into(),
 		})
 		.collect();
-	while used_packs.last() == Some(&Json::Null) {
+	while used_packs.last() == Some(&Value::Null) {
 		used_packs.pop();
 	}
 	out.extend([
 		("shop_open", s.open.into()),
 		("shop_free", s.free.into()),
 		("shop_d6ed", s.d6ed.into()),
-		("reroll_cost", s.reroll_cost.into()),
-		("reroll_cost_increase", s.reroll_cost_increase.into()),
-		("free_rerolls", s.free_rerolls.into()),
-		("rr_reroll_cost", s.base_reroll_cost.into()),
-		("temp_reroll_cost", s.temp_reroll_cost.into()),
-		("used_packs", Json::Arr(used_packs)),
+		("reroll_cost", json::number(s.reroll_cost)),
+		("reroll_cost_increase", json::number(s.reroll_cost_increase)),
+		("free_rerolls", json::number(s.free_rerolls)),
+		("rr_reroll_cost", json::number(s.base_reroll_cost)),
+		("temp_reroll_cost", json::number(s.temp_reroll_cost)),
+		("used_packs", Value::Array(used_packs)),
 		("voucher", s.voucher.map(Voucher::key).into()),
-		("shop_joker_max", s.joker_max.into()),
-		("discount_percent", s.discount_percent.into()),
-		("edition_rate", s.edition_rate.into()),
-		("joker_rate", s.joker_rate.into()),
-		("tarot_rate", s.tarot_rate.into()),
-		("planet_rate", s.planet_rate.into()),
-		("spectral_rate", s.spectral_rate.into()),
-		("playing_card_rate", s.playing_card_rate.into()),
+		("shop_joker_max", json::number(s.joker_max)),
+		("discount_percent", json::number(s.discount_percent)),
+		("edition_rate", json::number(s.edition_rate)),
+		("joker_rate", json::number(s.joker_rate)),
+		("tarot_rate", json::number(s.tarot_rate)),
+		("planet_rate", json::number(s.planet_rate)),
+		("spectral_rate", json::number(s.spectral_rate)),
+		("playing_card_rate", json::number(s.playing_card_rate)),
 		("first_shop_buffoon", s.first_buffoon.into()),
 	]);
 }
 
-fn tags(t: &Tags, out: &mut Vec<(&str, Json)>) {
+fn tags(t: &Tags, out: &mut Vec<(&str, Value)>) {
 	let held = array(t.held.iter().map(|tag| {
 		object([
 			("key", tag.kind.key().into()),
@@ -407,7 +410,7 @@ fn tags(t: &Tags, out: &mut Vec<(&str, Json)>) {
 		])
 	}));
 	let orbital_choices = array(t.orbital_choices.iter().map(|c| {
-		let mut fields = vec![("ante", Json::Num(f64::from(c.ante)))];
+		let mut fields = vec![("ante", json::number(f64::from(c.ante)))];
 		for slot in BlindSlot::ALL {
 			fields.push((slot.name(), c.hands[slot].map(HandType::name).into()));
 		}
@@ -418,23 +421,26 @@ fn tags(t: &Tags, out: &mut Vec<(&str, Json)>) {
 
 /// What every card has, with the fields of its `ability` table in `ability`.
 fn core(
-	c: &CardCore, key: &str, mut fields: Vec<(&str, Json)>, mut ability: Vec<(&str, Json)>,
-) -> Json {
+	c: &CardCore, key: &str, mut fields: Vec<(&str, Value)>, mut ability: Vec<(&str, Value)>,
+) -> Value {
 	ability.push(("couponed", c.couponed.into()));
-	ability.push(("hands_played_at_create", c.hands_played_at_create.into()));
+	ability.push((
+		"hands_played_at_create",
+		json::number(c.hands_played_at_create),
+	));
 	fields.extend([
 		("key", key.into()),
-		("sort_id", f64::from(c.id).into()),
+		("sort_id", json::number(f64::from(c.id))),
 		("edition", c.edition.map(Edition::name).into()),
 		("debuff", c.debuff.into()),
 		(
 			"facing",
 			(if c.face_down { "back" } else { "front" }).into(),
 		),
-		("base_cost", c.base_cost.into()),
-		("extra_cost", c.extra_cost.into()),
-		("cost", c.cost.into()),
-		("sell_cost", c.sell_cost.into()),
+		("base_cost", json::number(c.base_cost)),
+		("extra_cost", json::number(c.extra_cost)),
+		("cost", json::number(c.cost)),
+		("sell_cost", json::number(c.sell_cost)),
 		("added_to_deck", c.added_to_deck.into()),
 		("ability", object(ability)),
 	]);
@@ -444,14 +450,14 @@ fn core(
 /// A hand card's place in the highlight list (from 1), `false` if it is not
 /// highlighted. The simulator keeps the highlight of the cards the Bell
 /// holds only.
-fn highlighted(forced: Forced) -> Json {
+fn highlighted(forced: Forced) -> Value {
 	match forced {
-		Forced::Locked { place } => (f64::from(place) + 1.0).into(),
+		Forced::Locked { place } => json::number(f64::from(place) + 1.0),
 		Forced::No | Forced::Flagged => false.into(),
 	}
 }
 
-fn playing_card(c: &PlayingCard) -> Json {
+fn playing_card(c: &PlayingCard) -> Value {
 	let set = if c.enhancement == Enhancement::Base {
 		"Default"
 	} else {
@@ -463,19 +469,19 @@ fn playing_card(c: &PlayingCard) -> Json {
 		vec![
 			("card", c.card_key().into()),
 			("highlighted", highlighted(c.forced)),
-			("rank", f64::from(c.rank.id()).into()),
+			("rank", json::number(f64::from(c.rank.id()))),
 			("suit", c.suit.name().into()),
 			("seal", c.seal.map(Seal::name).into()),
-			("perma_bonus", c.perma_bonus.into()),
-			("times_played", f64::from(c.times_played).into()),
+			("perma_bonus", json::number(c.perma_bonus)),
+			("times_played", json::number(f64::from(c.times_played))),
 			(
 				"suit_nominal_original",
-				c.orig_suit.nominal_original().into(),
+				json::number(c.orig_suit.nominal_original()),
 			),
 		],
 		vec![
 			("set", set.into()),
-			("perma_bonus", c.perma_bonus.into()),
+			("perma_bonus", json::number(c.perma_bonus)),
 			("forced_selection", c.forced.is_flagged().into()),
 			("played_this_ante", c.played_this_ante.into()),
 			("wheel_flipped", c.wheel_flipped.into()),
@@ -483,7 +489,7 @@ fn playing_card(c: &PlayingCard) -> Json {
 	)
 }
 
-fn card(c: &Card) -> Json {
+fn card(c: &Card) -> Value {
 	let set = match c.kind {
 		Kind::Joker(_) => "Joker",
 		Kind::Tarot(_) => "Tarot",
@@ -516,16 +522,16 @@ fn card(c: &Card) -> Json {
 			}
 			if let Some(Sticker::Perishable { tally }) = c.ab.sticker {
 				ability.push(("perishable", true.into()));
-				ability.push(("perish_tally", tally.into()));
+				ability.push(("perish_tally", json::number(tally)));
 			}
 		}
 		Kind::Tarot(_) | Kind::Planet(_) | Kind::Spectral(_) => {
-			ability.push(("extra_value", c.ab.extra_value.into()));
+			ability.push(("extra_value", json::number(c.ab.extra_value)));
 		}
 		Kind::Booster(_) => {
 			ability.push((
 				"booster_pos",
-				c.booster_slot.map(|slot| f64::from(slot) + 1.0).into(),
+				json::number(c.booster_slot.map(|slot| f64::from(slot) + 1.0)),
 			));
 		}
 		Kind::Voucher(_) => {}
@@ -533,7 +539,7 @@ fn card(c: &Card) -> Json {
 	core(&c.core, c.key(), Vec::new(), ability)
 }
 
-fn any_card(c: &AnyCard) -> Json {
+fn any_card(c: &AnyCard) -> Value {
 	match c {
 		AnyCard::Playing(c) => playing_card(c),
 		AnyCard::Card(c) => card(c),
@@ -541,26 +547,26 @@ fn any_card(c: &AnyCard) -> Json {
 }
 
 /// The value of `field` of the joker `c` in its `ability` table.
-fn joker_field(field: JokerField, c: &Card) -> Json {
+fn joker_field(field: JokerField, c: &Card) -> Value {
 	let a = &c.ab;
 	match field {
-		JokerField::Mult => a.mult.into(),
-		JokerField::XMult => a.x_mult.into(),
-		JokerField::ExtraValue => a.extra_value.into(),
+		JokerField::Mult => json::number(a.mult),
+		JokerField::XMult => json::number(a.x_mult),
+		JokerField::ExtraValue => json::number(a.extra_value),
 		JokerField::Eternal => a.eternal().into(),
 		JokerField::Rental => a.rental.into(),
 		JokerField::Couponed => c.core.couponed.into(),
-		JokerField::ExtraChips => a.chips.into(),
-		JokerField::ExtraDollars => a.dollars.into(),
-		JokerField::Extra | JokerField::ExtraHandSize => a.extra.into(),
-		JokerField::InvisRounds => a.invis_rounds.into(),
-		JokerField::YorickDiscards => a.yorick_discards.into(),
-		JokerField::CainoXmult => a.caino_xmult.into(),
-		JokerField::LoyaltyRemaining => a.loyalty_remaining.into(),
+		JokerField::ExtraChips => json::number(a.chips),
+		JokerField::ExtraDollars => json::number(a.dollars),
+		JokerField::Extra | JokerField::ExtraHandSize => json::number(a.extra),
+		JokerField::InvisRounds => json::number(a.invis_rounds),
+		JokerField::YorickDiscards => json::number(a.yorick_discards),
+		JokerField::CainoXmult => json::number(a.caino_xmult),
+		JokerField::LoyaltyRemaining => json::number(a.loyalty_remaining),
 		JokerField::ToDoPokerHand => a.to_do.map(HandType::name).into(),
-		JokerField::SteelTally => a.steel_tally.into(),
-		JokerField::StoneTally => a.stone_tally.into(),
-		JokerField::DriverTally => a.driver_tally.into(),
-		JokerField::NineTally => a.nine_tally.into(),
+		JokerField::SteelTally => json::number(a.steel_tally),
+		JokerField::StoneTally => json::number(a.stone_tally),
+		JokerField::DriverTally => json::number(a.driver_tally),
+		JokerField::NineTally => json::number(a.nine_tally),
 	}
 }

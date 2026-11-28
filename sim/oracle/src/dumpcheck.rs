@@ -18,9 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::path::Path;
 
+use serde_json::Value;
 use sim::data::Booster;
 use sim::game::{Areas, Flow, Game, PackSlot, Phase, State};
-use sim::json::{self, Json};
 use sim::rng::Xorshift;
 use sim::{AnyCard, CardLike, Kind};
 
@@ -213,9 +213,9 @@ const RULES: [&str; 7] = [
 ];
 
 /// `j` as a Lua writer writes it: an empty table as `[]`.
-fn lua_table(j: &Json) -> Json {
+fn lua_table(j: &Value) -> Value {
 	match j {
-		Json::Obj(fields) if fields.is_empty() => Json::Arr(Vec::new()),
+		Value::Object(fields) if fields.is_empty() => Value::Array(Vec::new()),
 		_ => j.clone(),
 	}
 }
@@ -230,9 +230,10 @@ impl Check<'_> {
 	}
 
 	/// Runs `lua` in the oracle; the simulator in lockstep must agree.
-	fn sync(&mut self, step: usize, lua: &str) -> Result<Json, String> {
+	fn sync(&mut self, step: usize, lua: &str) -> Result<Value, String> {
 		let answer = self.o.command(lua).map_err(|e| self.fail(step, &e))?;
-		let j = json::parse(&answer).map_err(|e| self.fail(step, &e))?;
+		let j: Value =
+			serde_json::from_str(&answer).map_err(|e| self.fail(step, &e.to_string()))?;
 		let d = canon::diff(&canon::from_sim(&mut self.g), &canon::from_lua(&j));
 		if !d.is_empty() {
 			return Err(self.fail(step, &format!("lockstep diverged: {}", shown(&d))));
@@ -241,12 +242,13 @@ impl Check<'_> {
 	}
 
 	/// Imports the dump `j` of step `step` and checks the imported game.
-	fn import(&mut self, step: usize, j: &Json) -> Result<(), String> {
+	fn import(&mut self, step: usize, j: &Value) -> Result<(), String> {
 		let theirs = self
 			.o
 			.eval("return AZB.state()")
 			.map_err(|e| self.fail(step, &e))?;
-		let theirs = json::parse(&theirs).map_err(|e| self.fail(step, &e))?;
+		let theirs: Value =
+			serde_json::from_str(&theirs).map_err(|e| self.fail(step, &e.to_string()))?;
 		let differ = writer_diffs(j, &theirs);
 		if !differ.is_empty() {
 			return Err(self.fail(
@@ -272,13 +274,12 @@ impl Check<'_> {
 			));
 		}
 		for key in RULES {
-			if lua_table(ours.get(key)) != lua_table(j.get(key)) {
+			if lua_table(&ours[key]) != lua_table(&j[key]) {
 				return Err(self.fail(
 					step,
 					&format!(
 						"the simulator writes {key} {} where the game has {}",
-						ours.get(key),
-						j.get(key)
+						ours[key], j[key]
 					),
 				));
 			}
@@ -326,7 +327,7 @@ impl Check<'_> {
 	}
 
 	/// Compares every imported game with the game's dump `j` of step `step`.
-	fn follow(&mut self, step: usize, j: &Json) -> Result<(), String> {
+	fn follow(&mut self, step: usize, j: &Value) -> Result<(), String> {
 		let lua = canon::from_lua(j);
 		for (since, f) in &mut self.followers {
 			let d = canon::diff(&canon::from_sim(f), &lua);
@@ -365,7 +366,7 @@ fn load_mod_writer(o: &mut Oracle) -> Result<(), String> {
 /// The keys of the harness's dump `ours` and the mod's `theirs` whose values
 /// differ, but for what only one of them writes (the harness's frame count
 /// and trace, the mod's frame count and `az`).
-fn writer_diffs(ours: &Json, theirs: &Json) -> Vec<String> {
+fn writer_diffs(ours: &Value, theirs: &Value) -> Vec<String> {
 	let (Some(ours), Some(theirs)) = (ours.as_object(), theirs.as_object()) else {
 		return vec!["the whole dump".into()];
 	};

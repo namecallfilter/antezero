@@ -1,9 +1,9 @@
 //! What the simulator's Steamodded mode plays as the real game (which runs
 //! Steamodded) does, where it differs from vanilla.
 
+use serde_json::Value;
 use sim::data::{Back, Center, Joker, Spectral, Voucher};
 use sim::inject::{Consumable, Inject};
-use sim::json::Json;
 use sim::{Action, Game, Phase, Stake};
 
 fn act(g: &mut Game, code: &str) {
@@ -82,7 +82,7 @@ fn a_legendary_joker_takes_no_rarity_roll() {
 		});
 		act(&mut g, "use 0 0");
 		assert_eq!(g.areas.jokers.len(), 1, "The Soul made a joker");
-		let rolled = g.to_dump().get("rng").get("rarity1sou") != &Json::Null;
+		let rolled = !g.to_dump()["rng"]["rarity1sou"].is_null();
 		assert_eq!(rolled, !steamodded, "steamodded: {steamodded}");
 	}
 }
@@ -126,7 +126,7 @@ fn a_redeemed_voucher_in_used_jokers_changes_no_draw() {
 		marked.step(a).expect("the same action");
 		let (mut x, mut y) = (plain.to_dump(), marked.to_dump());
 		for d in [&mut x, &mut y] {
-			let Json::Obj(fields) = d else {
+			let Value::Object(fields) = d else {
 				panic!("a dump is an object");
 			};
 			fields.remove("used_jokers");

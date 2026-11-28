@@ -133,7 +133,7 @@ def _b(v: bool) -> str:
     return "true" if v else "false"
 
 
-# Accessors with the semantics of sim/oracle/src/json.rs.
+# Accessors with the semantics of the Rust reader: `value[k]` and sim/src/json.rs.
 def _get(j: Any, k: str) -> Any:
     return j.get(k) if isinstance(j, dict) else None
 
