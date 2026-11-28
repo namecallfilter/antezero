@@ -1,6 +1,6 @@
 -- Deterministic JSON encoder (object keys sorted, numbers as %.17g).
 -- Verbatim copy of the encoder in sim/oracle/lua/harness.lua, so that the
--- Rust `oracle::json::parse` + `canon::from_lua` consume our dumps unchanged.
+-- Rust oracle's `canon::from_lua` consumes our dumps unchanged.
 local json = {}
 local function esc(s)
   return (s:gsub('[%c"\\]', function(c)

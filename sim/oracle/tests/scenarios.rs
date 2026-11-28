@@ -9,13 +9,14 @@ use oracle::Oracle;
 use oracle::command::{Command, Start};
 use oracle::difftest::{Checks, Comparison, compare};
 use oracle::policy::{highest_scoring_play, unused_cards};
+use serde_json::Value;
 use sim::actions::Action;
 use sim::data::{
 	Back, BlindKind, Edition, Enhancement, Joker, Rank, Spectral, Suit, TagKind, Tarot,
 };
 use sim::game::{Game, Phase, Scratch};
 use sim::inject::{Consumable, Inject};
-use sim::{CardMask, Forced, Stake, json, num};
+use sim::{CardMask, Forced, Stake, num};
 
 struct Both {
 	o: Oracle,
@@ -53,7 +54,7 @@ impl Both {
 	}
 
 	fn check(&mut self, lua: &str) {
-		let j = json::parse(lua).expect("the oracle returns JSON");
+		let j: Value = serde_json::from_str(lua).expect("the oracle returns JSON");
 		let checks = if self.known_frame_offset.is_some() {
 			Checks::Timeline
 		} else {
@@ -442,7 +443,7 @@ fn a_copy_takes_over_when_the_highlights_run_out() {
 		);
 		b.o.exec(&click).expect("the game takes the clicks");
 		let state = b.o.command("H.state()").expect("the game dumps its state");
-		let state = json::parse(&state).expect("the oracle returns JSON");
+		let state: Value = serde_json::from_str(&state).expect("the oracle returns JSON");
 		b.g = Game::from_dump(&state).expect("the simulator reads the dump");
 		assert_eq!(held(&b.g, Forced::Locked), [0; 0], "no card is held");
 		assert_eq!(held(&b.g, Forced::Flagged).len(), 2);

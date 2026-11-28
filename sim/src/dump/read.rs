@@ -1,5 +1,7 @@
 //! A state dump read into a [`Game`].
 
+use serde_json::Value;
+
 use super::parse::{
 	DumpError, at, bad, blind_of_name, by_name, entries, flag, int, kind_of, list, named, number,
 	object, opt_flag, opt_int, opt_named, opt_number, opt_text, rank_of_value, raw_named,
@@ -18,7 +20,6 @@ use crate::game::{
 	HandLevels, IdolCard, MailRank, OpenPack, OrbitalChoices, PackSlot, PackState, PerBlind, Round,
 	Setup, Shop, SkipTags, Stake, State, Tag, Tags,
 };
-use crate::json::Json;
 use crate::rng::{Key, PseudoRandom};
 use crate::run::{History, Run};
 use crate::shop::BOOSTER_SLOTS;
@@ -31,7 +32,7 @@ use crate::{MAX_SEED_LEN, canon, flow, num};
 /// Returns the first field the simulator cannot take: a missing or
 /// malformed value, an unknown key or name, a deck that needs challenge
 /// rules, or a state that is not a decision point.
-pub(crate) fn read(j: &Json) -> Result<Game, DumpError> {
+pub(crate) fn read(j: &Value) -> Result<Game, DumpError> {
 	let state = named(j, "state", state_of_name)?;
 	if matches!(
 		state,
@@ -86,7 +87,7 @@ fn voucher_seen(state: State, round: i32, boss: BlindStatus) -> bool {
 	shop_shown && !rolled_now
 }
 
-fn read_setup(j: &Json) -> Result<Setup, DumpError> {
+fn read_setup(j: &Value) -> Result<Setup, DumpError> {
 	let back = named(j, "back", |k| {
 		Back::from_key(k).filter(|b| b.is_simulated())
 	})?;
@@ -120,7 +121,7 @@ fn read_setup(j: &Json) -> Result<Setup, DumpError> {
 	}
 	let rules = entries(j, "modifiers")?;
 	let want = super::write::modifiers(&setup.modifiers);
-	let want: Vec<(&str, &Json)> = want.iter().map(|(k, v)| (k.as_str(), v)).collect();
+	let want: Vec<(&str, &Value)> = want.iter().map(|(k, v)| (k.as_str(), v)).collect();
 	if rules != want {
 		return Err(DumpError(format!(
 			"rules the simulator does not have: {rules:?} (the deck and stake make {want:?})"
@@ -132,14 +133,16 @@ fn read_setup(j: &Json) -> Result<Setup, DumpError> {
 	})
 }
 
-fn read_rng(j: &Json) -> Result<PseudoRandom, DumpError> {
+fn read_rng(j: &Value) -> Result<PseudoRandom, DumpError> {
+	use crate::json::ValueExt;
+
 	let seed = text(j, "seed")?;
 	if seed.len() > MAX_SEED_LEN {
-		return Err(bad("seed", j.get("seed")));
+		return Err(bad("seed", &j["seed"]));
 	}
 	let mut rng = PseudoRandom::new(seed);
 	if number(j, "hashed_seed")? != rng.hashed_seed() {
-		return Err(bad("hashed_seed", j.get("hashed_seed")));
+		return Err(bad("hashed_seed", &j["hashed_seed"]));
 	}
 	let streams = j.as_object().ok_or_else(|| bad("rng", j))?;
 	for (k, v) in streams {
@@ -150,13 +153,13 @@ fn read_rng(j: &Json) -> Result<PseudoRandom, DumpError> {
 		if k.len() + seed.len() > Key::CAPACITY {
 			return Err(DumpError(format!("RNG stream {k:?} is too long")));
 		}
-		let state = v.as_f64().ok_or_else(|| bad(k, v))?;
+		let state = v.number().ok_or_else(|| bad(k, v))?;
 		rng.set_state(&Key::from(k.as_str()), state);
 	}
 	Ok(rng)
 }
 
-fn read_run(j: &Json, state: State) -> Result<Run, DumpError> {
+fn read_run(j: &Value, state: State) -> Result<Run, DumpError> {
 	let round = int(j, "round")?;
 	let skips = number(j, "skips")?;
 	// Blinds beaten or skipped: every round started was beaten but one being
@@ -166,7 +169,7 @@ fn read_run(j: &Json, state: State) -> Result<Run, DumpError> {
 		.ok()
 		.map(|r| r.saturating_sub(unfinished))
 		.and_then(|beaten| beaten.checked_add(whole(j, "skips", skips).ok()?))
-		.ok_or_else(|| bad("round", j.get("round")))?;
+		.ok_or_else(|| bad("round", &j["round"]))?;
 	Ok(Run {
 		ante: int(j, "ante")?,
 		round,
@@ -194,7 +197,9 @@ fn read_run(j: &Json, state: State) -> Result<Run, DumpError> {
 	})
 }
 
-fn read_history(j: &Json) -> Result<History, DumpError> {
+fn read_history(j: &Value) -> Result<History, DumpError> {
+	use crate::json::ValueExt;
+
 	let mut used_jokers = CenterSet::default();
 	for k in list(j, "used_jokers")? {
 		let k = k.as_str().ok_or_else(|| bad("used_jokers", k))?;
@@ -203,7 +208,7 @@ fn read_history(j: &Json) -> Result<History, DumpError> {
 		if k == "c_base" || Enhancement::from_key(k).is_some() || canon::placeholder_center(k) {
 			continue;
 		}
-		let kind = kind_of(k).ok_or_else(|| bad("used_jokers", &Json::Str(k.into())))?;
+		let kind = kind_of(k).ok_or_else(|| bad("used_jokers", &Value::String(k.into())))?;
 		used_jokers.insert(kind.center());
 	}
 	let mut used_vouchers = VoucherSet::default();
@@ -218,12 +223,12 @@ fn read_history(j: &Json) -> Result<History, DumpError> {
 	}
 	// nil until a consumable is used
 	let usage = at(j, "consumeable_usage_total")?;
-	if !matches!(usage, Json::Null | Json::Obj(_)) {
+	if !matches!(usage, Value::Null | Value::Object(_)) {
 		return Err(bad("consumeable_usage_total", usage));
 	}
-	let used = |set: &str| match usage.get(set) {
-		Json::Null => Ok(0.0),
-		v => v.as_f64().ok_or_else(|| bad(set, v)),
+	let used = |set: &str| match &usage[set] {
+		Value::Null => Ok(0.0),
+		v => v.number().ok_or_else(|| bad(set, v)),
 	};
 	// Another mod's cards are in no pool of the simulator's anyway.
 	let mut locked = CenterSet::default();
@@ -257,7 +262,7 @@ fn read_history(j: &Json) -> Result<History, DumpError> {
 	})
 }
 
-fn read_round(j: &Json) -> Result<Round, DumpError> {
+fn read_round(j: &Value) -> Result<Round, DumpError> {
 	// what the canonical state reads of the cards of The Idol and Mail-In
 	// Rebate (the simulator reads `idol_card` and `mail_card`)
 	at(j, "idol")?;
@@ -265,9 +270,9 @@ fn read_round(j: &Json) -> Result<Round, DumpError> {
 	let bonus = object(j, "round_bonus")?;
 	let idol = object(j, "idol_card")?;
 	let mail = object(j, "mail_card")?;
-	let rank_id = |c: &Json| {
+	let rank_id = |c: &Value| {
 		opt_int::<u8>(c, "id")?
-			.map(|id| Rank::from_id(id).ok_or_else(|| bad("id", c.get("id"))))
+			.map(|id| Rank::from_id(id).ok_or_else(|| bad("id", &c["id"])))
 			.transpose()
 	};
 	Ok(Round {
@@ -299,7 +304,7 @@ fn read_round(j: &Json) -> Result<Round, DumpError> {
 	})
 }
 
-fn read_blind_select(j: &Json) -> Result<BlindSelect, DumpError> {
+fn read_blind_select(j: &Value) -> Result<BlindSelect, DumpError> {
 	let states = object(j, "blind_states")?;
 	let tags = object(j, "blind_tags")?;
 	let mut out = BlindSelect {
@@ -329,10 +334,10 @@ fn read_blind_select(j: &Json) -> Result<BlindSelect, DumpError> {
 	Ok(out)
 }
 
-fn read_blind(j: &Json) -> Result<Blind, DumpError> {
+fn read_blind(j: &Value) -> Result<Blind, DumpError> {
 	let kind = match opt_text(j, "name")? {
 		None | Some("") => None,
-		Some(name) => Some(blind_of_name(name).ok_or_else(|| bad("blind.name", j.get("name")))?),
+		Some(name) => Some(blind_of_name(name).ok_or_else(|| bad("blind.name", &j["name"]))?),
 	};
 	// The game's blind keeps The Eye's and The Mouth's hands until it is that
 	// blind again; the simulator's blind has them only while it is.
@@ -363,10 +368,10 @@ fn read_blind(j: &Json) -> Result<Blind, DumpError> {
 	})
 }
 
-fn read_shop(j: &Json) -> Result<Shop, DumpError> {
+fn read_shop(j: &Value) -> Result<Shop, DumpError> {
 	let used_packs = list(j, "used_packs")?;
 	if used_packs.len() > BOOSTER_SLOTS {
-		return Err(bad("used_packs", j.get("used_packs")));
+		return Err(bad("used_packs", &j["used_packs"]));
 	}
 	let mut booster_slots = [PackSlot::Unrolled; BOOSTER_SLOTS];
 	for (slot, p) in booster_slots.iter_mut().zip(used_packs) {
@@ -376,7 +381,7 @@ fn read_shop(j: &Json) -> Result<Shop, DumpError> {
 				Some(Kind::Booster(b)) => PackSlot::Offered(b),
 				_ => return Err(bad("used_packs", p)),
 			},
-			None if *p == Json::Null => PackSlot::Unrolled,
+			None if *p == Value::Null => PackSlot::Unrolled,
 			None => return Err(bad("used_packs", p)),
 		};
 	}
@@ -404,7 +409,7 @@ fn read_shop(j: &Json) -> Result<Shop, DumpError> {
 	})
 }
 
-fn read_pack(j: &Json, state: State) -> Result<PackState, DumpError> {
+fn read_pack(j: &Value, state: State) -> Result<PackState, DumpError> {
 	at(j, "pack_interrupt")?;
 	let open = if state.is_pack() {
 		let kind = match state {
@@ -428,7 +433,7 @@ fn read_pack(j: &Json, state: State) -> Result<PackState, DumpError> {
 	})
 }
 
-fn read_hands(j: &Json) -> Result<HandLevels, DumpError> {
+fn read_hands(j: &Value) -> Result<HandLevels, DumpError> {
 	let mut out = HandLevels(
 		[HandLevel {
 			level: 0.0,
@@ -453,7 +458,7 @@ fn read_hands(j: &Json) -> Result<HandLevels, DumpError> {
 	Ok(out)
 }
 
-fn read_tags(j: &Json) -> Result<Tags, DumpError> {
+fn read_tags(j: &Value) -> Result<Tags, DumpError> {
 	let mut held = Vec::new();
 	let numbered = list(j, "tag_info")?.iter().zip(1..);
 	for (t, id) in numbered {
@@ -489,7 +494,7 @@ fn read_tags(j: &Json) -> Result<Tags, DumpError> {
 	})
 }
 
-fn read_areas(j: &Json) -> Result<Areas, DumpError> {
+fn read_areas(j: &Value) -> Result<Areas, DumpError> {
 	let limit = |limit: &str, real: &str| -> Result<Limit, DumpError> {
 		let limit = number(j, limit)?;
 		Ok(Limit {
@@ -500,7 +505,7 @@ fn read_areas(j: &Json) -> Result<Areas, DumpError> {
 	let order = match text(j, "sort_mode")? {
 		"desc" => HandSort::Rank,
 		"suit desc" => HandSort::Suit,
-		_ => return Err(bad("sort_mode", j.get("sort_mode"))),
+		_ => return Err(bad("sort_mode", &j["sort_mode"])),
 	};
 	Ok(Areas {
 		deck: playing_cards(j, "deck")?,
@@ -521,7 +526,7 @@ fn read_areas(j: &Json) -> Result<Areas, DumpError> {
 		shop_boosters: cards(j, "shop_booster")?,
 		// The game has the area only while a pack is open.
 		pack_cards: match at(j, "pack_cards")? {
-			Json::Null => Vec::new(),
+			Value::Null => Vec::new(),
 			_ => any_cards(j, "pack_cards")?,
 		},
 		joker_buffer: number(j, "joker_buffer")?,
@@ -533,16 +538,17 @@ fn read_areas(j: &Json) -> Result<Areas, DumpError> {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::BTreeMap;
+	use serde_json::Map;
 
 	use super::*;
 	use crate::data::{Center, Joker};
 	use crate::inject::Inject;
+	use crate::json::ValueExt;
 
 	/// A dump of a new run with `change` made to its top-level fields.
-	fn changed(change: impl FnOnce(&mut BTreeMap<String, Json>)) -> Json {
+	fn changed(change: impl FnOnce(&mut Map<String, Value>)) -> Value {
 		let mut dump = Game::new_run("TESTSEED", Back::Red, Stake::White).to_dump();
-		let Json::Obj(fields) = &mut dump else {
+		let Value::Object(fields) = &mut dump else {
 			panic!("a dump is an object");
 		};
 		change(fields);
@@ -557,27 +563,27 @@ mod tests {
 	#[test]
 	fn a_stream_key_too_long_with_the_seed_is_refused() {
 		let dump = changed(|f| {
-			let Some(Json::Obj(rng)) = f.get_mut("rng") else {
+			let Some(Value::Object(rng)) = f.get_mut("rng") else {
 				panic!("a dump has its RNG streams");
 			};
-			rng.insert("k".repeat(Key::CAPACITY - 4), Json::Num(0.5));
+			rng.insert("k".repeat(Key::CAPACITY - 4), Value::from(0.5));
 		});
 		assert!(read(&dump).is_err());
 	}
 
 	/// Removes the key `path` (`key`, or `area.key` of the area's first card).
-	fn without(dump: &Json, path: &str) -> Json {
+	fn without(dump: &Value, path: &str) -> Value {
 		let mut dump = dump.clone();
-		let Json::Obj(fields) = &mut dump else {
+		let Value::Object(fields) = &mut dump else {
 			panic!("a dump is an object");
 		};
 		match path.split_once('.') {
 			None => fields.remove(path),
 			Some((area, key)) => {
-				let Some(Json::Arr(cards)) = fields.get_mut(area) else {
+				let Some(Value::Array(cards)) = fields.get_mut(area) else {
 					panic!("the dump has the area {area}");
 				};
-				let Some(Json::Obj(card)) = cards.first_mut() else {
+				let Some(Value::Object(card)) = cards.first_mut() else {
 					panic!("the area {area} has a card");
 				};
 				card.remove(key)
@@ -598,11 +604,7 @@ mod tests {
 			.cloned()
 			.collect();
 		for area in ["deck", "jokers"] {
-			let card = dump
-				.get(area)
-				.as_list()
-				.first()
-				.expect("the area has a card");
+			let card = dump[area].list().first().expect("the area has a card");
 			let keys = card.as_object().expect("a card is an object").keys();
 			paths.extend(keys.map(|k| format!("{area}.{k}")));
 		}
@@ -619,45 +621,45 @@ mod tests {
 
 	#[test]
 	fn rules_the_simulator_does_not_have_are_refused() {
-		let set = |key: &str, v: Json| changed(|f| _ = f.insert(key.into(), v));
-		let start = |key: &str, v: Json| {
+		let set = |key: &str, v: Value| changed(|f| _ = f.insert(key.into(), v));
+		let start = |key: &str, v: Value| {
 			changed(|f| {
-				let Some(Json::Obj(p)) = f.get_mut("starting_params") else {
+				let Some(Value::Object(p)) = f.get_mut("starting_params") else {
 					panic!("a dump has its starting rules");
 				};
 				p.insert(key.into(), v);
 			})
 		};
-		let mut rules = BTreeMap::new();
-		rules.insert("no_interest".to_string(), Json::Bool(true)); // a challenge's, not the Red Deck's
+		let mut rules = Map::new();
+		rules.insert("no_interest".to_string(), Value::Bool(true)); // a challenge's, not the Red Deck's
 		for dump in [
-			set("modifiers", Json::Obj(rules)),
-			set("challenge", Json::Str("c_omelette_1".into())),
-			set("vouchers_in_shop", Json::Num(2.0)),
-			start("ante_scaling", Json::Num(2.0)), // the Plasma Deck's, not the Red Deck's
-			start("play_limit", Json::Num(6.0)),
+			set("modifiers", Value::Object(rules)),
+			set("challenge", Value::String("c_omelette_1".into())),
+			set("vouchers_in_shop", Value::from(2.0)),
+			start("ante_scaling", Value::from(2.0)), // the Plasma Deck's, not the Red Deck's
+			start("play_limit", Value::from(6.0)),
 			set(
 				"voucher",
-				Json::Arr(vec![
-					Json::Str("v_grabber".into()),
-					Json::Str("v_wasteful".into()),
+				Value::Array(vec![
+					Value::String("v_grabber".into()),
+					Value::String("v_wasteful".into()),
 				]),
 			),
 		] {
 			assert!(read(&dump).is_err(), "{:?}", [
-				dump.get("modifiers"),
-				dump.get("challenge")
+				&dump["modifiers"],
+				&dump["challenge"]
 			]);
 		}
 		// Steamodded's shop sizes as vanilla's, and no rules: a White Stake Red Deck run
 		let plain = changed(|f| {
-			f.insert("vouchers_in_shop".into(), Json::Num(1.0));
-			f.insert("boosters_in_shop".into(), Json::Num(2.0));
-			let Some(Json::Obj(p)) = f.get_mut("starting_params") else {
+			f.insert("vouchers_in_shop".into(), Value::from(1.0));
+			f.insert("boosters_in_shop".into(), Value::from(2.0));
+			let Some(Value::Object(p)) = f.get_mut("starting_params") else {
 				panic!("a dump has its starting rules");
 			};
-			p.insert("play_limit".into(), Json::Num(5.0));
-			p.insert("discard_limit".into(), Json::Num(5.0));
+			p.insert("play_limit".into(), Value::from(5.0));
+			p.insert("discard_limit".into(), Value::from(5.0));
 		});
 		assert!(read(&plain).is_ok());
 		let plasma = Game::new_run("TESTSEED", Back::Plasma, Stake::White).to_dump();
@@ -675,8 +677,8 @@ mod tests {
 	#[test]
 	fn a_loss_before_the_first_blind_reads() {
 		let dump = changed(|f| {
-			f.insert("state".into(), Json::Str("GAME_OVER".into()));
-			f.insert("round".into(), Json::Num(0.0));
+			f.insert("state".into(), Value::String("GAME_OVER".into()));
+			f.insert("round".into(), Value::from(0.0));
 		});
 		let g = read(&dump).expect("a game over at round 0");
 		assert!(g.is_terminal() && g.run.blinds_cleared == 0);
@@ -687,14 +689,14 @@ mod tests {
 		let dump = changed(|f| {
 			f.insert(
 				"locked".into(),
-				Json::Arr(vec![
-					Json::Str("j_blueprint".into()),
-					Json::Str("j_mod_card".into()),
+				Value::Array(vec![
+					Value::String("j_blueprint".into()),
+					Value::String("j_mod_card".into()),
 				]),
 			);
 			f.insert(
 				"tags_locked".into(),
-				Json::Arr(vec![Json::Str("tag_rare".into())]),
+				Value::Array(vec![Value::String("tag_rare".into())]),
 			);
 		});
 		let mut g = read(&dump).expect("another mod's locked card is in no pool anyway");
@@ -708,8 +710,8 @@ mod tests {
 	fn used_jokers_holds_the_cards_the_simulator_has() {
 		let used = |keys: &[&str]| {
 			changed(|f| {
-				let keys = keys.iter().map(|&k| Json::Str(k.into())).collect();
-				f.insert("used_jokers".into(), Json::Arr(keys));
+				let keys = keys.iter().map(|&k| Value::String(k.into())).collect();
+				f.insert("used_jokers".into(), Value::Array(keys));
 			})
 		};
 		let g = read(&used(&["c_base", "m_glass", "j_locked", "j_joker"]))
@@ -723,7 +725,7 @@ mod tests {
 	#[test]
 	fn a_negative_round_is_refused() {
 		let dump = changed(|f| {
-			f.insert("round".into(), Json::Num(-1.0));
+			f.insert("round".into(), Value::from(-1.0));
 		});
 		assert!(read(&dump).is_err());
 	}

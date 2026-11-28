@@ -6,6 +6,7 @@ description = "Runs the real Balatro Lua code headlessly (via the game's own lua
 publish = false
 
 [dependencies]
+serde_json.workspace = true
 sim = { path = "..", features = ["trace-keys"] }
 
 [lints]

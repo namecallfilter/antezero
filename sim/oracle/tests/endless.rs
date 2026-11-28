@@ -12,18 +12,20 @@
 use oracle::command::Start;
 use oracle::policy::Policy;
 use oracle::{Oracle, canon};
+use serde_json::Value;
 use sim::data::Back;
 use sim::game::Game;
 use sim::obs::{self, ObsBuf};
-use sim::{Stake, json, num};
+use sim::{Stake, num};
 
 /// The antes the runs start at: past the win, up to where the blinds' chips
 /// overflow (the game ends a run whose score would have to be infinite).
 const ANTES: [i32; 9] = [9, 10, 11, 13, 16, 20, 25, 30, 36];
 const STEPS: usize = 400;
 
-fn dump(o: &mut Oracle) -> json::Json {
-	json::parse(&o.command("H.state()").expect("the harness dumps")).expect("its dump is JSON")
+fn dump(o: &mut Oracle) -> Value {
+	serde_json::from_str(&o.command("H.state()").expect("the harness dumps"))
+		.expect("its dump is JSON")
 }
 
 #[test]
@@ -80,7 +82,7 @@ fn endless_runs_are_the_game() {
 			command
 				.apply(&mut g)
 				.unwrap_or_else(|e| panic!("{seed}: the simulator rejected {command}: {e}"));
-			j = json::parse(&o.command(&command.to_lua()).expect("the harness acts"))
+			j = serde_json::from_str(&o.command(&command.to_lua()).expect("the harness acts"))
 				.expect("JSON");
 			steps += 1;
 			max_ante = max_ante.max(g.run.ante);

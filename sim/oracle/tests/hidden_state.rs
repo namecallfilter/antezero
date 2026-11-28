@@ -17,9 +17,10 @@ use std::mem;
 
 use oracle::fingerprint::obs_fingerprint_with;
 use oracle::policy::Policy;
+use serde_json::Value;
 use sim::data::{Back, Edition, Suit};
 use sim::game::Game;
-use sim::json::Json;
+use sim::json::ValueExt;
 use sim::obs::OpOptions;
 use sim::{Stake, num};
 
@@ -47,7 +48,7 @@ fn options() -> [OpOptions; 3] {
 	]
 }
 
-fn imported(dump: &Json) -> Game {
+fn imported(dump: &Value) -> Game {
 	Game::from_dump(dump).expect("a dump the simulator wrote reads back")
 }
 
@@ -61,33 +62,33 @@ fn fingerprints(g: &mut Game) -> Vec<u64> {
 	out
 }
 
-fn cards_mut<'d>(dump: &'d mut Json, area: &str) -> &'d mut Vec<Json> {
-	let Json::Obj(fields) = dump else {
+fn cards_mut<'d>(dump: &'d mut Value, area: &str) -> &'d mut Vec<Value> {
+	let Value::Object(fields) = dump else {
 		panic!("a dump is an object");
 	};
-	let Some(Json::Arr(cards)) = fields.get_mut(area) else {
+	let Some(Value::Array(cards)) = fields.get_mut(area) else {
 		panic!("the dump has the area {area}");
 	};
 	cards
 }
 
-fn field_mut<'c>(card: &'c mut Json, key: &str) -> &'c mut Json {
-	let Json::Obj(fields) = card else {
+fn field_mut<'c>(card: &'c mut Value, key: &str) -> &'c mut Value {
+	let Value::Object(fields) = card else {
 		panic!("a card is an object");
 	};
-	fields.entry(key.to_string()).or_insert(Json::Null)
+	fields.entry(key.to_string()).or_insert(Value::Null)
 }
 
 /// The places of the cards the player has not seen: face down in the hand,
 /// or discarded face down this round (still `wheel_flipped`).
-fn unseen(dump: &Json) -> Vec<(&'static str, usize)> {
-	let hand = dump.get("hand").as_list().iter().enumerate();
-	let discard = dump.get("discard").as_list().iter().enumerate();
-	hand.filter(|(_, c)| c.get("facing").as_str() == Some("back"))
+fn unseen(dump: &Value) -> Vec<(&'static str, usize)> {
+	let hand = dump["hand"].list().iter().enumerate();
+	let discard = dump["discard"].list().iter().enumerate();
+	hand.filter(|(_, c)| c["facing"].as_str() == Some("back"))
 		.map(|(i, _)| ("hand", i))
 		.chain(
 			discard
-				.filter(|(_, c)| c.get("ability").get("wheel_flipped").as_flag())
+				.filter(|(_, c)| c["ability"]["wheel_flipped"].flag())
 				.map(|(i, _)| ("discard", i)),
 		)
 		.collect()
@@ -95,7 +96,7 @@ fn unseen(dump: &Json) -> Vec<(&'static str, usize)> {
 
 /// `dump` with the card at `at` and the deck's card `d` changing places,
 /// each place keeping how it shows the card.
-fn swapped(dump: &Json, at: (&str, usize), d: usize) -> Json {
+fn swapped(dump: &Value, at: (&str, usize), d: usize) -> Value {
 	let mut out = dump.clone();
 	let mut a = cards_mut(&mut out, at.0)[at.1].clone();
 	let mut b = cards_mut(&mut out, "deck")[d].clone();
@@ -114,16 +115,16 @@ fn swapped(dump: &Json, at: (&str, usize), d: usize) -> Json {
 }
 
 /// `dump` with the hand's card `i` dealt with another suit than it was.
-fn other_original_suit(dump: &Json, i: usize) -> Json {
+fn other_original_suit(dump: &Value, i: usize) -> Value {
 	let mut out = dump.clone();
 	let card = &mut cards_mut(&mut out, "hand")[i];
-	let was = card.get("suit_nominal_original").as_f64();
+	let was = card["suit_nominal_original"].number();
 	let other = Suit::ALL
 		.into_iter()
 		.map(Suit::nominal_original)
 		.find(|&n| Some(n) != was)
 		.expect("four suits");
-	*field_mut(card, "suit_nominal_original") = Json::Num(other);
+	*field_mut(card, "suit_nominal_original") = Value::from(other);
 	out
 }
 
@@ -131,9 +132,9 @@ fn other_original_suit(dump: &Json, i: usize) -> Json {
 /// swapped with a deck card, and a face-up hand card dealt with another
 /// suit; with whether the card swapped places (so that resampling either
 /// world deals the same one).
-fn twins(dump: &Json, n: u64) -> Vec<(Json, bool)> {
+fn twins(dump: &Value, n: u64) -> Vec<(Value, bool)> {
 	let mut out = Vec::new();
-	let deck = dump.get("deck").as_list().len();
+	let deck = dump["deck"].list().len();
 	if deck > 0 {
 		for (k, at) in unseen(dump).into_iter().enumerate() {
 			out.push((
@@ -142,15 +143,15 @@ fn twins(dump: &Json, n: u64) -> Vec<(Json, bool)> {
 			));
 		}
 	}
-	let hand = dump.get("hand").as_list();
-	if let Some(i) = (0..hand.len()).find(|&i| hand[i].get("facing").as_str() == Some("front")) {
+	let hand = dump["hand"].list();
+	if let Some(i) = (0..hand.len()).find(|&i| hand[i]["facing"].as_str() == Some("front")) {
 		out.push((other_original_suit(dump, i), false));
 	}
 	out
 }
 
 /// The dump of `g` with its hidden state resampled with `seed`.
-fn resampled(g: &Game, seed: &str) -> Json {
+fn resampled(g: &Game, seed: &str) -> Value {
 	let mut w = g.clone();
 	w.resample_hidden(seed);
 	w.to_dump()
@@ -214,8 +215,8 @@ fn a_card_discarded_unseen_stays_unseen() {
 	g.step(a).expect("the small blind");
 	let mut dump = g.to_dump();
 	let card = &mut cards_mut(&mut dump, "hand")[0];
-	*field_mut(card, "facing") = Json::Str("back".into());
-	*field_mut(field_mut(card, "ability"), "wheel_flipped") = Json::Bool(true);
+	*field_mut(card, "facing") = Value::String("back".into());
+	*field_mut(field_mut(card, "ability"), "wheel_flipped") = Value::Bool(true);
 	let mut g = imported(&dump);
 	let a: sim::Action = "discard 1".parse().expect("an action");
 	g.step(a).expect("a discard");
@@ -223,7 +224,7 @@ fn a_card_discarded_unseen_stays_unseen() {
 	assert_eq!(unseen(&dump), [("discard", 0)]);
 	let seen = fingerprints(&mut imported(&dump));
 	let dealt = resampled(&imported(&dump), "unseen");
-	for d in 0..dump.get("deck").as_list().len() {
+	for d in 0..dump["deck"].list().len() {
 		let other = imported(&swapped(&dump, ("discard", 0), d));
 		assert_eq!(fingerprints(&mut other.clone()), seen, "deck card {d}");
 		assert!(
@@ -246,15 +247,15 @@ fn the_sort_ops_do_not_tell_the_suit_a_card_was_dealt() {
 	for (i, original, id) in [(0, Suit::Spades, 900.0), (1, Suit::Hearts, 901.0)] {
 		hand[i] = ace.clone();
 		for (key, v) in [
-			("rank", Json::Num(14.0)),
-			("suit", Json::Str("Spades".into())),
-			("card", Json::Str("S_A".into())),
-			("key", Json::Str("c_base".into())),
+			("rank", Value::from(14.0)),
+			("suit", Value::String("Spades".into())),
+			("card", Value::String("S_A".into())),
+			("key", Value::String("c_base".into())),
 			(
 				"suit_nominal_original",
-				Json::Num(original.nominal_original()),
+				Value::from(original.nominal_original()),
 			),
-			("sort_id", Json::Num(id)),
+			("sort_id", Value::from(id)),
 		] {
 			*field_mut(&mut hand[i], key) = v;
 		}
@@ -264,7 +265,7 @@ fn the_sort_ops_do_not_tell_the_suit_a_card_was_dealt() {
 		*field_mut(
 			&mut cards_mut(&mut other, "hand")[i],
 			"suit_nominal_original",
-		) = Json::Num(original.nominal_original());
+		) = Value::from(original.nominal_original());
 	}
 	assert_eq!(
 		fingerprints(&mut imported(&dump)),
@@ -273,15 +274,18 @@ fn the_sort_ops_do_not_tell_the_suit_a_card_was_dealt() {
 }
 
 /// `card` made a Stone card hiding the suit and rank it has.
-fn stone(card: &mut Json, suit: Suit, rank: f64, edition: Option<Edition>) {
+fn stone(card: &mut Value, suit: Suit, rank: f64, edition: Option<Edition>) {
 	for (key, v) in [
-		("key", Json::Str("m_stone".into())),
-		("suit", Json::Str(suit.name().into())),
-		("rank", Json::Num(rank)),
-		("suit_nominal_original", Json::Num(suit.nominal_original())),
+		("key", Value::String("m_stone".into())),
+		("suit", Value::String(suit.name().into())),
+		("rank", Value::from(rank)),
+		(
+			"suit_nominal_original",
+			Value::from(suit.nominal_original()),
+		),
 		(
 			"edition",
-			edition.map_or(Json::Null, |e| Json::Str(e.name().into())),
+			edition.map_or(Value::Null, |e| Value::String(e.name().into())),
 		),
 	] {
 		*field_mut(card, key) = v;
@@ -290,24 +294,20 @@ fn stone(card: &mut Json, suit: Suit, rank: f64, edition: Option<Edition>) {
 
 /// What shows of the hand and the deck, in order: a Stone card without the
 /// suit and rank it hides.
-fn shown(dump: &Json) -> Vec<String> {
-	let cards = dump
-		.get("hand")
-		.as_list()
-		.iter()
-		.chain(dump.get("deck").as_list());
+fn shown(dump: &Value) -> Vec<String> {
+	let cards = dump["hand"].list().iter().chain(dump["deck"].list());
 	cards
 		.map(|c| {
-			let key = c.get("key").as_str().unwrap_or("?");
+			let key = c["key"].as_str().unwrap_or("?");
 			let face = if key == "m_stone" {
 				String::new()
 			} else {
-				format!("{:?} {:?}", c.get("suit").as_str(), c.get("rank").as_f64())
+				format!("{:?} {:?}", c["suit"].as_str(), c["rank"].number())
 			};
 			format!(
 				"{key} {:?} {:?} {face}",
-				c.get("edition").as_str(),
-				c.get("facing").as_str()
+				c["edition"].as_str(),
+				c["facing"].as_str()
 			)
 		})
 		.collect()
@@ -323,7 +323,7 @@ fn a_stone_card_keeps_its_suit_and_rank_hidden() {
 	let a: sim::Action = "select".parse().expect("an action");
 	g.step(a).expect("the small blind");
 	let mut dump = g.to_dump();
-	*field_mut(&mut cards_mut(&mut dump, "hand")[1], "facing") = Json::Str("back".into());
+	*field_mut(&mut cards_mut(&mut dump, "hand")[1], "facing") = Value::String("back".into());
 	let mut other = dump.clone();
 	for (d, hidden) in [
 		(&mut dump, [

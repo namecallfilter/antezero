@@ -2,99 +2,14 @@
 
 use std::hash::{Hash, Hasher};
 
+// The digests seed the previews' sampled hands and order their jokers, which
+// reach the observation, so the hash is pinned: SipHash-1-3 with a zero key,
+// what `DefaultHasher::new()` computes today but std leaves unspecified.
+pub(super) use siphasher::sip::SipHasher13;
+
 use crate::card::{Ability, CanonKey, Card, CardCore, CardFace, Kind, PlayingCard, canon_key};
 use crate::data::{Edition, Enhancement, Joker, Suit, Voucher};
 use crate::game::{Areas, Blind, BlindSlot, BlindStatus, Game, HandLevels, HandSort, PerBlind};
-use crate::num;
-
-/// SipHash-1-3 with a zero key over the bytes written: what
-/// `DefaultHasher::new()` computes today. The digests seed the previews'
-/// sampled hands and order their jokers, which reach the observation, and
-/// std leaves `DefaultHasher`'s algorithm unspecified, so it is fixed here.
-#[derive(Clone, Debug)]
-pub(super) struct SipHasher13 {
-	v: [u64; 4],
-	/// Bytes written but not yet compressed, little-endian.
-	tail: u64,
-	tail_len: usize,
-	/// Bytes written in all.
-	len: usize,
-}
-
-impl SipHasher13 {
-	pub(super) fn new() -> SipHasher13 {
-		SipHasher13 {
-			v: [
-				0x736f_6d65_7073_6575,
-				0x646f_7261_6e64_6f6d,
-				0x6c79_6765_6e65_7261,
-				0x7465_6462_7974_6573,
-			],
-			tail: 0,
-			tail_len: 0,
-			len: 0,
-		}
-	}
-
-	fn round(&mut self) {
-		let [v0, v1, v2, v3] = &mut self.v;
-		*v0 = v0.wrapping_add(*v1);
-		*v1 = v1.rotate_left(13) ^ *v0;
-		*v0 = v0.rotate_left(32);
-		*v2 = v2.wrapping_add(*v3);
-		*v3 = v3.rotate_left(16) ^ *v2;
-		*v0 = v0.wrapping_add(*v3);
-		*v3 = v3.rotate_left(21) ^ *v0;
-		*v2 = v2.wrapping_add(*v1);
-		*v1 = v1.rotate_left(17) ^ *v2;
-		*v2 = v2.rotate_left(32);
-	}
-
-	fn compress(&mut self, m: u64) {
-		self.v[3] ^= m;
-		self.round();
-		self.v[0] ^= m;
-	}
-
-	fn push_byte(&mut self, b: u8) {
-		self.tail |= u64::from(b) << (8 * self.tail_len);
-		self.tail_len += 1;
-		if self.tail_len == 8 {
-			self.compress(self.tail);
-			self.tail = 0;
-			self.tail_len = 0;
-		}
-	}
-}
-
-impl Hasher for SipHasher13 {
-	fn write(&mut self, bytes: &[u8]) {
-		self.len += bytes.len();
-		let fill = bytes.len().min((8 - self.tail_len) % 8);
-		let (head, rest) = bytes.split_at(fill);
-		for &b in head {
-			self.push_byte(b);
-		}
-		let (words, remainder) = rest.as_chunks::<8>();
-		for &word in words {
-			self.compress(u64::from_le_bytes(word));
-		}
-		for &b in remainder {
-			self.push_byte(b);
-		}
-	}
-
-	fn finish(&self) -> u64 {
-		let mut s = self.clone();
-		let last = (num::index64(self.len) & 0xff) << 56 | self.tail;
-		s.compress(last);
-		s.v[2] ^= 0xff;
-		for _ in 0..3 {
-			s.round();
-		}
-		s.v[0] ^ s.v[1] ^ s.v[2] ^ s.v[3]
-	}
-}
 
 /// Which blinds of the ante are done (defeated or skipped). Unlike the raw
 /// states, this does not change between a shop and the next blind select.

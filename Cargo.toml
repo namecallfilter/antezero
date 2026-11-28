@@ -5,6 +5,11 @@ members = ["sim", "sim/oracle", "sim/py"]
 default-members = ["sim", "sim/oracle"]
 resolver = "3"
 
+[workspace.dependencies]
+# The default parser reads some 17-digit floats an ulp off, and state dumps
+# must read back bit for bit.
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 absolute_paths = "warn" # import the item or its module; no `std::a::b` or `crate::a::b` inline
