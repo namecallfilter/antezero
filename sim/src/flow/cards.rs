@@ -150,17 +150,17 @@ pub(crate) fn draw_from_deck_to_hand(
 
 /// Finds and removes a card anywhere (`Card:remove`).
 pub(crate) fn remove_card_by_id(g: &mut Game, id: u32) {
-	let (c, owned) = if let Some((area, c)) = g.areas.take(id) {
+	let (c, owned, from_hand) = if let Some((area, c)) = g.areas.take(id) {
 		let owned = match area {
 			Area::Jokers | Area::Consumables => c.core().added_to_deck,
 			Area::Hand | Area::Play | Area::Deck | Area::Discard => true,
 			Area::ShopJokers | Area::ShopVouchers | Area::ShopBoosters | Area::PackCards => false,
 		};
-		(c, owned)
+		(c, owned, area == Area::Hand)
 	} else if let Some(i) = areas::position_of(&g.areas.consumed, id) {
 		let c = g.areas.consumed.remove(i);
 		let owned = c.core.added_to_deck;
-		(AnyCard::from(c), owned)
+		(AnyCard::from(c), owned, false)
 	} else {
 		return;
 	};
@@ -169,7 +169,9 @@ pub(crate) fn remove_card_by_id(g: &mut Game, id: u32) {
 	} else {
 		card::destroy_card(g, c);
 	}
-	g.areas.hand.highlight_forced();
+	if from_hand {
+		g.areas.hand.highlight_forced();
+	}
 }
 
 /// `copy_card(other, nil, nil, nil, strip_edition)` for a joker or a

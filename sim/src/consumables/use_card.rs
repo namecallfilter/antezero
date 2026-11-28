@@ -191,6 +191,9 @@ fn set_consumable_usage(history: &mut History, events: &mut EventQueue, kind: Ki
 /// than the hand's highlight limit, none for a consumable that acts on one,
 /// an empty hand for Familiar, Grim or Incantation, or no jokers for Ankh.
 pub(crate) fn use_consumable(g: &mut Game, card: &Card, highlighted: CardMask) {
+	if highlighted.is_empty() {
+		g.areas.hand.highlight_forced();
+	}
 	// A highlighted card that has the forced flag stays highlighted.
 	for i in highlighted.indices() {
 		let held = &mut g.areas.hand.cards[i].forced;

@@ -55,6 +55,16 @@ fn core(c: &Json) -> Result<CardCore, DumpError> {
 	})
 }
 
+/// Whether the playing card is highlighted, which the mod writes
+/// since version 0.3.0.
+fn highlighted(c: &Json) -> Result<bool, DumpError> {
+	if c.field("highlighted").is_none() {
+		let why = "no highlighted: the dump is of an AnteZero mod before 0.3.0, update the mod";
+		return Err(DumpError(why.into()));
+	}
+	flag(c, "highlighted")
+}
+
 fn playing_card(c: &Json) -> Result<PlayingCard, DumpError> {
 	let ab = c.get("ability");
 	// what the canonical state reads (the simulator has them from `rank`,
@@ -73,7 +83,7 @@ fn playing_card(c: &Json) -> Result<PlayingCard, DumpError> {
 		enhancement: named(c, "key", Enhancement::from_key)?,
 		seal: opt_named(c, "seal", |s| by_name(&Seal::ALL, Seal::name, s))?,
 		perma_bonus: number(ab, "perma_bonus")?,
-		forced: match (raw_flag(ab, "forced_selection")?, flag(c, "highlighted")?) {
+		forced: match (raw_flag(ab, "forced_selection")?, highlighted(c)?) {
 			(false, _) => Forced::No,
 			(true, false) => Forced::Flagged,
 			(true, true) => Forced::Locked,

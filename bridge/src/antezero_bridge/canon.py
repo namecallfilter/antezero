@@ -206,7 +206,7 @@ def _lua_card(out: Canon, p: str, c: Any, area: str) -> None:
             out[f"{p}.debuff"] = _b(_bool(_get(c, "debuff")))
         if area == "hand":
             out[f"{p}.facing"] = _str(_get(c, "facing")) or "?"
-            held = "true" if _bool(_get(c, "highlighted")) else "flagged"
+            held = {True: "true", False: "flagged"}.get(_get(c, "highlighted"), "?")
             out[f"{p}.forced"] = held if _bool(_get(ab, "forced_selection")) else "false"
         out[f"{p}.played_this_ante"] = _b(_bool(_get(ab, "played_this_ante")))
     if st == "Joker":

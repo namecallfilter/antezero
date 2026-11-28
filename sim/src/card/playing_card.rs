@@ -22,7 +22,8 @@ pub enum SuitTest {
 }
 
 /// Cerulean Bell's hold on a hand card: `ability.forced_selection`, and for
-/// a card that has it, whether the card is highlighted.
+/// a card that has it, whether the card is highlighted. In the order of how
+/// firmly the card is held, which `min` and `max` on it rely on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Forced {
 	#[default]

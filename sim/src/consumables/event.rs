@@ -164,7 +164,7 @@ pub(crate) fn run_event(g: &mut Game, e: ConsumableEvent) {
 				);
 			}
 		}
-		E::UnhighlightAll => {}
+		E::UnhighlightAll => g.areas.hand.highlight_forced(),
 		E::SetSeal { target, seal } => {
 			if let Some(i) = position_of(&g.areas.hand.cards, target) {
 				let pricing = Pricing::new(g.shop.discount_percent, &g.areas.jokers);

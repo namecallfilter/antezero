@@ -130,6 +130,12 @@ impl Hand {
 
 	/// `CardArea:update` for the hand: while no card is highlighted, the
 	/// game highlights the first card that has the forced flag.
+	///
+	/// The simulator keeps the highlight of flagged cards only, so this is
+	/// for the moments the game's highlights can run out: a hand card is
+	/// removed, the hand is unhighlighted before a consumable that takes no
+	/// cards is used (as the oracle harness and the mod drive the game), and
+	/// a consumable unhighlights the hand when it is done.
 	pub(crate) fn highlight_forced(&mut self) {
 		if self.cards.iter().any(|c| c.forced.is_locked()) {
 			return;

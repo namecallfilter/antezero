@@ -15,7 +15,7 @@ use sim::data::{
 };
 use sim::game::{Game, Phase, Scratch};
 use sim::inject::{Consumable, Inject};
-use sim::{CardMask, Forced, Stake, json};
+use sim::{CardMask, Forced, Stake, json, num};
 
 struct Both {
 	o: Oracle,
@@ -266,32 +266,27 @@ fn held(g: &Game, how: Forced) -> Vec<usize> {
 		.collect()
 }
 
-/// Cerulean Bell with copies of its forced card: the copies have the flag
-/// (`copy_card` copies the ability table), but the game only keeps the
-/// highlighted card in the selection. A copy is held once a consumable has
-/// been used on it, and the first one is when no held card is left.
-#[test]
-#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
-fn cerulean_bell_holds_only_the_highlighted_card() {
+/// Whether skipping the run's first two blinds only gives tags that leave
+/// the game at the next blind.
+fn quiet_skips(g: &Game) -> bool {
 	let quiet = |tag| {
 		matches!(
 			tag,
 			Some(TagKind::Economy | TagKind::Handy | TagKind::Garbage | TagKind::Skip)
 		)
 	};
-	let seed =
-		find_seed(|g| quiet(g.blind_select.skip_tags.small) && quiet(g.blind_select.skip_tags.big));
-	let mut b = Both::start(red_white(&seed));
+	quiet(g.blind_select.skip_tags.small) && quiet(g.blind_select.skip_tags.big)
+}
+
+/// Both engines in a first round against Cerulean Bell, which holds one
+/// hand card, with `consumables` in this order and a Joker.
+fn bell_round(seed: &str, consumables: &[Consumable]) -> Both {
+	let mut b = Both::start(red_white(seed));
 	b.g.blind_select.boss = BlindKind::FinalBell;
 	b.o.exec("G.GAME.round_resets.blind_choices.Boss = 'bl_final_bell'")
 		.expect("the game takes the boss");
-	for card in [
-		Consumable::Spectral(Spectral::Cryptid),
-		Consumable::Spectral(Spectral::Cryptid),
-		Consumable::Tarot(Tarot::Magician),
-		Consumable::Tarot(Tarot::Death),
-		Consumable::Tarot(Tarot::HangedMan),
-	] {
+	b.inject(Inject::joker(Joker::Joker));
+	for &card in consumables {
 		b.inject(Inject::Consumable {
 			card,
 			edition: Some(Edition::Negative),
@@ -301,37 +296,46 @@ fn cerulean_bell_holds_only_the_highlighted_card() {
 	b.act(Action::SkipBlind);
 	b.act(Action::SelectBlind);
 	assert_eq!(b.g.blind.kind, Some(BlindKind::FinalBell));
+	assert_eq!(held(&b.g, Forced::Locked).len(), 1, "the Bell holds a card");
+	b
+}
+
+/// Using the first consumable on the hand cards `cards`.
+fn use_on(cards: &[usize]) -> Action {
+	Action::UseConsumable {
+		index: 0,
+		targets: cards.iter().copied().collect(),
+	}
+}
+
+/// Cerulean Bell with copies of its forced card: the copies have the flag
+/// (`copy_card` copies the ability table), but the game only keeps the
+/// highlighted card in the selection. A copy is held once a consumable has
+/// been used on it, and the first one is when no held card is left.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn cerulean_bell_holds_only_the_highlighted_card() {
+	let mut b = bell_round(&find_seed(quiet_skips), &[
+		Consumable::Spectral(Spectral::Cryptid),
+		Consumable::Spectral(Spectral::Cryptid),
+		Consumable::Tarot(Tarot::Magician),
+		Consumable::Tarot(Tarot::HangedMan),
+	]);
 	let bell = held(&b.g, Forced::Locked);
-	assert_eq!(bell.len(), 1, "the Bell holds one card");
-	let use_on = |b: &mut Both, cards: &[usize]| {
-		b.act(Action::UseConsumable {
-			index: 0,
-			targets: cards.iter().copied().collect(),
-		});
-	};
 
 	// Two Cryptids on the held card: the second needs the copies to be free.
-	use_on(&mut b, &bell);
-	use_on(&mut b, &bell);
+	b.act(use_on(&bell));
+	b.act(use_on(&bell));
 	assert_eq!(held(&b.g, Forced::Locked), bell);
 	let copies = held(&b.g, Forced::Flagged);
 	assert_eq!(copies.len(), 4, "the copies have the flag");
 
 	// The Magician on the held card and a copy: the copy is held from now on.
-	use_on(&mut b, &[bell[0], copies[0]]);
+	b.act(use_on(&[bell[0], copies[0]]));
 	assert_eq!(held(&b.g, Forced::Locked), [bell[0], copies[0]]);
 
-	// Death takes two cards, so it has to take the two held ones. The
-	// Hanged Man then destroys them, and the first copy left is held.
-	let free = held(&b.g, Forced::No)[0];
-	let without_a_held_card = Action::UseConsumable {
-		index: 0,
-		targets: [bell[0], free].into_iter().collect(),
-	};
-	assert!(b.g.check(without_a_held_card).is_err());
-	use_on(&mut b, &[bell[0], copies[0]]);
-	assert_eq!(held(&b.g, Forced::Locked), [bell[0], copies[0]]);
-	use_on(&mut b, &[bell[0], copies[0]]);
+	// The Hanged Man destroys the two held cards: the first copy left is held.
+	b.act(use_on(&[bell[0], copies[0]]));
 	let next = held(&b.g, Forced::Locked);
 	assert_eq!(next.len(), 1, "one copy is held: {next:?}");
 	assert_eq!(held(&b.g, Forced::Flagged).len(), 2);
@@ -341,4 +345,111 @@ fn cerulean_bell_holds_only_the_highlighted_card() {
 	assert_eq!(held(&b.g, Forced::Locked).len(), 1);
 	assert_eq!(held(&b.g, Forced::Flagged), [0; 0], "no card has the flag");
 	b.win_round();
+}
+
+/// Death under Cerulean Bell. The left card becomes the right one but keeps
+/// its own forced flag (`Card:set_ability`), and takes the right card's.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn death_keeps_and_passes_on_the_bells_hold() {
+	let death = Consumable::Tarot(Tarot::Death);
+	let mut b = bell_round(&find_seed(quiet_skips), &[death, death]);
+	let bell = held(&b.g, Forced::Locked)[0];
+	if bell != 3 {
+		b.act(Action::MoveHand {
+			from: num::byte(bell),
+			to: 3,
+		});
+	}
+
+	// The held card becomes the free card to its right, and is still held.
+	b.act(use_on(&[3, 5]));
+	assert_eq!(held(&b.g, Forced::Locked), [3]);
+	assert_eq!(held(&b.g, Forced::Flagged), [0; 0]);
+
+	// The free card to its left becomes the held card, and is held too.
+	b.act(use_on(&[0, 3]));
+	assert_eq!(held(&b.g, Forced::Locked), [0, 3]);
+}
+
+/// What is done with the last consumable in
+/// [`a_copy_takes_over_when_the_highlights_run_out`].
+#[derive(Clone, Copy)]
+enum Next {
+	SellJoker,
+	SellConsumable,
+	UseOnAFreeCard,
+	UseOnNoCard,
+}
+
+/// A hand a player left with a free card highlighted while the held card
+/// was destroyed: the copies have the flag and none is held. The game then
+/// holds the first copy when its highlights run out, and not before.
+#[test]
+#[ignore = "needs the game's lua51.dll; run with --include-ignored"]
+fn a_copy_takes_over_when_the_highlights_run_out() {
+	let cryptid = Consumable::Spectral(Spectral::Cryptid);
+	let familiar = Consumable::Spectral(Spectral::Familiar);
+	// A run in which Familiar destroys the card the Bell holds.
+	let seed = find_seed(|g| {
+		if !quiet_skips(g) {
+			return false;
+		}
+		let mut g = g.clone();
+		g.blind_select.boss = BlindKind::FinalBell;
+		g.inject(Inject::joker(Joker::Joker));
+		for card in [cryptid, familiar] {
+			g.inject(Inject::Consumable {
+				card,
+				edition: Some(Edition::Negative),
+			});
+		}
+		for action in [Action::SkipBlind, Action::SkipBlind, Action::SelectBlind] {
+			g.step(action).expect("the run reaches the boss");
+		}
+		let bell = held(&g, Forced::Locked);
+		let id = g.areas.hand.cards[bell[0]].core.id;
+		for cards in [&bell[..], &[]] {
+			g.step(use_on(cards)).expect("Cryptid, then Familiar");
+		}
+		g.areas.hand.cards.iter().all(|c| c.core.id != id)
+	});
+	let free = |g: &Game| held(g, Forced::No)[0];
+	let aura = Consumable::Spectral(Spectral::Aura);
+	let cases = [
+		(aura, Next::SellJoker, 0),
+		(aura, Next::SellConsumable, 0),
+		(aura, Next::UseOnAFreeCard, 0),
+		(Consumable::Tarot(Tarot::Hermit), Next::UseOnNoCard, 1),
+		(Consumable::Tarot(Tarot::Magician), Next::UseOnAFreeCard, 1),
+		(Consumable::Tarot(Tarot::HangedMan), Next::UseOnAFreeCard, 1),
+	];
+	for (last, next, held_after) in cases {
+		let mut b = bell_round(&seed, &[cryptid, familiar, last]);
+		let bell = held(&b.g, Forced::Locked);
+		b.act(use_on(&bell));
+		// The player highlights a free card and uses Familiar.
+		let click = format!(
+			"G.hand:add_to_highlighted(G.hand.cards[{}])
+			G.FUNCS.use_card({{config = {{ref_table = G.consumeables.cards[1]}}}})
+			H.settle()",
+			free(&b.g) + 1
+		);
+		b.o.exec(&click).expect("the game takes the clicks");
+		let state = b.o.command("H.state()").expect("the game dumps its state");
+		let state = json::parse(&state).expect("the oracle returns JSON");
+		b.g = Game::from_dump(&state).expect("the simulator reads the dump");
+		assert_eq!(held(&b.g, Forced::Locked), [0; 0], "no card is held");
+		assert_eq!(held(&b.g, Forced::Flagged).len(), 2);
+
+		let action = match next {
+			Next::SellJoker => Action::SellJoker(0),
+			Next::SellConsumable => Action::SellConsumable(0),
+			Next::UseOnAFreeCard => use_on(&[free(&b.g)]),
+			Next::UseOnNoCard => use_on(&[]),
+		};
+		b.act(action);
+		let now = held(&b.g, Forced::Locked).len();
+		assert_eq!(now, held_after, "after {last:?} and {action:?}");
+	}
 }

@@ -1,7 +1,7 @@
 //! Cerulean Bell's forced card and its copies. A copy has the forced flag,
 //! but the game only keeps a card with the flag in every selection once the
-//! card is highlighted (checked against the game by the oracle's
-//! `cerulean_bell_holds_only_the_highlighted_card` scenario).
+//! card is highlighted. The oracle's scenarios check the same rules against
+//! the game (`sim/oracle/tests/scenarios.rs`).
 
 use sim::actions::ActionError;
 use sim::data::{Back, Edition, Spectral, Tarot};
@@ -90,4 +90,56 @@ fn the_first_copy_takes_over_when_the_forced_card_is_destroyed() {
 	use_on(&mut g, &[BELL]);
 	assert_eq!(held(&g, Forced::Locked), [copies[0] - 1]);
 	assert_eq!(held(&g, Forced::Flagged), [copies[1] - 1]);
+}
+
+#[test]
+fn death_keeps_the_hold_of_the_card_it_changes_and_passes_on_the_other_cards() {
+	let death = Consumable::Tarot(Tarot::Death);
+	let mut g = bell_round(&[death, death]);
+	use_on(&mut g, &[BELL, BELL + 1]);
+	assert_eq!(held(&g, Forced::Locked), [BELL], "the changed card is held");
+	use_on(&mut g, &[BELL - 1, BELL]);
+	assert_eq!(held(&g, Forced::Locked), [BELL - 1, BELL]);
+}
+
+/// A round in which two hand cards have the flag and none is held, as in a
+/// dump of a hand a player left with a free card highlighted while the held
+/// card was destroyed; with `consumable`.
+fn round_with_free_copies(consumable: Consumable) -> Game {
+	let mut g = bell_round(&[consumable]);
+	let hand = &mut g.areas.hand.cards;
+	(hand[BELL].forced, hand[4].forced, hand[5].forced) =
+		(Forced::No, Forced::Flagged, Forced::Flagged);
+	g
+}
+
+#[test]
+fn no_copy_takes_over_while_the_game_keeps_a_card_highlighted() {
+	let aura = Consumable::Spectral(Spectral::Aura);
+	let mut sold = round_with_free_copies(aura);
+	sold.step(Action::SellConsumable(0))
+		.expect("a consumable can be sold");
+	assert_eq!(held(&sold, Forced::Locked), [0; 0]);
+
+	let mut used = round_with_free_copies(aura);
+	use_on(&mut used, &[0]);
+	assert_eq!(
+		held(&used, Forced::Locked),
+		[0; 0],
+		"Aura's card stays highlighted"
+	);
+}
+
+#[test]
+fn the_first_copy_takes_over_when_the_highlights_run_out() {
+	let cases: [(Consumable, &[usize], usize); 3] = [
+		(Consumable::Tarot(Tarot::Hermit), &[], 4),
+		(Consumable::Tarot(Tarot::Magician), &[0], 4),
+		(Consumable::Tarot(Tarot::HangedMan), &[0], 3),
+	];
+	for (consumable, cards, first_copy) in cases {
+		let mut g = round_with_free_copies(consumable);
+		use_on(&mut g, cards);
+		assert_eq!(held(&g, Forced::Locked), [first_copy], "{consumable:?}");
+	}
 }
